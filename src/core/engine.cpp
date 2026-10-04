@@ -44,6 +44,10 @@ std::u32string Engine::preedit() const {
     if (okuri_letter_) text += U"*" + display(okuri_);
     return text + ascii(romaji_.pending());
 }
+std::u32string Engine::composition_text() const {
+    if (stage_ == Stage::Selecting) return literal_text();
+    return display(reading_ + okuri_) + ascii(romaji_.pending());
+}
 bool Engine::would_handle(Key key) const {
     if (key.code == KeyCode::Hiragana) return true;
     if (mode_ == Mode::Latin) return false;

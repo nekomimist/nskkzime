@@ -57,7 +57,10 @@ HRESULT register_server() noexcept {
             description, ARRAYSIZE(description) - 1, path.c_str(), static_cast<ULONG>(path.size()), 0);
         if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
         if (SUCCEEDED(hr)) hr = categories->RegisterCategory(service_clsid, GUID_TFCAT_TIP_KEYBOARD, service_clsid);
+        if (SUCCEEDED(hr)) hr = categories->RegisterCategory(service_clsid, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, service_clsid);
+        if (SUCCEEDED(hr)) hr = profiles->EnableLanguageProfile(service_clsid, language_id, profile_guid, TRUE);
         if (FAILED(hr)) {
+            if (categories) categories->UnregisterCategory(service_clsid, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, service_clsid);
             if (categories) categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIP_KEYBOARD, service_clsid);
             if (registered) profiles->Unregister(service_clsid);
             RegDeleteTreeW(HKEY_LOCAL_MACHINE, registry_path.c_str());
@@ -73,6 +76,7 @@ HRESULT unregister_server() noexcept {
         auto hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
         if (FAILED(hr)) return hr;
         categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIP_KEYBOARD, service_clsid);
+        categories->UnregisterCategory(service_clsid, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, service_clsid);
         ComPtr<ITfInputProcessorProfiles> profiles;
         hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
         if (FAILED(hr)) return hr;

@@ -43,6 +43,14 @@ int main() {
                 require(!s.key({key}).consumed, "idle key must pass through");
         }},
         {"input/terminal-n", [] { Session s; s.type("n"); s.key({KeyCode::Enter}); equal(s.committed, U"ん"); }},
+        {"input/native-composition-does-not-flush-pending-romaji", [] {
+            Session s; s.type("Nihon"); equal(s.engine.composition_text(), U"にほn");
+            equal(s.engine.literal_text(), U"にほん"); s.key({KeyCode::Space}); equal(s.engine.composition_text(), U"日本");
+        }},
+        {"input/native-composition-omits-okuri-marker", [] {
+            Session s; s.type("KaK"); equal(s.engine.composition_text(), U"かk");
+            equal(s.engine.preedit(), U"▽か*k"); s.type("u"); equal(s.engine.composition_text(), U"書く");
+        }},
         {"input/katakana-mode", [] { Session s; s.type("qkanaqkana"); equal(s.committed, U"カナかな"); }},
         {"input/latin-mode", [] { Session s; s.type("l"); require(!s.key({KeyCode::Character, 'A'}).consumed, "Latin must pass through"); s.key({KeyCode::Hiragana}); s.type("a"); equal(s.committed, U"あ"); }},
         {"conversion/reading-and-first-candidate", [] { Session s; s.type("Kanji"); equal(s.engine.preedit(), U"▽かんじ"); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼漢字"); s.key({KeyCode::Enter}); equal(s.committed, U"漢字"); equal(s.engine.preedit(), U""); }},

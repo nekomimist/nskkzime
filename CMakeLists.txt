@@ -36,8 +36,11 @@ if(BUILD_TESTING)
 endif()
 
 if(WIN32)
+  add_executable(ime_probe WIN32 src/tools/ime_probe.cpp)
+  target_include_directories(ime_probe PRIVATE src/windows)
+  target_link_libraries(ime_probe PRIVATE project_options ole32 uuid user32 gdi32)
   add_library(nskkzime_tsf SHARED src/windows/text_service.cpp src/windows/module.cpp
-    src/windows/registration.cpp src/windows/runtime_dictionary.cpp src/windows/nskkzime.def)
+    src/windows/registration.cpp src/windows/runtime_dictionary.cpp src/windows/display_attributes.cpp src/windows/nskkzime.def)
   target_include_directories(nskkzime_tsf PRIVATE src/windows)
   target_link_libraries(nskkzime_tsf PRIVATE skk_dictionary ole32 oleaut32 advapi32 uuid user32)
   if(BUILD_TESTING)

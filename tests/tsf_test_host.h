@@ -65,15 +65,21 @@ public:
     UNUSED_METHOD(SimulatePreservedKey, ITfContext*, REFGUID, BOOL*)
 };
 
+class Range;
 struct Document {
     std::wstring text;
     LONG caret = 0;
+    LONG selection_end = -1; // -1 means a collapsed selection at caret.
     bool reject_write = false;
     bool reject_shift = false;
+    bool reject_read = false;
+    std::vector<Range*> ranges;
+    void replace(LONG begin, LONG finish, std::wstring_view value);
 };
 class Range final : public ITfRange {
 public:
-    Range(std::shared_ptr<Document> document, LONG begin, LONG finish) : doc(std::move(document)), start(begin), end(finish) {}
+    Range(std::shared_ptr<Document> document, LONG begin, LONG finish) : doc(std::move(document)), start(begin), end(finish) { doc->ranges.push_back(this); }
+    ~Range() { std::erase(doc->ranges, this); }
     std::shared_ptr<Document> doc;
     LONG start;
     LONG end;
@@ -85,10 +91,9 @@ public:
     }
     HRESULT STDMETHODCALLTYPE SetText(TfEditCookie, DWORD, const WCHAR* text, LONG length) override {
         if (doc->reject_write) return E_FAIL;
-        doc->text.replace(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start), text, static_cast<std::size_t>(length));
-        if (doc->caret >= end) doc->caret += length - (end - start);
-        else if (doc->caret > start) doc->caret = start + length;
-        end = start + length;
+        const auto begin = start;
+        doc->replace(start, end, std::wstring_view(text, static_cast<std::size_t>(length)));
+        start = begin; end = start + length;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Clone(ITfRange** out) override { *out = new Range(doc, start, end); return S_OK; }
@@ -101,7 +106,13 @@ public:
         const auto next = std::clamp(start + count, 0L, end);
         *shifted = next - start; start = next; return S_OK;
     }
-    UNUSED_METHOD(GetText, TfEditCookie, DWORD, WCHAR*, ULONG, ULONG*)
+    HRESULT STDMETHODCALLTYPE GetText(TfEditCookie, DWORD flags, WCHAR* text, ULONG maximum, ULONG* fetched) override {
+        if (doc->reject_read) return E_FAIL;
+        *fetched = (std::min)(maximum, static_cast<ULONG>(end - start));
+        std::copy_n(doc->text.data() + start, *fetched, text);
+        if (flags & TF_TF_MOVESTART) start += static_cast<LONG>(*fetched);
+        return S_OK;
+    }
     UNUSED_METHOD(GetFormattedText, TfEditCookie, IDataObject**)
     UNUSED_METHOD(GetEmbedded, TfEditCookie, REFGUID, REFIID, IUnknown**)
     UNUSED_METHOD(InsertEmbedded, TfEditCookie, DWORD, IDataObject*)
@@ -110,16 +121,43 @@ public:
     UNUSED_METHOD(ShiftEndToRange, TfEditCookie, ITfRange*, TfAnchor)
     UNUSED_METHOD(ShiftStartRegion, TfEditCookie, TfShiftDir, BOOL*)
     UNUSED_METHOD(ShiftEndRegion, TfEditCookie, TfShiftDir, BOOL*)
-    UNUSED_METHOD(IsEmpty, TfEditCookie, BOOL*)
+    HRESULT STDMETHODCALLTYPE IsEmpty(TfEditCookie, BOOL* empty) override { *empty = start == end; return S_OK; }
     UNUSED_METHOD(IsEqualStart, TfEditCookie, ITfRange*, TfAnchor, BOOL*)
     UNUSED_METHOD(IsEqualEnd, TfEditCookie, ITfRange*, TfAnchor, BOOL*)
-    UNUSED_METHOD(CompareStart, TfEditCookie, ITfRange*, TfAnchor, LONG*)
-    UNUSED_METHOD(CompareEnd, TfEditCookie, ITfRange*, TfAnchor, LONG*)
+    HRESULT STDMETHODCALLTYPE CompareStart(TfEditCookie, ITfRange* other, TfAnchor anchor, LONG* result) override {
+        const auto* range = static_cast<Range*>(other);
+        if (doc != range->doc) return E_INVALIDARG;
+        const auto position = anchor == TF_ANCHOR_START ? range->start : range->end;
+        *result = start < position ? -1 : start > position ? 1 : 0; return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CompareEnd(TfEditCookie, ITfRange* other, TfAnchor anchor, LONG* result) override {
+        const auto* range = static_cast<Range*>(other);
+        if (doc != range->doc) return E_INVALIDARG;
+        const auto position = anchor == TF_ANCHOR_START ? range->start : range->end;
+        *result = end < position ? -1 : end > position ? 1 : 0; return S_OK;
+    }
     UNUSED_METHOD(AdjustForInsert, TfEditCookie, ULONG, BOOL*)
     UNUSED_METHOD(GetGravity, TfGravity*, TfGravity*)
     UNUSED_METHOD(SetGravity, TfEditCookie, TfGravity, TfGravity)
     UNUSED_METHOD(GetContext, ITfContext**)
 };
+inline void Document::replace(LONG begin, LONG finish, std::wstring_view value) {
+    const auto length = static_cast<LONG>(value.size());
+    const auto delta = length - (finish - begin);
+    text.replace(static_cast<std::size_t>(begin), static_cast<std::size_t>(finish - begin), value);
+    auto position = [&](LONG old, bool forward) {
+        if (old < begin) return old;
+        if (old > finish) return old + delta;
+        if (old == finish && finish != begin) return begin + length;
+        return forward ? begin + length : begin;
+    };
+    for (auto* range : ranges) {
+        range->start = position(range->start, false);
+        range->end = position(range->end, true);
+    }
+    caret = position(caret, true);
+    if (selection_end >= 0) selection_end = position(selection_end, true);
+}
 
 class Composition final : public ITfComposition {
 public:
@@ -139,12 +177,14 @@ public:
     UNUSED_METHOD(ShiftEnd, TfEditCookie, ITfRange*)
 };
 
-class Context final : public ITfContext, public ITfContextComposition, public ITfInsertAtSelection {
+class Context final : public ITfContext, public ITfContextComposition, public ITfInsertAtSelection, public ITfSource {
 public:
     std::shared_ptr<Document> doc = std::make_shared<Document>();
     bool reject_session = false;
     bool reject_composition = false;
     bool readonly = false;
+    bool reject_edit_sink = false;
+    ComPtr<ITfTextEditSink> edits;
     ComPtr<Composition> composition;
     std::vector<ComPtr<ITfEditSession>> queued;
     TEST_REFS(Context);
@@ -153,22 +193,39 @@ public:
         if (iid == IID_IUnknown || iid == IID_ITfContext) *out = static_cast<ITfContext*>(this);
         else if (iid == IID_ITfContextComposition) *out = static_cast<ITfContextComposition*>(this);
         else if (iid == IID_ITfInsertAtSelection) *out = static_cast<ITfInsertAtSelection*>(this);
+        else if (iid == IID_ITfSource) *out = static_cast<ITfSource*>(this);
         else return E_NOINTERFACE;
         AddRef(); return S_OK;
     }
     HRESULT STDMETHODCALLTYPE RequestEditSession(TfClientId, ITfEditSession* edit, DWORD flags, HRESULT* status) override {
         if (reject_session) { *status = TF_E_SYNCHRONOUS; return S_OK; }
         if (flags & TF_ES_ASYNC) { queued.emplace_back(edit); *status = TF_S_ASYNC; }
-        else *status = edit->DoEditSession(1);
+        else { *status = edit->DoEditSession(1); notify(); }
         return S_OK;
     }
-    void pump() { auto work = std::move(queued); queued.clear(); for (const auto& item : work) item->DoEditSession(1); }
+    void notify() { auto sink = edits; if (sink) sink->OnEndEdit(this, 1, nullptr); }
+    void move_selection(LONG start, LONG end) { doc->caret = start; doc->selection_end = end; notify(); }
+    void host_replace(LONG start, LONG end, std::wstring_view value) { doc->replace(start, end, value); notify(); }
+    void pump() { auto work = std::move(queued); queued.clear(); for (const auto& item : work) { item->DoEditSession(1); notify(); } }
+    HRESULT STDMETHODCALLTYPE AdviseSink(REFIID iid, IUnknown* sink, DWORD* cookie) override {
+        if (reject_edit_sink) return E_FAIL;
+        if (iid != IID_ITfTextEditSink || edits) return E_INVALIDARG;
+        const auto hr = sink->QueryInterface(IID_PPV_ARGS(&edits));
+        if (SUCCEEDED(hr)) *cookie = 43;
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE UnadviseSink(DWORD cookie) override {
+        if (cookie != 43) return E_INVALIDARG;
+        edits.Reset(); return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetSelection(TfEditCookie, ULONG, ULONG, TF_SELECTION* selection, ULONG* fetched) override {
-        *selection = {new Range(doc, doc->caret, doc->caret), {TF_AE_NONE, FALSE}};
+        *selection = {new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end), {TF_AE_NONE, FALSE}};
         *fetched = 1; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetSelection(TfEditCookie, ULONG, const TF_SELECTION* selection) override {
-        doc->caret = static_cast<Range*>(selection->range)->end; return S_OK;
+        doc->caret = static_cast<Range*>(selection->range)->start;
+        doc->selection_end = static_cast<Range*>(selection->range)->end;
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetStatus(TF_STATUS* status) override { *status = {readonly ? static_cast<DWORD>(TF_SD_READONLY) : 0UL, 0}; return S_OK; }
     HRESULT STDMETHODCALLTYPE StartComposition(TfEditCookie, ITfRange* input, ITfCompositionSink* sink, ITfComposition** out) override {
@@ -182,7 +239,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE InsertTextAtSelection(TfEditCookie, DWORD, const WCHAR* text, LONG length, ITfRange** out) override {
         ComPtr<Range> range;
-        range.Attach(new Range(doc, doc->caret, doc->caret));
+        range.Attach(new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end));
         auto hr = range->SetText(1, 0, text, length);
         if (FAILED(hr)) return hr;
         return range.CopyTo(out);

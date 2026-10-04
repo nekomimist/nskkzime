@@ -1,0 +1,134 @@
+#include "module.h"
+#include <wrl/client.h>
+#include <richedit.h>
+#include <string>
+
+using Microsoft::WRL::ComPtr;
+namespace {
+constexpr int activate_id = 101, restore_id = 102, refresh_id = 103;
+struct Probe {
+    ComPtr<ITfThreadMgr> manager;
+    ComPtr<ITfInputProcessorProfileMgr> profiles;
+    TF_INPUTPROCESSORPROFILE previous{};
+    bool previous_valid = false;
+    bool switched = false;
+    HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr;
+    HFONT font = nullptr;
+    void report(const wchar_t* operation, HRESULT result) {
+        wchar_t code[32]{};
+        swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(result));
+        TF_INPUTPROCESSORPROFILE active{};
+        const auto current = profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active);
+        const bool ours = current == S_OK && active.clsid == nskkzime::windows::service_clsid && active.guidProfile == nskkzime::windows::profile_guid;
+        std::wstring text = std::wstring(operation) + L": " + code + L"\r\n現在のIME: " + (ours ? L"nskkzime" : L"別のIME／キーボード");
+        if (result == S_FALSE) text += L"\r\nプロファイルが無効です。開発用登録手順を確認してください。";
+        if (FAILED(result)) text += L"\r\nDLLの登録と、日本語入力言語の選択を確認してください。";
+        SetWindowTextW(status, text.c_str());
+    }
+    HRESULT restore() {
+        if (!switched || !previous_valid) return S_FALSE;
+        const auto result = profiles->ActivateProfile(previous.dwProfileType, previous.langid, previous.clsid,
+            previous.guidProfile, previous.hkl, TF_IPPMF_FORPROCESS);
+        if (result == S_OK) switched = false;
+        return result;
+    }
+};
+HWND control(HWND parent, const wchar_t* kind, const wchar_t* text, DWORD style, int x, int y, int width, int height, int id, HFONT font) {
+    const auto window = CreateWindowExW((style & WS_TABSTOP) && _wcsicmp(kind, L"BUTTON") ? WS_EX_CLIENTEDGE : 0,
+        kind, text, WS_CHILD | WS_VISIBLE | style, x, y, width, height, parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+    if (window) SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    return window;
+}
+LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* probe = reinterpret_cast<Probe*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        probe = static_cast<Probe*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(probe));
+    }
+    if (!probe) return DefWindowProcW(window, message, wparam, lparam);
+    switch (message) {
+    case WM_CREATE: {
+        probe->font = CreateFontW(-20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
+        control(window, L"STATIC", L"このウィンドウだけでIMEの入力を検証します。内容は保存しません。", 0, 16, 12, 680, 30, 0, probe->font);
+        control(window, L"BUTTON", L"nskkzimeを選ぶ", WS_TABSTOP, 16, 48, 190, 36, activate_id, probe->font);
+        control(window, L"BUTTON", L"元のIMEに戻す", WS_TABSTOP, 218, 48, 180, 36, restore_id, probe->font);
+        control(window, L"BUTTON", L"状態を更新", WS_TABSTOP, 410, 48, 150, 36, refresh_id, probe->font);
+        control(window, L"STATIC", L"標準 EDIT", 0, 16, 100, 600, 26, 0, probe->font);
+        probe->plain = control(window, L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
+            16, 132, 660, 105, 201, probe->font);
+        control(window, L"STATIC", L"RichEdit", 0, 16, 250, 600, 26, 0, probe->font);
+        probe->rich = control(window, MSFTEDIT_CLASS, L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
+            16, 282, 660, 105, 202, probe->font);
+        probe->status = control(window, L"STATIC", L"", 0, 16, 405, 660, 105, 0, probe->font);
+        if (!probe->plain || !probe->rich || !probe->status) return -1;
+        probe->last_edit = probe->plain;
+        probe->report(L"起動", S_OK);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (HIWORD(wparam) == EN_SETFOCUS) { probe->last_edit = reinterpret_cast<HWND>(lparam); return 0; }
+        if (LOWORD(wparam) == activate_id) {
+            if (!probe->previous_valid) probe->previous_valid = probe->profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &probe->previous) == S_OK;
+            // Never change desktop/session defaults; no ENABLEPROFILE registry flag.
+            const auto result = probe->previous_valid ? probe->profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR,
+                nskkzime::windows::language_id, nskkzime::windows::service_clsid, nskkzime::windows::profile_guid, nullptr, TF_IPPMF_FORPROCESS) : E_FAIL;
+            if (result == S_OK) probe->switched = true;
+            probe->report(L"IME切替", result); SetFocus(probe->last_edit); return 0;
+        }
+        if (LOWORD(wparam) == restore_id) { probe->report(L"IME復帰", probe->restore()); SetFocus(probe->last_edit); return 0; }
+        if (LOWORD(wparam) == refresh_id) { probe->report(L"状態確認", S_OK); SetFocus(probe->last_edit); return 0; }
+        break;
+    case WM_DESTROY:
+        probe->restore();
+        if (probe->font) DeleteObject(probe->font);
+        PostQuitMessage(0); return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+}
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+    const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialized)) return 1;
+    const auto rich_module = LoadLibraryW(L"msftedit.dll");
+    int result = 1;
+    {
+        Probe probe;
+        auto hr = CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&probe.manager));
+        TfClientId client = TF_CLIENTID_NULL;
+        if (SUCCEEDED(hr)) hr = probe.manager->Activate(&client);
+        const bool activated = SUCCEEDED(hr);
+        if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&probe.profiles));
+        if (SUCCEEDED(hr) && rich_module) {
+            WNDCLASSW klass{}; klass.lpfnWndProc = window_proc; klass.hInstance = instance;
+            klass.hCursor = LoadCursorW(nullptr, IDC_IBEAM); klass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+            klass.lpszClassName = L"nskkzime-input-probe";
+            if (RegisterClassW(&klass)) {
+                const auto window = CreateWindowExW(0, klass.lpszClassName, L"nskkzime 入力検証", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 565, nullptr, nullptr, instance, &probe);
+                if (window) {
+                    ShowWindow(window, show); UpdateWindow(window); SetFocus(probe.plain);
+                    ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);
+                    ComPtr<ITfKeystrokeMgr> keys; probe.manager.As(&keys);
+                    MSG message{};
+                    while (true) {
+                        BOOL available = FALSE;
+                        if (pump) { if (FAILED(pump->GetMessageW(&message, nullptr, 0, 0, &available))) break; }
+                        else available = GetMessageW(&message, nullptr, 0, 0);
+                        if (available <= 0) { result = available == 0 ? 0 : 1; break; }
+                        BOOL eaten = FALSE;
+                        if (keys && message.message == WM_KEYDOWN && SUCCEEDED(keys->TestKeyDown(message.wParam, message.lParam, &eaten)) && eaten &&
+                            SUCCEEDED(keys->KeyDown(message.wParam, message.lParam, &eaten)) && eaten) continue;
+                        if (keys && message.message == WM_KEYUP && SUCCEEDED(keys->TestKeyUp(message.wParam, message.lParam, &eaten)) && eaten &&
+                            SUCCEEDED(keys->KeyUp(message.wParam, message.lParam, &eaten)) && eaten) continue;
+                        TranslateMessage(&message); DispatchMessageW(&message);
+                    }
+                }
+            }
+        }
+        if (activated) probe.manager->Deactivate();
+    }
+    if (rich_module) FreeLibrary(rich_module);
+    CoUninitialize(); return result;
+}

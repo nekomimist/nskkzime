@@ -1,4 +1,5 @@
 #include "module.h"
+#include "display_attributes.h"
 #include "tsf_test_host.h"
 #include <wrl/client.h>
 #include <iostream>
@@ -16,9 +17,10 @@ struct KeyboardState {
     KeyboardState() { GetKeyboardState(saved); }
     ~KeyboardState() { SetKeyboardState(saved); }
 };
-bool key(ITfKeyEventSink* sink, ITfContext* context, WPARAM code, bool shift = false) {
+bool key(ITfKeyEventSink* sink, ITfContext* context, WPARAM code, bool shift = false, bool control = false) {
     BYTE state[256]{};
     if (shift) state[VK_SHIFT] = state[VK_LSHIFT] = 0x80;
+    if (control) state[VK_CONTROL] = state[VK_LCONTROL] = 0x80;
     SetKeyboardState(state); // Thread-local state only; no SendInput/global keystrokes.
     const auto parameter = static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code), MAPVK_VK_TO_VSC)) << 16;
     BOOL probe = FALSE;
@@ -54,14 +56,14 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed");
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
-    check(context->doc->text == L"▽かんじ", "reading was not composed");
+    check(context->doc->text == L"かんじ", "reading was not composed");
     key(keys, context.Get(), VK_SPACE);
-    check(context->doc->text == L"▼漢字", "candidate not displayed");
+    check(context->doc->text == L"漢字", "candidate not displayed");
     type(keys, context.Get(), "desu");
     check(context->doc->text == L"漢字です", "committed prefix lost while continuing input");
     check(context->composition->ended, "direct input left a composition open");
     type(keys, context.Get(), "KaKu");
-    check(context->doc->text == L"漢字です▼書く", "okuri composition incorrect");
+    check(context->doc->text == L"漢字です書く", "okuri composition incorrect");
     key(keys, context.Get(), VK_SPACE);
     key(keys, context.Get(), VK_RETURN);
     check(context->doc->text == L"漢字です描く", "okuri commit incorrect");
@@ -83,7 +85,7 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     check(!key(keys, context.Get(), VK_SPACE), "failed SetText ate a key");
     context->doc->reject_write = false;
     key(keys, context.Get(), VK_SPACE);
-    check(context->doc->text == L"漢字です描くあ▼漢字", "failed SetText destroyed the old state");
+    check(context->doc->text == L"漢字です描くあ漢字", "failed SetText destroyed the old state");
     context->doc->reject_shift = true;
     type(keys, context.Get(), "d");
     check(context->doc->text == L"漢字です描くあ漢字d", "range failure lost committed prefix or left markers");
@@ -95,7 +97,7 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     ComPtr<test_host::Context> next; next.Attach(new test_host::Context);
     type(keys, next.Get(), "KaKu");
     context->pump();
-    check(next->doc->text == L"▼書く", "old cleanup modified the new field");
+    check(next->doc->text == L"書く", "old cleanup modified the new field");
     check(context->doc->text == L"漢字です描くあ漢字dかんじ", "old composition retained a marker");
     next->composition->terminate();
     check(next->doc->text == L"書く", "host termination did not remove markers");
@@ -114,6 +116,130 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     context->pump(); next->pump();
     check(!host->keys && !host->events, "adapter test leaked a sink");
 }
+void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+    KeyboardState keyboard;
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "selection-test activate failed");
+    auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    {
+        auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
+        type(keys, context.Get(), "Kanji");
+        context->move_selection(0, 0);
+        check(context->queued.size() == 1 && !context->edits, "selection change did not detach and schedule completion");
+        type(keys, context.Get(), "a"); // A key can arrive before the queued completion.
+        context->pump();
+        check(context->doc->text == L"あ前かんじ後" && context->doc->caret == 1, "delayed completion changed text or moved the new caret");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        context->move_selection(1, 2); context->pump();
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"かあじ", "new input ignored the user's range selection");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        auto old = context->composition;
+        context->move_selection(0, 0);
+        type(keys, context.Get(), "KaKu");
+        check(old->ended && !context->composition->ended, "new composition raced with pending completion in the same field");
+        context->pump();
+        check(context->doc->text == L"書くかんじ" && !context->composition->ended, "queued old completion ended new composition");
+        key(keys, context.Get(), VK_RETURN);
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        context->host_replace(1, 2, L"改");
+        check(!key(keys, context.Get(), VK_SPACE), "external edit retained the old conversion state");
+        context->pump();
+        check(context->doc->text == L"か改じ", "completion reverted an application's edit");
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"か改じあ", "input after external edit reused stale reading");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        context->doc->caret = context->doc->selection_end = 0; // Missing/late notification.
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"あかんじ" && context->composition->ended, "write-time selection validation failed");
+    }
+    {
+        auto context = fresh(); context->doc->text = L"前"; context->doc->caret = 1;
+        type(keys, context.Get(), "Kanji");
+        context->host_replace(0, 1, L"接頭");
+        check(context->queued.empty(), "edit outside the composition cancelled input");
+        key(keys, context.Get(), VK_SPACE); key(keys, context.Get(), VK_RETURN);
+        check(context->doc->text == L"接頭漢字", "range tracking lost the composition after a prefix edit");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        check(!key(keys, context.Get(), VK_LEFT), "navigation key was consumed");
+        check(context->composition->ended && !context->edits && context->doc->text == L"かんじ", "navigation did not finish before passing through");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        check(!key(keys, context.Get(), 'V', false, true), "paste shortcut was consumed");
+        check(context->composition->ended, "paste shortcut retained a live composition");
+        context->host_replace(0, 3, L"貼り付け");
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"貼り付けあ", "input after paste restored stale text");
+    }
+    {
+        auto context = fresh(); context->reject_edit_sink = true;
+        check(!key(keys, context.Get(), 'K', true), "unmonitored composition consumed input");
+        check(context->doc->text.empty() && !context->composition, "failed edit sink changed the document");
+        context->reject_edit_sink = false; type(keys, context.Get(), "a");
+        check(context->doc->text == L"あ", "failed edit sink changed the engine");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        context->doc->replace(0, 3, L"置換済み");
+        context->composition->terminate();
+        check(context->doc->text == L"置換済み" && !context->edits, "host termination overwrote the current document");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        context->doc->reject_read = true; type(keys, context.Get(), "a");
+        context->doc->reject_read = false;
+        check(context->doc->text == L"かんじあ" && context->composition->ended, "failed validation read overwrote unverified text");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "K" + std::string(300, 'a'));
+        check(context->queued.empty() && context->edits, "long composition failed chunked content validation");
+        key(keys, context.Get(), VK_RETURN);
+        check(context->doc->text.size() == 300 && context->composition->ended, "long composition did not commit");
+    }
+    succeeded(service->Deactivate(), "selection-test deactivation failed");
+    check(!host->keys && !host->events, "selection test leaked a sink");
+}
+void attribute_tests(ITfTextInputProcessorEx* service) {
+    ComPtr<ITfDisplayAttributeProvider> provider;
+    succeeded(service->QueryInterface(IID_PPV_ARGS(&provider)), "display attribute provider missing");
+    ComPtr<IEnumTfDisplayAttributeInfo> items;
+    succeeded(provider->EnumDisplayAttributeInfo(&items), "attribute enumeration failed");
+    ComPtr<ITfDisplayAttributeInfo> reading;
+    check(items->Next(1, &reading, nullptr) == S_OK, "reading attribute missing");
+    TF_DISPLAYATTRIBUTE attribute{};
+    succeeded(reading->GetAttributeInfo(&attribute), "reading attribute not readable");
+    check(attribute.bAttr == TF_ATTR_INPUT && attribute.lsStyle == TF_LS_DOT, "reading underline incorrect");
+    ComPtr<IEnumTfDisplayAttributeInfo> copy;
+    succeeded(items->Clone(&copy), "attribute enumeration clone failed");
+    ComPtr<ITfDisplayAttributeInfo> converted;
+    check(copy->Next(1, &converted, nullptr) == S_OK, "cloned enumeration lost its position");
+    succeeded(converted->GetAttributeInfo(&attribute), "converted attribute not readable");
+    check(attribute.bAttr == TF_ATTR_TARGET_CONVERTED && attribute.fBoldLine, "candidate underline incorrect");
+    GUID id{}; succeeded(converted->GetGUID(&id), "attribute GUID missing");
+    check(id == nskkzime::windows::converted_attribute_guid, "wrong stable attribute GUID");
+    ComPtr<ITfDisplayAttributeInfo> by_guid;
+    succeeded(provider->GetDisplayAttributeInfo(id, &by_guid), "attribute lookup failed");
+    attribute.lsStyle = TF_LS_NONE;
+    succeeded(by_guid->SetAttributeInfo(&attribute), "attribute customization failed");
+    succeeded(by_guid->Reset(), "attribute reset failed");
+    succeeded(by_guid->GetAttributeInfo(&attribute), "reset attribute not readable");
+    check(attribute.lsStyle == TF_LS_SOLID, "reset did not restore defaults");
+    ComPtr<ITfDisplayAttributeInfo> end;
+    check(copy->Next(1, &end, nullptr) == S_FALSE, "attribute enumeration did not end");
+    check(provider->GetDisplayAttributeInfo(GUID_NULL, &end) == E_INVALIDARG, "unknown attribute GUID accepted");
+    check(items->Next(2, &end, nullptr) == E_POINTER, "enumerator accepted missing count");
+}
 void missing_dictionary_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
@@ -121,7 +247,7 @@ void missing_dictionary_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink*
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
     key(keys, context.Get(), VK_SPACE);
-    check(context->doc->text == L"▽かんじ", "missing dictionary used demo candidates or lost the reading");
+    check(context->doc->text == L"かんじ", "missing dictionary used demo candidates or lost the reading");
     key(keys, context.Get(), VK_RETURN);
     type(keys, context.Get(), "desu");
     check(context->doc->text == L"かんじです", "kana input failed without a dictionary");
@@ -178,8 +304,9 @@ int wmain(int argc, wchar_t** argv) {
             TfClientId client = TF_CLIENTID_NULL;
             succeeded(manager->Activate(&client), "TSF manager activate failed");
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
+            attribute_tests(service.Get());
             if (argc == 4) missing_dictionary_tests(service.Get(), keys.Get());
-            else adapter_tests(service.Get(), keys.Get(), argc == 3);
+            else { adapter_tests(service.Get(), keys.Get(), argc == 3); selection_tests(service.Get(), keys.Get()); }
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
         std::cout << "PASS COM exports/identity/unload, real TSF manager startup, "

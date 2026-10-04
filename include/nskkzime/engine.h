@@ -57,6 +57,7 @@ public:
     Stage stage() const { return stage_; }
     std::uint64_t revision() const { return revision_; }
     std::u32string preedit() const;
+    std::u32string composition_text() const; // Native composition, without diagnostic SKK markers.
     std::u32string literal_text() const; // No SKK markers; used on host termination.
     const std::vector<Candidate>& candidates() const { return candidates_; }
     std::size_t candidate_index() const { return candidate_index_; }
