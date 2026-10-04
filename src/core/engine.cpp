@@ -94,10 +94,14 @@ void Engine::convert(Result& result) {
     auto stored = dictionary_->lookup(lookup, input_.okuri);
     // Once a registered spelling is available in the shared snapshot, defer to
     // its ordering. A temporary cache must not pin an old choice forever.
+    bool refresh = false;
     std::erase_if(registered_, [&](const LearningEvent& item) {
-        return item.key == lookup && item.okuri == input_.okuri &&
-            std::any_of(stored.begin(), stored.end(), [&](const Candidate& candidate) { return candidate.text == item.candidate.text; });
+        if (item.key != lookup || item.okuri != input_.okuri) return false;
+        if (!dictionary_->registration_pending(item)) { refresh = true; return true; }
+        return std::any_of(stored.begin(), stored.end(), [&](const Candidate& candidate) { return candidate.text == item.candidate.text; });
     });
+    // A worker can publish a snapshot between lookup and the delivery check.
+    if (refresh) stored = dictionary_->lookup(lookup, input_.okuri);
     input_.candidates.clear();
     for (const auto& item : registered_)
         if (item.key == lookup && item.okuri == input_.okuri) input_.candidates.push_back(item.candidate);

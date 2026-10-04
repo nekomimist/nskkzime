@@ -118,7 +118,8 @@ Spaceや英数入力も登録欄が受け取り、入力先アプリへ流さな
 CLIでは `registration_depth`・`registered`・`registration_limit` と `learning` イベントを出力する。
 登録した語はそのCLIセッション中だけ再利用し、ファイルへは保存しない。
 `Engine(dictionary, false)` は登録を無効にし、従来どおり未知語の読みと最後の候補を保持する。
-貼り付け・登録欄内のカーソル移動・注釈の入力・登録語の削除は未対応。
+貼り付け・登録欄内のカーソル移動・注釈の入力・IME内の削除操作は未対応。
+登録語の確認・削除・書き出しは [辞書管理CLI](DICTIONARIES.md#登録学習した語の管理) から行える。
 
 ## 候補一覧（Windows）
 

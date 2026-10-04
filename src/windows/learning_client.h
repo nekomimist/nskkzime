@@ -10,6 +10,7 @@ public:
     LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server);
     ~LearningDictionary() override;
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
+    bool registration_pending(const LearningEvent&) const override;
     void learn(const LearningEvent&) const noexcept;
     void skipped(std::wstring reason) const noexcept;
     std::wstring status() const;

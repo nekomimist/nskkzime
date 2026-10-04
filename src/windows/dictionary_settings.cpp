@@ -119,7 +119,7 @@ DictionarySettings read_dictionary_settings(const std::filesystem::path& path) {
 void save_dictionary_settings(const std::filesystem::path& path, const DictionarySettings& settings) {
     write_file_atomic(path, serialize(settings));
 }
-void write_file_atomic(const std::filesystem::path& path, std::string_view bytes) {
+void write_file_atomic(const std::filesystem::path& path, std::string_view bytes, bool replace_existing) {
     validate_path(path);
     if (bytes.size() > 64 * 1024 * 1024) throw std::invalid_argument("file exceeds 64 MiB");
     std::filesystem::create_directories(path.parent_path());
@@ -135,7 +135,7 @@ void write_file_atomic(const std::filesystem::path& path, std::string_view bytes
     if (!WriteFile(temporary.handle, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) || written != bytes.size() ||
         !FlushFileBuffers(temporary.handle)) throw std::runtime_error("cannot write settings; previous file was kept");
     CloseHandle(temporary.handle); temporary.handle = INVALID_HANDLE_VALUE;
-    if (!MoveFileExW(temporary.path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    if (!MoveFileExW(temporary.path.c_str(), path.c_str(), (replace_existing ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("cannot replace settings; previous file was kept");
     temporary.created = false;
 }

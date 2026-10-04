@@ -4,7 +4,6 @@
 #include <bcrypt.h>
 #include <combaseapi.h>
 #include <sddl.h>
-#include <fstream>
 #include <stdexcept>
 
 namespace nskkzime::windows {
@@ -94,11 +93,19 @@ std::string learning_client_id() {
     return result;
 }
 UserDictionary read_user_dictionary(const std::filesystem::path& file) {
-    if (!std::filesystem::exists(file)) return {};
-    std::ifstream stream(file, std::ios::binary | std::ios::ate); need(static_cast<bool>(stream), "cannot open user dictionary");
-    const auto size = stream.tellg(); need(size >= 0 && size <= static_cast<std::streamoff>(learning_max_bytes), "invalid user dictionary size");
-    std::string bytes(static_cast<std::size_t>(size), '\0'); stream.seekg(0);
-    need(static_cast<bool>(stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))), "cannot read user dictionary");
+    // Keep a handle to one complete generation while allowing the server to
+    // atomically replace the path. Listing/exporting must not block its saves.
+    NativeHandle stream(CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!stream.valid()) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return {};
+        throw std::runtime_error("cannot open user dictionary");
+    }
+    LARGE_INTEGER size{};
+    need(GetFileSizeEx(stream.get(), &size) && size.QuadPart >= 0 && size.QuadPart <= learning_max_bytes, "invalid user dictionary size");
+    std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0'); DWORD count = 0;
+    need(ReadFile(stream.get(), bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr) && count == bytes.size(), "cannot read user dictionary");
     return UserDictionary::parse(bytes);
 }
 std::string snapshot_request(std::uint64_t revision) {
@@ -161,7 +168,7 @@ int serve_dictionary(const std::filesystem::path& path, DWORD idle_ms) {
             const auto request = receive_frame(pipe.get(), GetTickCount64() + 1500, 20000);
             std::string response;
             try {
-                if (request.starts_with("NKL1")) {
+                if (request.starts_with("NKL1") || request.starts_with("NKF1")) {
                     const auto update = decode_learning(request); auto next = dictionary;
                     if (next.apply(update)) { write_file_atomic(file, next.serialize()); dictionary = std::move(next); }
                     response = "OKAY";

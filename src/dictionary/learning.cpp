@@ -60,13 +60,18 @@ std::uint32_t checksum(std::string_view bytes) {
     return ~value;
 }
 }
-void validate_learning(const LearningRequest& request) { client_check(request.client); check(request.sequence != 0); event_check(request.event); }
+void validate_learning(const LearningRequest& request) {
+    client_check(request.client); check(request.sequence != 0); event_check(request.event);
+    check(request.action == DictionaryAction::Learn || request.action == DictionaryAction::Forget);
+}
 std::string encode_learning(const LearningRequest& request) {
-    validate_learning(request); Writer w; w.bytes = "NKL1"; w.string(request.client); w.number(request.sequence); w.event(request.event); return w.bytes;
+    validate_learning(request); Writer w; w.bytes = request.action == DictionaryAction::Learn ? "NKL1" : "NKF1";
+    w.string(request.client); w.number(request.sequence); w.event(request.event); return w.bytes;
 }
 LearningRequest decode_learning(std::string_view bytes) {
-    check(bytes.size() <= 20000 && bytes.starts_with("NKL1")); Reader r{bytes.substr(4)};
+    check(bytes.size() <= 20000 && (bytes.starts_with("NKL1") || bytes.starts_with("NKF1"))); Reader r{bytes.substr(4)};
     LearningRequest request; request.client = r.string(32); request.sequence = r.number(); request.event = r.event();
+    request.action = bytes.starts_with("NKF1") ? DictionaryAction::Forget : DictionaryAction::Learn;
     check(r.bytes.empty()); validate_learning(request); return request;
 }
 bool UserDictionary::apply(const LearningRequest& request) {
@@ -75,17 +80,30 @@ bool UserDictionary::apply(const LearningRequest& request) {
     if (previous != clients_.end() && previous->second >= request.sequence) return false;
     check(previous != clients_.end() || clients_.size() < max_clients);
     Key key{request.event.key, request.event.okuri};
-    check(entries_.contains(key) || entries_.size() < max_entries);
+    check(request.action == DictionaryAction::Forget || entries_.contains(key) || entries_.size() < max_entries);
     check(revision_ != std::numeric_limits<std::uint64_t>::max());
-    auto& candidates = entries_[std::move(key)];
-    std::erase_if(candidates, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
-    candidates.insert(candidates.begin(), request.event.candidate);
-    if (candidates.size() > max_candidates) candidates.resize(max_candidates);
+    if (request.action == DictionaryAction::Forget) {
+        if (const auto found = entries_.find(key); found != entries_.end()) {
+            std::erase_if(found->second, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
+            if (found->second.empty()) entries_.erase(found);
+        }
+    } else {
+        auto& candidates = entries_[std::move(key)];
+        std::erase_if(candidates, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
+        candidates.insert(candidates.begin(), request.event.candidate);
+        if (candidates.size() > max_candidates) candidates.resize(max_candidates);
+    }
     clients_[request.client] = request.sequence; ++revision_; return true;
 }
 std::vector<Candidate> UserDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find({key, std::u32string(okuri)});
     return found == entries_.end() ? std::vector<Candidate>{} : found->second;
+}
+std::vector<LearningEvent> UserDictionary::entries() const {
+    std::vector<LearningEvent> result;
+    for (const auto& [key, candidates] : entries_)
+        for (const auto& candidate : candidates) result.push_back({key.lookup, key.okuri, candidate});
+    return result;
 }
 std::string UserDictionary::serialize() const {
     Writer w; w.bytes = "NKUD1"; w.number(revision_); w.number(clients_.size());

@@ -26,10 +26,14 @@ struct LookupKey {
     char okuri = 0;
     auto operator<=>(const LookupKey&) const = default;
 };
+struct LearningEvent;
 class Dictionary {
 public:
     virtual ~Dictionary() = default;
     virtual std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const = 0;
+    // Immutable/CLI dictionaries keep local registrations until lookup observes
+    // them. A persistence wrapper can release the cache after durable delivery.
+    virtual bool registration_pending(const LearningEvent&) const { return true; }
 };
 class MemoryDictionary final : public Dictionary {
 public:

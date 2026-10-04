@@ -1,6 +1,7 @@
 #include "learning_client.h"
 #include "learning_ipc.h"
 #include "dictionary_settings.h"
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <limits>
@@ -53,13 +54,16 @@ struct LearningDictionary::State {
                     if (request) {
                         const auto response = learning_exchange(file, encode_learning(*request));
                         if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
-                        const std::lock_guard lock(mutex); queue.pop_front();
                     }
                     const auto response = learning_exchange(file, snapshot_request(revision));
                     if (response.starts_with("DATA")) {
                         auto next = std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
                         revision = next->revision(); snapshot.store(std::move(next));
                     } else if (response != "SAME") throw std::runtime_error("dictionary snapshot rejected");
+                    // Keep the event pending until its acknowledged generation
+                    // has been published. Engine caches can then safely retire,
+                    // even if the word was deleted before the next lookup.
+                    if (request) { const std::lock_guard lock(mutex); queue.pop_front(); }
                     update_status(L"学習: 保存済み・同期済み（世代 " + std::to_wstring(revision) + L"）");
                 } catch (const std::exception&) {
                     update_status(L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）");
@@ -104,6 +108,12 @@ LearningDictionary::~LearningDictionary() {
 std::vector<Candidate> LearningDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
     const auto snapshot = state_->snapshot.load();
     return DictionarySet({snapshot, state_->base}).lookup(key, okuri);
+}
+bool LearningDictionary::registration_pending(const LearningEvent& event) const {
+    const std::lock_guard lock(state_->mutex);
+    return std::any_of(state_->queue.begin(), state_->queue.end(), [&](const LearningRequest& request) {
+        return request.event.key == event.key && request.event.okuri == event.okuri && request.event.candidate.text == event.candidate.text;
+    });
 }
 void LearningDictionary::learn(const LearningEvent& event) const noexcept {
     try {

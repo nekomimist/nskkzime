@@ -25,7 +25,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -131,6 +131,40 @@ int wmain(int argc, wchar_t** argv) {
             until([&] { return second->lookup({U"かんじ"})[0].text == U"感じ"; });
             check(active.candidates()[0].text == displayed[0].text, "snapshot change reordered active selection");
             check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"感じ", "async acknowledgement was not durable");
+            auto removed = update(std::string(32, 'f'), 1, U"感じ"); removed.action = DictionaryAction::Forget;
+            check(learning_exchange(file, encode_learning(removed)) == "OKAY", "cross-client deletion failed");
+            until([&] { return second->lookup({U"かんじ"})[0].text != U"感じ"; });
+            check(active.candidates()[0].text == displayed[0].text, "deletion changed active selection");
+            // Register then delete without ever looking up the saved generation.
+            auto registration = update(std::string(32, 'a'), 1, U"未知語").event; registration.key = {U"みち"};
+            Engine immediate(first); first->learn(registration); immediate.remember_registration(registration);
+            until([&] { return !first->registration_pending(registration); });
+            removed.sequence = 2; removed.event = registration;
+            check(learning_exchange(file, encode_learning(removed)) == "OKAY", "registration deletion failed");
+            until([&] { return first->lookup({U"みち"}).empty(); });
+            for (const auto ch : std::string("Michi")) immediate.handle({KeyCode::Character, ch});
+            immediate.handle({KeyCode::Space});
+            check(immediate.registering(), "temporary cache resurrected a deleted registration");
+        }},
+        {"ipc/forget-save-failure-retry-and-restart", [&] {
+            const auto isolated = files.root / L"forget.nskkdb";
+            Child helper{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
+            const auto initial = update(); auto removed = update(std::string(32, 'b')); removed.action = DictionaryAction::Forget;
+            check(learning_exchange(isolated, encode_learning(initial)) == "OKAY", "cannot seed deletion fixture");
+            {
+                NativeHandle lock(CreateFileW(isolated.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
+                check(lock.valid(), "cannot lock deletion fixture");
+                check(learning_exchange(isolated, encode_learning(removed)) == "FAIL", "failed deletion save acknowledged");
+                check(snapshot(isolated).lookup({U"かんじ"}).size() == 1 && read_user_dictionary(isolated).revision() == 1, "failed delete changed memory or disk");
+            }
+            check(learning_exchange(isolated, encode_learning(removed)) == "OKAY", "delete retry failed");
+            check(snapshot(isolated).lookup({U"かんじ"}).empty() && read_user_dictionary(isolated).revision() == 2, "deletion not durable");
+            check(WaitForSingleObject(helper.process.get(), 3000) == WAIT_OBJECT_0, "deletion helper did not stop");
+            Child restarted{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
+            check(learning_exchange(isolated, encode_learning(initial)) == "OKAY" && snapshot(isolated).revision() == 2, "old learning retry resurrected deleted word");
+            check(learning_exchange(isolated, encode_learning(update(std::string(32, 'a'), 2))) == "OKAY", "explicit relearning failed");
+            check(learning_exchange(isolated, encode_learning(removed)) == "OKAY" && snapshot(isolated).revision() == 3 &&
+                snapshot(isolated).lookup({U"かんじ"}).size() == 1, "old delete retry removed a newer registration");
         }},
         {"client/unavailable-server-keeps-base-conversion", [&] {
             LearningDictionary client(demo_dictionary(), files.root / L"absent" / L"dictionary.nskkdb", files.root / L"not-installed.exe");
