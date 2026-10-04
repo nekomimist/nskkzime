@@ -32,10 +32,13 @@ std::u32string Engine::display(std::u32string_view text) const {
     return mode_ == Mode::Katakana ? katakana(text) : std::u32string(text);
 }
 std::u32string Engine::literal_text() const {
-    if (stage_ == Stage::Selecting) return candidates_[candidate_index_].text + display(okuri_);
+    if (stage_ == Stage::Selecting) return candidate_text(candidate_index_);
     // Flushing a copy also resolves terminal n, without changing the engine.
     auto roman = romaji_;
     return display(reading_ + okuri_ + roman.flush());
+}
+std::u32string Engine::candidate_text(std::size_t index) const {
+    return index < candidates_.size() ? candidates_[index].text + display(okuri_) : std::u32string{};
 }
 std::u32string Engine::preedit() const {
     if (stage_ == Stage::Direct) return ascii(romaji_.pending());

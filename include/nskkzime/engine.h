@@ -60,6 +60,7 @@ public:
     std::u32string composition_text() const; // Native composition, without diagnostic SKK markers.
     std::u32string literal_text() const; // No SKK markers; used on host termination.
     const std::vector<Candidate>& candidates() const { return candidates_; }
+    std::u32string candidate_text(std::size_t index) const; // Includes the current okuri; empty for an invalid index.
     std::size_t candidate_index() const { return candidate_index_; }
 private:
     void clear_composition();

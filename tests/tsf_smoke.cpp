@@ -294,6 +294,50 @@ void missing_dictionary_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink*
     context->pump();
     check(!host->keys && !host->events, "missing-dictionary test leaked a sink");
 }
+void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+    KeyboardState keyboard;
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "candidate UI activation failed");
+    ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
+    type(keys, context.Get(), "Kanji");
+    check(!host->ui, "reading showed candidate UI");
+    key(keys, context.Get(), VK_SPACE);
+    check(host->ui && host->ui_begins == 1, "selection did not begin candidate UI");
+    ComPtr<ITfCandidateListUIElement> list; succeeded(host->ui.As(&list), "candidate list interface missing");
+    UINT count = 0, selected = 99;
+    list->GetCount(&count); check(count == 2, "candidate UI count incorrect");
+    BOOL shown = TRUE; list->IsShown(&shown); check(!shown, "host did not suppress native UI");
+    BSTR text = nullptr; list->GetString(0, &text);
+    const bool correct = text && std::wstring_view(text) == L"漢字"; SysFreeString(text);
+    check(correct, "candidate UI text or annotation incorrect");
+    key(keys, context.Get(), VK_SPACE);
+    list->GetSelection(&selected); check(selected == 1 && host->ui_updates == 1, "candidate UI selection not updated");
+    check(context->layout != nullptr, "composition did not subscribe to layout changes");
+    auto layout = context->layout;
+    // Destruction invalidates older layout requests; later changes may resume.
+    const auto queries = context->layout_queries;
+    layout->OnLayoutChange(context.Get(), TF_LC_CHANGE, nullptr);
+    layout->OnLayoutChange(context.Get(), TF_LC_CHANGE, nullptr);
+    check(context->queued.size() == 1, "layout notifications were not coalesced");
+    layout->OnLayoutChange(context.Get(), TF_LC_DESTROY, nullptr); context->pump();
+    check(context->layout_queries == queries, "destroyed view was queried by an old layout request");
+    layout->OnLayoutChange(context.Get(), TF_LC_CHANGE, nullptr); context->pump();
+    check(context->layout_queries == queries + 1, "layout queries did not resume for a new view");
+    // Queue a layout update and end before it runs. It must not resurrect UI.
+    layout->OnLayoutChange(context.Get(), TF_LC_CHANGE, nullptr);
+    key(keys, context.Get(), VK_RETURN); context->pump();
+    check(!host->ui && host->ui_ends == 1 && !context->layout, "commit retained UI or layout sink");
+    list->Show(TRUE); list->IsShown(&shown); check(!shown, "retained UI reopened after commit");
+    type(keys, context.Get(), "KaKu");
+    check(host->ui != nullptr, "okuri selection did not begin UI");
+    keys->OnSetFocus(FALSE);
+    check(!host->ui, "focus loss left candidate UI visible"); context->pump();
+    host->reject_ui = true;
+    type(keys, context.Get(), "Kanji"); key(keys, context.Get(), VK_SPACE); key(keys, context.Get(), VK_RETURN);
+    check(context->doc->text == L"感じ書く漢字", "candidate UI failure broke conversion");
+    succeeded(service->Deactivate(), "candidate UI deactivation failed");
+    check(!host->ui && !host->keys && !host->events, "candidate UI leaked subscriptions");
+}
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2 || argc > 4 || (argc == 4 && std::wstring_view(argv[3]) != L"--expect-empty")) return 2;
@@ -345,7 +389,7 @@ int wmain(int argc, wchar_t** argv) {
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
             attribute_tests(service.Get());
             if (argc == 4) missing_dictionary_tests(service.Get(), keys.Get());
-            else { adapter_tests(service.Get(), keys.Get(), argc == 3); selection_tests(service.Get(), keys.Get()); }
+            else { adapter_tests(service.Get(), keys.Get(), argc == 3); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
         std::cout << "PASS COM exports/identity/unload, real TSF manager startup, "

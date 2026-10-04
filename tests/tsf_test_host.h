@@ -17,11 +17,15 @@ using Microsoft::WRL::ComPtr;
     ULONG refs_ = 1
 #define UNUSED_METHOD(name, ...) HRESULT STDMETHODCALLTYPE name(__VA_ARGS__) override { return E_NOTIMPL; }
 
-class Manager final : public ITfThreadMgr, public ITfKeystrokeMgr, public ITfSource {
+class Manager final : public ITfThreadMgr, public ITfKeystrokeMgr, public ITfSource, public ITfUIElementMgr {
 public:
     bool reject_sink = false;
     ComPtr<ITfKeyEventSink> keys;
     ComPtr<ITfThreadMgrEventSink> events;
+    ComPtr<ITfUIElement> ui;
+    bool reject_ui = false;
+    DWORD ui_id = 0;
+    int ui_begins = 0, ui_updates = 0, ui_ends = 0;
     TEST_REFS(Manager);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
@@ -29,6 +33,7 @@ public:
         if (iid == IID_IUnknown || iid == IID_ITfThreadMgr) *out = static_cast<ITfThreadMgr*>(this);
         else if (iid == IID_ITfKeystrokeMgr) *out = static_cast<ITfKeystrokeMgr*>(this);
         else if (iid == IID_ITfSource) *out = static_cast<ITfSource*>(this);
+        else if (iid == IID_ITfUIElementMgr) *out = static_cast<ITfUIElementMgr*>(this);
         else return E_NOINTERFACE;
         AddRef(); return S_OK;
     }
@@ -40,6 +45,15 @@ public:
         *cookie = 42; return sink->QueryInterface(IID_PPV_ARGS(&events));
     }
     HRESULT STDMETHODCALLTYPE UnadviseSink(DWORD) override { events.Reset(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE BeginUIElement(ITfUIElement* value, BOOL* show, DWORD* id) override {
+        if (reject_ui) return E_FAIL;
+        if (ui) return E_UNEXPECTED;
+        ui = value; *show = FALSE; *id = ++ui_id; ++ui_begins; return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE UpdateUIElement(DWORD id) override { if (!ui || id != ui_id) return E_INVALIDARG; ++ui_updates; return S_OK; }
+    HRESULT STDMETHODCALLTYPE EndUIElement(DWORD id) override { if (!ui || id != ui_id) return E_INVALIDARG; ui.Reset(); ++ui_ends; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetUIElement(DWORD id, ITfUIElement** out) override { if (id != ui_id) return E_INVALIDARG; return ui.CopyTo(out); }
+    UNUSED_METHOD(EnumUIElements, IEnumTfUIElements**)
     UNUSED_METHOD(Activate, TfClientId*)
     UNUSED_METHOD(Deactivate)
     UNUSED_METHOD(CreateDocumentMgr, ITfDocumentMgr**)
@@ -177,8 +191,24 @@ public:
     UNUSED_METHOD(ShiftEnd, TfEditCookie, ITfRange*)
 };
 
+class DocumentManager final : public ITfDocumentMgr {
+public:
+    TEST_REFS(DocumentManager);
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_ITfDocumentMgr) return E_NOINTERFACE;
+        *out = static_cast<ITfDocumentMgr*>(this); AddRef(); return S_OK;
+    }
+    UNUSED_METHOD(CreateContext, TfClientId, DWORD, IUnknown*, ITfContext**, TfEditCookie*)
+    UNUSED_METHOD(Push, ITfContext*)
+    UNUSED_METHOD(Pop, DWORD)
+    UNUSED_METHOD(GetTop, ITfContext**)
+    UNUSED_METHOD(GetBase, ITfContext**)
+    UNUSED_METHOD(EnumContexts, IEnumTfContexts**)
+};
 class Context final : public ITfContext, public ITfContextComposition, public ITfInsertAtSelection, public ITfSource {
 public:
+    Context() { document_manager.Attach(new DocumentManager); }
     std::shared_ptr<Document> doc = std::make_shared<Document>();
     bool reject_session = false;
     bool defer_optional_session = false;
@@ -186,6 +216,9 @@ public:
     bool readonly = false;
     bool reject_edit_sink = false;
     ComPtr<ITfTextEditSink> edits;
+    ComPtr<ITfTextLayoutSink> layout;
+    unsigned layout_queries = 0;
+    ComPtr<ITfDocumentMgr> document_manager;
     ComPtr<Composition> composition;
     std::vector<ComPtr<ITfEditSession>> queued;
     TEST_REFS(Context);
@@ -211,6 +244,10 @@ public:
     void host_replace(LONG start, LONG end, std::wstring_view value) { doc->replace(start, end, value); notify(); }
     void pump() { auto work = std::move(queued); queued.clear(); for (const auto& item : work) { item->DoEditSession(1); notify(); } }
     HRESULT STDMETHODCALLTYPE AdviseSink(REFIID iid, IUnknown* sink, DWORD* cookie) override {
+        if (iid == IID_ITfTextLayoutSink) {
+            if (layout) return E_UNEXPECTED;
+            *cookie = 44; return sink->QueryInterface(IID_PPV_ARGS(&layout));
+        }
         if (reject_edit_sink) return E_FAIL;
         if (iid != IID_ITfTextEditSink || edits) return E_INVALIDARG;
         const auto hr = sink->QueryInterface(IID_PPV_ARGS(&edits));
@@ -218,6 +255,7 @@ public:
         return hr;
     }
     HRESULT STDMETHODCALLTYPE UnadviseSink(DWORD cookie) override {
+        if (cookie == 44) { layout.Reset(); return S_OK; }
         if (cookie != 43) return E_INVALIDARG;
         edits.Reset(); return S_OK;
     }
@@ -250,13 +288,15 @@ public:
     UNUSED_METHOD(InWriteSession, TfClientId, BOOL*)
     UNUSED_METHOD(GetStart, TfEditCookie, ITfRange**)
     UNUSED_METHOD(GetEnd, TfEditCookie, ITfRange**)
-    UNUSED_METHOD(GetActiveView, ITfContextView**)
+    HRESULT STDMETHODCALLTYPE GetActiveView(ITfContextView** view) override {
+        ++layout_queries; *view = nullptr; return E_NOTIMPL;
+    }
     UNUSED_METHOD(EnumViews, IEnumTfContextViews**)
     UNUSED_METHOD(GetProperty, REFGUID, ITfProperty**)
     UNUSED_METHOD(GetAppProperty, REFGUID, ITfReadOnlyProperty**)
     UNUSED_METHOD(TrackProperties, const GUID**, ULONG, const GUID**, ULONG, ITfReadOnlyProperty**)
     UNUSED_METHOD(EnumProperties, IEnumTfProperties**)
-    UNUSED_METHOD(GetDocumentMgr, ITfDocumentMgr**)
+    HRESULT STDMETHODCALLTYPE GetDocumentMgr(ITfDocumentMgr** out) override { return document_manager.CopyTo(out); }
     UNUSED_METHOD(CreateRangeBackup, TfEditCookie, ITfRange*, ITfRangeBackup**)
     UNUSED_METHOD(EnumCompositions, IEnumITfCompositionView**)
     UNUSED_METHOD(FindComposition, TfEditCookie, ITfRange*, IEnumITfCompositionView**)

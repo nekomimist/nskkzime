@@ -2,6 +2,7 @@
 #include "nskkzime/engine.h"
 #include "runtime_dictionary.h"
 #include "display_attributes.h"
+#include "candidate_ui.h"
 #include <wrl/client.h>
 #include <atomic>
 #include <bitset>
@@ -168,7 +169,7 @@ struct PendingComposition {
 
 class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink,
                           public ITfCompositionSink, public ITfThreadMgrEventSink,
-                          public ITfTextEditSink, public ITfDisplayAttributeProvider {
+                          public ITfTextEditSink, public ITfTextLayoutSink, public ITfDisplayAttributeProvider {
 public:
     TextService() : engine_(std::make_shared<MemoryDictionary>()) { ++module_objects; }
     ~TextService() { --module_objects; }
@@ -181,6 +182,7 @@ public:
         else if (iid == IID_ITfCompositionSink) *output = static_cast<ITfCompositionSink*>(this);
         else if (iid == IID_ITfThreadMgrEventSink) *output = static_cast<ITfThreadMgrEventSink*>(this);
         else if (iid == IID_ITfTextEditSink) *output = static_cast<ITfTextEditSink*>(this);
+        else if (iid == IID_ITfTextLayoutSink) *output = static_cast<ITfTextLayoutSink*>(this);
         else if (iid == IID_ITfDisplayAttributeProvider) *output = static_cast<ITfDisplayAttributeProvider*>(this);
         else return E_NOINTERFACE;
         AddRef(); return S_OK;
@@ -271,7 +273,10 @@ public:
                     const auto result = next.handle(*key);
                     if (!result.consumed) return S_OK;
                     const auto status = self->apply(target.Get(), cookie, result.committed, next);
-                    if (SUCCEEDED(status)) { self->engine_ = std::move(next); applied = true; }
+                    if (SUCCEEDED(status)) {
+                        self->engine_ = std::move(next); applied = true;
+                        self->refresh_candidates(cookie);
+                    }
                     return status;
                 });
             // A refused synchronous session leaves both the key and engine untouched.
@@ -313,6 +318,29 @@ public:
         catch (...) { finish_composition(); }
         return S_OK;
     }
+    HRESULT STDMETHODCALLTYPE OnLayoutChange(ITfContext* context, TfLayoutCode code, ITfContextView*) override {
+        if (context != composition_context_.Get() || !composition_) return S_OK;
+        if (code == TF_LC_DESTROY) {
+            ++layout_generation_; layout_pending_ = false;
+            candidates_.hide(); return S_OK;
+        }
+        if (layout_pending_) return S_OK;
+        try {
+            const auto generation = layout_generation_;
+            const ComPtr<TextService> self(this);
+            layout_pending_ = true;
+            const auto status = request_edit(context, client_, TF_ES_ASYNC | TF_ES_READ,
+                [self, generation](TfEditCookie cookie) {
+                    if (self->layout_generation_ != generation) return S_OK;
+                    self->layout_pending_ = false;
+                    if (self->composition_ && self->engine_.stage() == Stage::Selecting)
+                        self->candidates_.locate(self->composition_context_.Get(), self->composition_.Get(), cookie);
+                    return S_OK;
+                });
+            if (FAILED(status)) layout_pending_ = false;
+        } catch (...) { layout_pending_ = false; candidates_.hide(); }
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE EnumDisplayAttributeInfo(IEnumTfDisplayAttributeInfo** output) override {
         return enum_display_attributes(output);
     }
@@ -342,12 +370,23 @@ public:
         return S_OK;
     }
 private:
+    void refresh_candidates(TfEditCookie cookie) noexcept {
+        candidates_.update(manager_.Get(), composition_context_.Get(), engine_);
+        candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
+    }
     bool composition_valid(TfEditCookie cookie) const {
         ComPtr<ITfRange> range;
         return composition_ && SUCCEEDED(composition_->GetRange(&range)) && range &&
             range_matches(range.Get(), cookie, expected_text_) && selection_at_end(composition_context_.Get(), cookie, range.Get());
     }
     void detach_composition() noexcept {
+        ++layout_generation_; layout_pending_ = false;
+        candidates_.close();
+        if (composition_context_ && layout_sink_cookie_ != TF_INVALID_COOKIE) {
+            ComPtr<ITfSource> source;
+            if (SUCCEEDED(composition_context_.As(&source))) source->UnadviseSink(layout_sink_cookie_);
+        }
+        layout_sink_cookie_ = TF_INVALID_COOKIE;
         if (composition_context_ && edit_sink_cookie_ != TF_INVALID_COOKIE) {
             ComPtr<ITfSource> source;
             if (SUCCEEDED(composition_context_.As(&source))) source->UnadviseSink(edit_sink_cookie_);
@@ -399,6 +438,9 @@ private:
             if (SUCCEEDED(hr)) hr = source->AdviseSink(IID_ITfTextEditSink, static_cast<ITfTextEditSink*>(this), &edit_sink_cookie_);
             if (FAILED(hr)) return hr;
             composition_context_ = context;
+            // Layout notifications are optional: input still works if the host
+            // cannot supply positions, and the candidate UI then stays hidden.
+            source->AdviseSink(IID_ITfTextLayoutSink, static_cast<ITfTextLayoutSink*>(this), &layout_sink_cookie_);
             hr = compositions->StartComposition(cookie, range.Get(), this, &composition_);
             if (FAILED(hr) || !composition_) { detach_composition(); return FAILED(hr) ? hr : E_FAIL; }
             created = true;
@@ -465,11 +507,15 @@ private:
     TfClientId client_ = TF_CLIENTID_NULL;
     DWORD sink_cookie_ = TF_INVALID_COOKIE;
     DWORD edit_sink_cookie_ = TF_INVALID_COOKIE;
+    DWORD layout_sink_cookie_ = TF_INVALID_COOKIE;
     ComPtr<ITfComposition> composition_;
     ComPtr<ITfContext> composition_context_;
     Engine engine_;
     std::wstring expected_text_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
+    CandidatePresenter candidates_;
+    std::uint64_t layout_generation_ = 0;
+    bool layout_pending_ = false;
     TfGuidAtom input_atom_ = TF_INVALID_GUIDATOM;
     TfGuidAtom converted_atom_ = TF_INVALID_GUIDATOM;
     std::bitset<256> eaten_keys_;

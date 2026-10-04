@@ -19,6 +19,9 @@
 - `tsf_local_activation`: プロセス内COMマニフェストで、実行ファイルと同じ場所のDLLが選ばれること。
 - 通常キーの判定を繰り返しても読みが変わらないことと、矢印・Ctrlショートカットを判定時から処理しないと返すこと。
 - キー判定時の終了要求が延期されても、二重終了や新しいcompositionへの干渉が起きないこと。
+- `candidate_ui`: 送り仮名を含む候補文字列、7件単位のページ、ホスト指定のページ境界、出力バッファの境界と変更通知。
+- TSF候補UIの開始・更新・終了、ホストによる表示抑制、UIを作れない場合の通常変換。
+- レイアウト通知の集約、ビュー破棄／確定後に届く古い通知の無効化、保持されたUIオブジェクトから再表示できないこと。
 
 辞書の指定は [辞書の利用](DICTIONARIES.md) を参照。
 自動テストが変更する環境変数はテストプロセス内だけで、ユーザー設定は変更しない。
@@ -29,7 +32,7 @@
 
 ## 実入力の確認手順
 
-開発用DLLは候補UI・モードアイコンをまだ持たない。
+開発用DLLは候補一覧と注釈を表示する。モードアイコンはまだ持たない。
 以下はPhase 0の作業手順。ビルドスクリプトからは実行しない。
 
 1. Releaseをビルドする。最初は開発用Windows環境で確認する。
@@ -98,7 +101,24 @@ Windows x64、内蔵の5見出し辞書、実際のキーイベントで確認�
 - 読み入力中のShift+Leftで1文字を選択し、次の `a` が選択部分だけを「あ」に置き換える。
 - 文中で `Ka` → Escape と入力すると、その未確定部分だけを取り消して既存本文を保持する。
 
-登録解除・登録版の更新、外部アプリ、実入力での外部辞書は未確認。
+### 2026-10-05の実測結果
+
+ユーザーによる解除・再登録後、登録DLLが `043a22c6f368b467/nskkzime_tsf.dll`
+（コミット `b499279` のビルド）になっていることとSHA256を照合した。
+通常版 `ime_probe.exe` でも同じパスを表示し、IME切替成功後、TSF対応RichEditで
+`Ka` → Left → `a` が「あか」になることを確認した。
+
+候補UI追加後は `ime_probe_local.exe` と内蔵辞書を使い、TSF対応RichEditで以下を確認した。
+
+- `Kanji` → Spaceで本文が「漢字」になり、その下に「漢字 — 文字」「感じ — 感覚」を表示。
+- Spaceで「感じ」、`x` で「漢字」へ戻り、一覧の選択行と候補番号が追従する。
+- Enterで確定して一覧が閉じ、注釈は本文に入らない。
+- `KaKu` で「書く／描く」を表示し、候補にも送り仮名が付く。
+- 選択中に標準EDITへクリックすると一覧が閉じ、移動元の「書く」を保持する。続く `a` は移動先に「あ」と入る。
+- 検証後の「元のIMEに戻す」が成功し、別IMEに戻ったことを確認してアプリを終了。
+
+この候補UIの検証はビルド版DLLで行った。登録版に反映するには、次の登録更新が必要。
+外部アプリ、実入力での外部辞書、候補が8件以上ある場合の実画面、DPI・複数画面の実測は未確認。
 
 ### 既知の制限
 
@@ -115,9 +135,10 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 |---|---|---|---|
 | 通常のかな入力 | 確認済み | 確認済み | 未確認 |
 | 英数切替 | 未確認 | 確認済み | 未確認 |
-| 漢字変換・候補送り・確定 | 確認済み | 送りありで確認済み | 未確認 |
+| 漢字変換・候補送り・確定 | 確認済み | 確認済み | 未確認 |
+| 候補一覧・注釈 | 未確認 | ビルド版で確認済み | 未確認 |
 | 送り仮名 | 確認済み | 確認済み | 未確認 |
-| フォーカス移動・IME切替 | 一部確認済み（上記参照） | 未確認 | 未確認 |
+| フォーカス移動・IME切替 | 一部確認済み（上記参照） | 別入力欄への移動で確認済み | 未確認 |
 | 矢印移動 | 最初の1回が確定のみ | Leftで確認済み | 未確認 |
 | 範囲選択・読み取消 | 未確認 | Shift+Left／Escapeで確認済み | 未確認 |
 | パスワード・読取専用欄 | 未確認 | 未確認 | 未確認 |
@@ -132,3 +153,6 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 TSFキー判定の終了処理は [Microsoft SampleIMEのキー通知](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/IME/cpp/SampleIME/KeyEventSink.cpp) も参照。
 検証アプリの設定は [RichEditの編集スタイル](https://learn.microsoft.com/en-us/windows/win32/controls/em-geteditstyle)、
 [COMマニフェスト](https://learn.microsoft.com/en-us/windows/win32/sbscs/assembly-manifests) を参照。
+候補一覧は [ITfCandidateListUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfcandidatelistuielement)、
+[BeginUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfuielementmgr-beginuielement)、
+[GetTextExt](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-gettextext) を参照。
