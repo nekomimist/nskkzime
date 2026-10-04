@@ -1,4 +1,5 @@
 #include "dictionary_settings.h"
+#include "local_storage.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
@@ -21,6 +22,7 @@ void validate_path(const std::filesystem::path& path) {
 std::string serialize(const DictionarySettings& settings) {
     if (settings.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
+    bytes += settings.learning ? "learning=on\n" : "learning=off\n";
     for (const auto& path : settings.dictionaries) {
         validate_path(path);
         bytes += "dictionary=" + utf8_message(path.native()) + "\n";
@@ -81,7 +83,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     from_utf8(bytes); // Validate before interpreting keys or paths.
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    DictionarySettings settings; bool version = false;
+    DictionarySettings settings; bool version = false, learning = false;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -93,6 +95,9 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         if (key == "version") {
             if (version || value != "1") throw std::invalid_argument("settings version must appear once and equal 1");
             version = true;
+        } else if (key == "learning") {
+            if (learning || (value != "on" && value != "off")) throw std::invalid_argument("learning must appear at most once and equal on or off");
+            learning = true; settings.learning = value == "on";
         } else if (key == "dictionary") {
             auto path = std::filesystem::path(wide_message(value)); validate_path(path);
             settings.dictionaries.push_back(std::move(path));
@@ -112,8 +117,11 @@ DictionarySettings read_dictionary_settings(const std::filesystem::path& path) {
     return parse_dictionary_settings(bytes);
 }
 void save_dictionary_settings(const std::filesystem::path& path, const DictionarySettings& settings) {
+    write_file_atomic(path, serialize(settings));
+}
+void write_file_atomic(const std::filesystem::path& path, std::string_view bytes) {
     validate_path(path);
-    const auto bytes = serialize(settings); // Validate before touching the old file.
+    if (bytes.size() > 64 * 1024 * 1024) throw std::invalid_argument("file exceeds 64 MiB");
     std::filesystem::create_directories(path.parent_path());
     GUID guid{};
     if (FAILED(CoCreateGuid(&guid))) throw std::runtime_error("cannot allocate temporary settings name");
@@ -137,6 +145,7 @@ DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::
     if (dictionary_override) {
         auto path = std::filesystem::path(*dictionary_override); validate_path(path);
         configuration.settings.dictionaries.push_back(std::move(path)); configuration.environment = true;
+        configuration.settings.learning = false; // Development override is isolated unless explicitly enabled.
     } else if (missing_is_demo && !std::filesystem::exists(file)) configuration.demo = true;
     else configuration.settings = read_dictionary_settings(file);
     return configuration;

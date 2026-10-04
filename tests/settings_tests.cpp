@@ -47,6 +47,7 @@ struct Environment {
 };
 }
 int main() {
+    Environment no_learning(L"NSKKZIME_LEARNING", L"0");
     Files files;
     const auto first = files.write(L"優先 = # 辞書.skk", "かな /仮名;優先/カナ/\n");
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
@@ -59,6 +60,15 @@ int main() {
         }},
         {"settings/reject-invalid-version-and-keys", [] {
             for (const auto bytes : {"", "dictionary=C:\\x", "version=2", "version=1\nversion=1", "version=1\nunknown=x", "version=1\ngarbage"})
+                rejects([&] { parse_dictionary_settings(bytes); });
+        }},
+        {"settings/learning-default-toggle-and-invalid-values", [&] {
+            require(parse_dictionary_settings("version=1").learning, "old settings did not enable learning");
+            require(parse_dictionary_settings("version=1\nlearning=on").learning, "learning on ignored");
+            const auto disabled = parse_dictionary_settings("version=1\nlearning=off");
+            const auto path = files.path(L"learning-off.ini"); save_dictionary_settings(path, disabled);
+            require(!read_dictionary_settings(path).learning, "learning off lost on round trip");
+            for (const auto bytes : {"version=1\nlearning=yes", "version=1\nlearning=", "version=1\nlearning=on\nlearning=off"})
                 rejects([&] { parse_dictionary_settings(bytes); });
         }},
         {"settings/reject-invalid-text-and-path", [] {
@@ -106,6 +116,7 @@ int main() {
             const auto broken = files.write(L"broken.ini", "version=invalid");
             const auto config = resolve_dictionary_configuration(broken, first.native(), false);
             require(config.environment && config.settings.dictionaries == std::vector<std::filesystem::path>{first}, "override did not win");
+            require(!config.settings.learning, "development override unexpectedly enabled learning");
         }},
         {"settings/explicit-empty-disables-demo", [&] {
             const auto path = files.path(L"empty.ini"); save_dictionary_settings(path, {});

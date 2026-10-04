@@ -3,6 +3,8 @@
 // for testing Windows' text stores, native key routing, or application UIs.
 #include <windows.h>
 #include <msctf.h>
+#include <initguid.h>
+#include <inputscope.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <memory>
@@ -206,6 +208,45 @@ public:
     UNUSED_METHOD(GetBase, ITfContext**)
     UNUSED_METHOD(EnumContexts, IEnumTfContexts**)
 };
+class InputScopeValue final : public ITfInputScope {
+public:
+    InputScope value = IS_DEFAULT;
+    TEST_REFS(InputScopeValue);
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        *out = nullptr; if (iid != IID_IUnknown && iid != IID_ITfInputScope) return E_NOINTERFACE;
+        *out = static_cast<ITfInputScope*>(this); AddRef(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetInputScopes(InputScope** out, UINT* count) override {
+        *out = static_cast<InputScope*>(CoTaskMemAlloc(sizeof(InputScope))); if (!*out) return E_OUTOFMEMORY;
+        **out = value; *count = 1; return S_OK;
+    }
+    UNUSED_METHOD(GetPhrase, BSTR**, UINT*)
+    UNUSED_METHOD(GetRegularExpression, BSTR*)
+    UNUSED_METHOD(GetSRGS, BSTR*)
+    UNUSED_METHOD(GetXML, BSTR*)
+};
+class ScopeProperty final : public ITfReadOnlyProperty {
+public:
+    InputScope scope = IS_DEFAULT;
+    HRESULT value_status = S_OK;
+    bool require_text_range = false;
+    TEST_REFS(ScopeProperty);
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        *out = nullptr; if (iid != IID_IUnknown && iid != IID_ITfReadOnlyProperty) return E_NOINTERFACE;
+        *out = static_cast<ITfReadOnlyProperty*>(this); AddRef(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetType(GUID* guid) override { *guid = GUID_PROP_INPUTSCOPE; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetValue(TfEditCookie cookie, ITfRange* range, VARIANT* out) override {
+        VariantInit(out);
+        if (value_status != S_OK) return value_status;
+        BOOL empty = TRUE;
+        if (require_text_range && (FAILED(range->IsEmpty(cookie, &empty)) || empty)) return E_FAIL;
+        auto* value = new InputScopeValue; value->value = scope;
+        VariantInit(out); out->vt = VT_UNKNOWN; out->punkVal = value; return S_OK;
+    }
+    UNUSED_METHOD(EnumRanges, TfEditCookie, IEnumTfRanges**, ITfRange*)
+    UNUSED_METHOD(GetContext, ITfContext**)
+};
 class Context final : public ITfContext, public ITfContextComposition, public ITfInsertAtSelection, public ITfSource {
 public:
     Context() { document_manager.Attach(new DocumentManager); }
@@ -214,6 +255,10 @@ public:
     bool defer_optional_session = false;
     bool reject_composition = false;
     bool readonly = false;
+    bool unknown_scope = false;
+    HRESULT scope_value_status = S_OK;
+    bool scope_requires_text_range = false;
+    InputScope input_scope = IS_DEFAULT;
     bool reject_edit_sink = false;
     ComPtr<ITfTextEditSink> edits;
     ComPtr<ITfTextLayoutSink> layout;
@@ -293,7 +338,12 @@ public:
     }
     UNUSED_METHOD(EnumViews, IEnumTfContextViews**)
     UNUSED_METHOD(GetProperty, REFGUID, ITfProperty**)
-    UNUSED_METHOD(GetAppProperty, REFGUID, ITfReadOnlyProperty**)
+    HRESULT STDMETHODCALLTYPE GetAppProperty(REFGUID guid, ITfReadOnlyProperty** out) override {
+        *out = nullptr; if (unknown_scope || guid != GUID_PROP_INPUTSCOPE) return E_NOTIMPL;
+        auto* property = new ScopeProperty; property->scope = input_scope;
+        property->value_status = scope_value_status; property->require_text_range = scope_requires_text_range;
+        *out = property; return S_OK;
+    }
     UNUSED_METHOD(TrackProperties, const GUID**, ULONG, const GUID**, ULONG, ITfReadOnlyProperty**)
     UNUSED_METHOD(EnumProperties, IEnumTfProperties**)
     HRESULT STDMETHODCALLTYPE GetDocumentMgr(ITfDocumentMgr** out) override { return document_manager.CopyTo(out); }

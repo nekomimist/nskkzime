@@ -1,6 +1,7 @@
 #include "module.h"
 #include <wrl/client.h>
 #include <richedit.h>
+#include <inputscope.h>
 #include <string>
 
 using Microsoft::WRL::ComPtr;
@@ -19,6 +20,18 @@ struct Probe {
     bool switched = false;
     HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr;
     HFONT font = nullptr, status_font = nullptr;
+    HRESULT set_input_scopes(InputScope scope) {
+        // This host owns ordinary text fields. Publish their scope explicitly;
+        // RichEdit otherwise returns E_FAIL for GUID_PROP_INPUTSCOPE on some OS versions.
+        using SetScope = HRESULT (WINAPI*)(HWND, InputScope);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+        const auto set_scope = reinterpret_cast<SetScope>(GetProcAddress(GetModuleHandleW(L"msctf.dll"), "SetInputScope"));
+#pragma warning(pop)
+        if (!set_scope) return E_NOTIMPL;
+        const auto first = set_scope(plain, scope), second = set_scope(rich, scope);
+        return FAILED(first) ? first : second;
+    }
     void report(const wchar_t* operation, HRESULT result) {
         wchar_t code[32]{};
         swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(result));
@@ -73,7 +86,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
         probe->status_font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
-        control(window, L"STATIC", L"このウィンドウだけでIMEの入力を検証します。内容は保存しません。", 0, 16, 12, 680, 30, 0, probe->font);
+        control(window, L"STATIC", L"入力本文は保存しません。候補の学習は辞書設定に従います。", 0, 16, 12, 680, 30, 0, probe->font);
         control(window, L"BUTTON", L"nskkzimeを選ぶ", WS_TABSTOP, 16, 48, 190, 36, activate_id, probe->font);
         control(window, L"BUTTON", L"元のIMEに戻す", WS_TABSTOP, 218, 48, 180, 36, restore_id, probe->font);
         control(window, L"BUTTON", L"状態を更新", WS_TABSTOP, 410, 48, 150, 36, refresh_id, probe->font);
@@ -89,6 +102,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         // RichEdit defaults to IMM compatibility input. Explicitly enable its
         // native TSF text store so the two controls exercise different hosts.
         SendMessageW(probe->rich, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
+        if (FAILED(probe->set_input_scopes(IS_TEXT))) return -1;
         probe->last_edit = probe->plain;
         probe->report(L"起動", S_OK);
         return 0;
@@ -113,6 +127,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         DestroyWindow(window); return 0;
     case WM_DESTROY:
         probe->restore();
+        probe->set_input_scopes(IS_DEFAULT); // Remove associations before the child HWNDs are destroyed.
         if (probe->font) DeleteObject(probe->font);
         if (probe->status_font) DeleteObject(probe->status_font);
         PostQuitMessage(0); return 0;

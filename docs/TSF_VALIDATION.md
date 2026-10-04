@@ -24,6 +24,8 @@
 - レイアウト通知の集約、ビュー破棄／確定後に届く古い通知の無効化、保持されたUIオブジェクトから再表示できないこと。
 - Shiftを離す遅れ（`KAnji`／`KAKU`）と、abbrevの英字見出しからの辞書検索・候補表示・確定。
 - 空のabbrevのcomposition、英字の大小文字維持、削除・取消・カーソル移動・別入力欄への移動。
+- `tsf_learning`: 編集成功時だけの非同期配送、失敗後の再試行、password／private／PIN・属性取得失敗・混在範囲の学習除外。
+- `learning`: ユーザー辞書の保存と復旧、別プロセスからの同時更新、同じイベントの再送、保存失敗時の保全、現在の選択候補の固定。
 
 辞書の指定は [辞書の利用](DICTIONARIES.md) を参照。
 自動テストが変更する環境変数はテストプロセス内だけで、ユーザー設定は変更しない。
@@ -62,7 +64,8 @@ $env:NSKKZIME_DICTIONARY = (Resolve-Path .\SKK-JISYO.utf8.L).Path
 CLSIDが既に登録済みなら登録を拒否する。登録先のDLLを変更する前に、元のDLLで解除する。
 アンインストーラー・署名・更新処理はPhase 3で実装する。
 
-登録スクリプトはRelease DLLを `out/installed/<SHA256の先頭16文字>/` へコピーしてから登録する。
+登録スクリプトはRelease DLLと辞書補助プロセスを同じ
+`out/installed/<両ファイルのハッシュから作ったSHA256の先頭16文字>/` へコピーしてから登録する。
 登録中もビルド出力を更新できるが、実アプリは登録時の版を使い続ける。
 更新時は使用中アプリを閉じ、解除→再登録→再起動の順に行う。
 スクリプトは自分で配置した範囲以外のDLLの登録を解除しない。
@@ -70,7 +73,8 @@ CLSIDが既に登録済みなら登録を拒否する。登録先のDLLを変更
 
 `ime_probe` は標準EDITと、`SES_USECTF` を有効にしたRichEditを備える。
 RichEditは既定でTSFが無効なので、明示設定しない場合は互換入力経路の検証になる。
-入力内容は保存せず、IME切替前のプロファイルを記録し、復帰ボタンと終了時に戻す。
+両方の欄に `SetInputScope(IS_TEXT)` を設定する。入力本文は保存しないが、確定候補はIMEの学習設定に従う。
+IME切替前のプロファイルを記録し、復帰ボタンと終了時に戻す。
 画面下部に読み込んだDLLのパスと、そのDLLの辞書読み込み結果を表示する。
 辞書の永続設定・診断には [設定CLI](DICTIONARIES.md) を使う。
 まず `Kanji`→Space→Enter、`KaKu`→Enter、変換取消を両方で確認し、続いて
@@ -83,6 +87,8 @@ COMマニフェストで、この検証プロセスだけ実行ファイルと�
 他のアプリは引き続き `out/installed/...` の登録版を使う。
 プロファイルの登録を省略する機能ではなく、登録・更新の検証には通常の `ime_probe.exe` を使う。
 再ビルドの前にはビルド版の検証アプリを閉じる。
+補助プロセスもビルド先を使用するため、アプリを閉じてから約10秒のアイドル終了を待つ。
+補助プロセスや学習ファイルを強制的に削除する必要はない。
 
 ### 2026-10-04の実測結果
 
@@ -141,6 +147,17 @@ Windows x64、内蔵の5見出し辞書、実際のキーイベントで確認�
 自動テストはユーザー設定に依存しないfixtureを使い、保存・置換失敗時の保全、
 複数辞書の優先順と部分失敗、CLI、設定不正時のTSFかな入力を検証する。
 
+同日の候補学習追加後、Releaseのビルド版DLLでRichEditの「掛く」を第二候補から確定し、
+診断で保存済み世代1・未保存0件を確認した。アプリの終了後、Debugのビルド版DLLを
+新しく起動し、標準EDITの `KaKu` で「掛く」が第一候補、「書く」が第二候補になることを確認した。
+これは保存したユーザー辞書を別プロセスから読み直した結果。
+標準EDITで「書く」を選び直して確定し、保存済み世代2・未保存0件も確認した。
+検証後は「書く」が第一候補の順位に戻り、元のIMEへ復帰してアプリを終了した。
+
+入力属性を明示しない元のRichEditでは `GetValue(GUID_PROP_INPUTSCOPE)` がE_FAILとなり、
+学習を見送ることも実測した。検証アプリでは `SetInputScope(IS_TEXT)` を追加して解消したが、
+属性を提供しない外部アプリでの学習には制限が残る。通常の変換は継続する。
+
 ### 既知の制限
 
 標準EDITの互換入力経路では `Ka` → Left が確定だけになり、直後の `a` は「かあ」になる。
@@ -157,6 +174,7 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 | 通常のかな入力 | 確認済み | 確認済み | 未確認 |
 | 英数切替 | 未確認 | 確認済み | 未確認 |
 | 漢字変換・候補送り・確定 | 確認済み | 確認済み | 未確認 |
+| 候補学習・保存順位の利用 | 再起動後の利用と保存を確認済み | 学習保存を確認済み | 属性の提供状況を含め未確認 |
 | 候補一覧・注釈 | 未確認 | ビルド版で確認済み | 未確認 |
 | 送り仮名 | 確認済み | 確認済み | 未確認 |
 | フォーカス移動・IME切替 | 一部確認済み（上記参照） | 別入力欄への移動で確認済み | 未確認 |
@@ -177,3 +195,5 @@ TSFキー判定の終了処理は [Microsoft SampleIMEのキー通知](https://g
 候補一覧は [ITfCandidateListUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfcandidatelistuielement)、
 [BeginUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfuielementmgr-beginuielement)、
 [GetTextExt](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-gettextext) を参照。
+学習の入力属性判定は [GetValue](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfreadonlyproperty-getvalue)、
+検証ホストの属性設定は [SetInputScope](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-setinputscope) を参照。

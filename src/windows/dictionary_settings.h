@@ -5,6 +5,7 @@
 namespace nskkzime::windows {
 struct DictionarySettings {
     std::vector<std::filesystem::path> dictionaries; // Highest priority first.
+    bool learning = true;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;

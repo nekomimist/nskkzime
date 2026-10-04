@@ -383,6 +383,7 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
 }
 }
 int wmain(int argc, wchar_t** argv) {
+    if (!SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0")) return 2;
     if (argc < 2 || argc > 4) return 2;
     const auto option = argc == 4 ? std::wstring_view(argv[3]) : std::wstring_view{};
     if (!option.empty() && option != L"--expect-empty" && option != L"--config" && option != L"--config-empty") return 2;

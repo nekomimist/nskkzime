@@ -1,6 +1,9 @@
 #include "module.h"
 #include "nskkzime/engine.h"
 #include "runtime_dictionary.h"
+#include "learning_client.h"
+#include <initguid.h>
+#include <inputscope.h>
 #include "display_attributes.h"
 #include "candidate_ui.h"
 #include <wrl/client.h>
@@ -111,6 +114,38 @@ bool editable(ITfContext* context) {
     return true;
 }
 
+bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCookie cookie, std::wstring& reason) {
+    // Inspect the entire conversion before modifying it. A caret at its end can
+    // be outside the scope. Mixed/absent/failed values suppress persistence.
+    reason = L"変換範囲を取得できません";
+    ComPtr<ITfRange> range;
+    if (!composition || FAILED(composition->GetRange(&range)) || !range) return false;
+    ComPtr<ITfReadOnlyProperty> property;
+    const auto property_hr = context->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
+    reason = L"入力属性を取得できない入力欄";
+    if (FAILED(property_hr) || !property) return false;
+    VARIANT value; VariantInit(&value);
+    const auto hr = property->GetValue(cookie, range.Get(), &value);
+    reason = L"入力属性が不明または範囲内で異なる入力欄";
+    bool allowed = false;
+    if (hr == S_OK && value.vt == VT_UNKNOWN && value.punkVal) {
+        ComPtr<ITfInputScope> scope;
+        if (SUCCEEDED(value.punkVal->QueryInterface(IID_PPV_ARGS(&scope)))) {
+            InputScope* values = nullptr; UINT count = 0;
+            if (scope->GetInputScopes(&values, &count) == S_OK && count > 0 && values) {
+                allowed = true;
+                for (UINT i = 0; i < count; ++i) {
+                    if (values[i] == IS_PASSWORD || values[i] == IS_PRIVATE || values[i] == IS_NUMERIC_PASSWORD ||
+                        values[i] == IS_NUMERIC_PIN || values[i] == IS_ALPHANUMERIC_PIN || values[i] == IS_ALPHANUMERIC_PIN_SET)
+                        { allowed = false; reason = L"パスワードまたはプライベート入力欄"; }
+                }
+            }
+            CoTaskMemFree(values);
+        }
+    }
+    VariantClear(&value); return allowed;
+}
+
 HRESULT select_end(ITfContext* context, TfEditCookie cookie, ITfRange* range) {
     ComPtr<ITfRange> caret;
     auto hr = range->Clone(&caret);
@@ -195,7 +230,7 @@ public:
         if (manager_) return E_UNEXPECTED;
         if (!dictionary_loaded_) {
             // Display-attribute-only COM instances never load a dictionary.
-            try { engine_ = Engine(runtime_dictionary()); dictionary_loaded_ = true; }
+            try { dictionary_ = runtime_dictionary(); engine_ = Engine(dictionary_); dictionary_loaded_ = true; }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
             catch (...) { return E_FAIL; }
         }
@@ -272,9 +307,15 @@ public:
                     auto next = self->engine_;
                     const auto result = next.handle(*key);
                     if (!result.consumed) return S_OK;
+                    std::wstring learning_reason;
+                    const bool may_learn = result.learning && learning_allowed(target.Get(), self->composition_.Get(), cookie, learning_reason);
                     const auto status = self->apply(target.Get(), cookie, result.committed, next);
                     if (SUCCEEDED(status)) {
                         self->engine_ = std::move(next); applied = true;
+                        if (may_learn) publish_learning(self->dictionary_, *result.learning);
+                        else if (result.learning) {
+                            if (const auto* learning = dynamic_cast<const LearningDictionary*>(self->dictionary_.get())) learning->skipped(std::move(learning_reason));
+                        }
                         self->refresh_candidates(cookie);
                     }
                     return status;
@@ -514,6 +555,7 @@ private:
     ComPtr<ITfComposition> composition_;
     ComPtr<ITfContext> composition_context_;
     Engine engine_;
+    std::shared_ptr<const Dictionary> dictionary_;
     std::wstring expected_text_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
