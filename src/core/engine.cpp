@@ -6,7 +6,7 @@ namespace nskkzime {
 void MemoryDictionary::add(LookupKey key, std::vector<Candidate> candidates) {
     entries_.insert_or_assign(std::move(key), std::move(candidates));
 }
-std::vector<Candidate> MemoryDictionary::lookup(const LookupKey& key) const {
+std::vector<Candidate> MemoryDictionary::lookup(const LookupKey& key, std::u32string_view) const {
     const auto it = entries_.find(key);
     return it == entries_.end() ? std::vector<Candidate>{} : it->second;
 }
@@ -58,7 +58,7 @@ void Engine::append(std::u32string text, Result& result) {
 void Engine::convert(Result& result) {
     append(romaji_.flush(), result);
     if (reading_.empty()) return;
-    candidates_ = dictionary_->lookup({reading_, okuri_letter_});
+    candidates_ = dictionary_->lookup({reading_, okuri_letter_}, okuri_);
     candidate_index_ = 0;
     if (candidates_.empty()) result.dictionary_miss = true;
     else stage_ = Stage::Selecting;

@@ -38,7 +38,7 @@ void type(ITfKeyEventSink* sink, ITfContext* context, std::string_view text) {
         check(key(sink, context, LOBYTE(translated), (HIBYTE(translated) & 1) != 0), "character not consumed");
     }
 }
-void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool file_dictionary) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
     host->reject_sink = true;
@@ -103,13 +103,37 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     check(next->doc->text == L"書くあ", "terminated composition reused old state");
     next->readonly = true;
     check(!key(keys, next.Get(), 'A'), "read-only context consumed input");
+    if (file_dictionary) {
+        ComPtr<test_host::Context> dictionary_context; dictionary_context.Attach(new test_host::Context);
+        type(keys, dictionary_context.Get(), "Jisho");
+        key(keys, dictionary_context.Get(), VK_SPACE);
+        key(keys, dictionary_context.Get(), VK_RETURN);
+        check(dictionary_context->doc->text == L"辞書", "TSF did not use the configured dictionary file");
+    }
     succeeded(service->Deactivate(), "deactivation failed");
     context->pump(); next->pump();
     check(!host->keys && !host->events, "adapter test leaked a sink");
 }
+void missing_dictionary_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+    KeyboardState keyboard;
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed");
+    ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
+    type(keys, context.Get(), "Kanji");
+    key(keys, context.Get(), VK_SPACE);
+    check(context->doc->text == L"▽かんじ", "missing dictionary used demo candidates or lost the reading");
+    key(keys, context.Get(), VK_RETURN);
+    type(keys, context.Get(), "desu");
+    check(context->doc->text == L"かんじです", "kana input failed without a dictionary");
+    succeeded(service->Deactivate(), "deactivation failed");
+    context->pump();
+    check(!host->keys && !host->events, "missing-dictionary test leaked a sink");
+}
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) return 2;
+    if (argc < 2 || argc > 4 || (argc == 4 && std::wstring_view(argv[3]) != L"--expect-empty")) return 2;
+    // Test process only. Do not inherit a user's configured dictionary into fixtures.
+    if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", argc >= 3 ? argv[2] : nullptr)) return 2;
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
     const auto library = LoadLibraryW(argv[1]);
@@ -154,13 +178,15 @@ int wmain(int argc, wchar_t** argv) {
             TfClientId client = TF_CLIENTID_NULL;
             succeeded(manager->Activate(&client), "TSF manager activate failed");
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
-            adapter_tests(service.Get(), keys.Get());
+            if (argc == 4) missing_dictionary_tests(service.Get(), keys.Get());
+            else adapter_tests(service.Get(), keys.Get(), argc == 3);
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
-        std::cout << "PASS COM exports/identity/unload, real TSF manager startup, test-host activation/composition/cancel/failure/focus isolation\n";
+        std::cout << "PASS COM exports/identity/unload, real TSF manager startup, "
+                  << (argc == 4 ? "kana fallback without dictionary" : "test-host activation/composition/cancel/failure/focus isolation") << '\n';
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; result = 1; }
     // Unload only after the tested COM objects and sinks have been released.
-    FreeLibrary(library);
+    if (!result) FreeLibrary(library); // A failed assertion may leave a subscription alive until process exit.
     CoUninitialize();
     return result;
 }

@@ -1,15 +1,22 @@
 #include "nskkzime/engine.h"
+#include "nskkzime/dictionary.h"
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace {
-std::string quoted(std::u32string_view text) {
+std::string json_string(std::u32string_view text) {
     std::string result = "\"";
     for (char ch : nskkzime::utf8(text)) {
-        if (ch == '"' || ch == '\\') result += '\\';
-        result += ch;
+        if (ch == '"' || ch == '\\') { result += '\\'; result += ch; }
+        else if (static_cast<unsigned char>(ch) < 0x20) {
+            constexpr char hex[] = "0123456789abcdef";
+            result += "\\u00"; result += hex[(ch >> 4) & 15]; result += hex[ch & 15];
+        } else result += ch;
     }
     return result + '"';
 }
@@ -23,16 +30,54 @@ nskkzime::Key token(std::string_view name) {
     throw std::invalid_argument("unknown key token: " + std::string(name));
 }
 }
-int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::cerr << "usage: skk_trace \"Kanji<Space><Space><Enter>\"\n"
-                  << "demo dictionary only; tokens: Space Enter BS C-g Esc C-j\n";
-        return 2;
-    }
+int run(const std::vector<std::string>& arguments) {
     try {
-        nskkzime::Engine engine(nskkzime::demo_dictionary());
+        std::vector<std::filesystem::path> paths;
+        nskkzime::DictionaryEncoding encoding = nskkzime::DictionaryEncoding::Auto;
+        std::string sequence;
+        bool has_sequence = false;
+        bool positional = false;
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            const auto& argument = arguments[i];
+            if (!positional && argument == "--") { positional = true; continue; }
+            if (!positional && (argument == "--dict" || argument == "--encoding")) {
+                if (++i == arguments.size()) throw std::invalid_argument("missing value for " + argument);
+                if (argument == "--dict") {
+                    paths.emplace_back(std::u8string(arguments[i].begin(), arguments[i].end()));
+                }
+                else if (arguments[i] == "auto") encoding = nskkzime::DictionaryEncoding::Auto;
+                else if (arguments[i] == "utf-8") encoding = nskkzime::DictionaryEncoding::Utf8;
+                else if (arguments[i] == "euc-jp") encoding = nskkzime::DictionaryEncoding::EucJp;
+                else throw std::invalid_argument("encoding must be auto, utf-8, or euc-jp");
+            } else {
+                if (!positional && argument.starts_with("--")) throw std::invalid_argument("unknown option: " + argument);
+                if (has_sequence) throw std::invalid_argument("expected one key sequence");
+                sequence = argument; has_sequence = true;
+            }
+        }
+        if (!has_sequence) throw std::invalid_argument("usage: skk_trace [--dict PATH]... [--encoding auto|utf-8|euc-jp] [--] \"Kanji<Space><Enter>\"");
+        std::shared_ptr<const nskkzime::Dictionary> dictionary;
+        if (paths.empty()) dictionary = nskkzime::demo_dictionary();
+        else {
+            std::vector<std::shared_ptr<const nskkzime::Dictionary>> dictionaries;
+            for (const auto& path : paths) {
+                const auto encoded_path = path.u8string();
+                std::cerr << "Loading ";
+                std::cerr.write(reinterpret_cast<const char*>(encoded_path.data()), static_cast<std::streamsize>(encoded_path.size()));
+                std::cerr << '\n';
+                auto loaded = nskkzime::SkkDictionary::load(path, encoding);
+                const auto& report = loaded->report();
+                std::cerr << nskkzime::encoding_name(report.encoding) << ": " << report.entries << " entries, "
+                          << report.candidates << " candidates, " << report.malformed_lines << " malformed lines, "
+                          << report.unsupported_candidates << " unsupported candidates\n";
+                for (const auto& diagnostic : report.diagnostics) std::cerr << diagnostic << '\n';
+                dictionaries.push_back(std::move(loaded));
+            }
+            dictionary = std::make_shared<nskkzime::DictionarySet>(std::move(dictionaries));
+        }
+        nskkzime::Engine engine(std::move(dictionary));
         std::u32string document;
-        const std::string_view keys(argv[1]);
+        const std::string_view keys(sequence);
         for (std::size_t i = 0; i < keys.size(); ++i) {
             nskkzime::Key key;
             if (keys[i] == '<') {
@@ -54,13 +99,37 @@ int main(int argc, char** argv) {
             }
             std::cout << "{\"revision\":" << engine.revision()
                       << ",\"consumed\":" << (result.consumed ? "true" : "false")
-                      << ",\"committed\":" << quoted(result.committed)
-                      << ",\"preedit\":" << quoted(engine.preedit())
-                      << ",\"document\":" << quoted(document)
+                      << ",\"committed\":" << json_string(result.committed)
+                      << ",\"preedit\":" << json_string(engine.preedit())
+                      << ",\"document\":" << json_string(document)
                       << ",\"dictionary_miss\":" << (result.dictionary_miss ? "true" : "false")
-                      << ",\"candidates_exhausted\":" << (result.candidates_exhausted ? "true" : "false") << "}\n";
+                      << ",\"candidates_exhausted\":" << (result.candidates_exhausted ? "true" : "false")
+                      << ",\"candidate_index\":" << engine.candidate_index() << ",\"candidates\":[";
+            bool first = true;
+            for (const auto& item : engine.candidates()) {
+                if (!first) std::cout << ',';
+                first = false;
+                std::cout << "{\"text\":" << json_string(item.text) << ",\"annotation\":" << json_string(item.annotation) << '}';
+            }
+            std::cout << "]}\n";
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 2;
     }
+    return 0;
 }
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+    std::vector<std::string> arguments;
+    for (int i = 1; i < argc; ++i) {
+        const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[i], -1, nullptr, 0, nullptr, nullptr);
+        if (!length) return 2;
+        std::string value(static_cast<std::size_t>(length), '\0');
+        if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[i], -1, value.data(), length, nullptr, nullptr)) return 2;
+        value.pop_back(); arguments.push_back(std::move(value));
+    }
+    return run(arguments);
+}
+#else
+int main(int argc, char** argv) { return run(std::vector<std::string>(argv + 1, argv + argc)); }
+#endif

@@ -28,12 +28,12 @@ struct LookupKey {
 class Dictionary {
 public:
     virtual ~Dictionary() = default;
-    virtual std::vector<Candidate> lookup(const LookupKey& key) const = 0;
+    virtual std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const = 0;
 };
 class MemoryDictionary final : public Dictionary {
 public:
     void add(LookupKey key, std::vector<Candidate> candidates);
-    std::vector<Candidate> lookup(const LookupKey& key) const override;
+    std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const override;
 private:
     std::map<LookupKey, std::vector<Candidate>> entries_;
 };

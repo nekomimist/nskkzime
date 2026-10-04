@@ -18,5 +18,7 @@ private:
 
 std::u32string katakana(std::u32string_view text);
 std::string utf8(std::u32string_view text);
+// Strict decoder: malformed, overlong, surrogate and out-of-range sequences throw.
+std::u32string from_utf8(std::string_view text);
 std::u32string ascii(std::string_view text);
 } // namespace nskkzime

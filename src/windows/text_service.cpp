@@ -1,5 +1,6 @@
 #include "module.h"
 #include "nskkzime/engine.h"
+#include "runtime_dictionary.h"
 #include <wrl/client.h>
 #include <atomic>
 #include <bitset>
@@ -121,7 +122,7 @@ HRESULT select_end(ITfContext* context, TfEditCookie cookie, ITfRange* range) {
 class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink,
                           public ITfCompositionSink, public ITfThreadMgrEventSink {
 public:
-    TextService() : engine_(demo_dictionary()) { ++module_objects; }
+    TextService() : engine_(runtime_dictionary()) { ++module_objects; }
     ~TextService() { --module_objects; }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** output) override {
         if (!output) return E_POINTER;
