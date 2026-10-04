@@ -52,11 +52,11 @@ int wmain(int argc, wchar_t** argv) {
         check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activation failed");
         ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
         context->scope_requires_text_range = true; // Inspect the whole conversion, not a caret outside it.
-        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_SPACE);
+        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
         context->doc->reject_write = true;
-        check(!key(keys.Get(), context.Get(), VK_RETURN), "failed edit consumed key");
+        check(!key(keys.Get(), context.Get(), '2') && context->doc->text == L"漢字", "failed numeric edit consumed key or changed text");
         context->doc->reject_write = false;
-        check(key(keys.Get(), context.Get(), VK_RETURN), "retry failed");
+        check(key(keys.Get(), context.Get(), '2') && context->doc->text == L"感じ", "numeric retry failed");
         until([&] { return read_user_dictionary(file).revision() == 1; });
         check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"感じ", "wrong confirmed candidate saved");
         // Each successful commit below must preserve the one permitted event.
@@ -84,6 +84,15 @@ int wmain(int argc, wchar_t** argv) {
         check(host->ui.As(&list) == E_NOINTERFACE, "registration exposed draft as candidates");
         type(keys.Get(), context.Get(), "Nihon"); key(keys.Get(), context.Get(), VK_SPACE);
         check(context->doc->text == L"みち", "registration draft leaked into document");
+        context->doc->reject_write = true;
+        check(!key(keys.Get(), context.Get(), '1'), "failed inner selection consumed shortcut");
+        context->doc->reject_write = false;
+        check(key(keys.Get(), context.Get(), '1') && host->ui && context->doc->text == L"みち", "inner selection registered or changed host text");
+        BSTR description = nullptr; host->ui->GetDescription(&description);
+        const bool in_draft = description && std::wstring_view(description).find(L"日本") != std::wstring_view::npos &&
+            std::wstring_view(description).find(L"▼") == std::wstring_view::npos;
+        SysFreeString(description); check(in_draft, "inner selection did not settle in draft");
+        Sleep(300); check(read_user_dictionary(file).revision() == 1, "inner selection learned before registration");
         context->doc->reject_write = true;
         check(!key(keys.Get(), context.Get(), VK_RETURN), "failed registration consumed Enter");
         context->doc->reject_write = false;

@@ -313,7 +313,7 @@ public:
                         self->end_composition(cookie);
                     }
                     auto next = self->engine_;
-                    const auto result = next.handle(*key);
+                    const auto result = next.handle(self->candidates_.selection_key(*key, next));
                     if (!result.consumed) return S_OK;
                     std::wstring learning_reason;
                     const bool starting_registration = next.registration_depth() > self->engine_.registration_depth();

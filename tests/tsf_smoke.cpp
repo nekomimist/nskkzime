@@ -370,6 +370,18 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     check(key(keys, context.Get(), VK_NEXT) && key(keys, context.Get(), VK_NEXT), "page down or edge not consumed");
     list->GetSelection(&selected);
     check(selected == 1 && context->doc->text == L"感じ" && !context->composition->ended, "page edge committed or exhausted");
+    UINT custom_pages[]{0, 1}; succeeded(list->SetPageIndex(custom_pages, 2), "custom selection pages rejected");
+    check(key(keys, context.Get(), '2') && context->doc->text == L"感じ" && !context->composition->ended,
+        "missing shortcut row committed or inserted number");
+    for (int i = 0; i < 3; ++i) {
+        BOOL eaten = FALSE; succeeded(keys->OnTestKeyDown(context.Get(), '1', 0, &eaten), "numeric probe failed");
+        check(eaten && context->doc->text == L"感じ" && !context->composition->ended, "numeric probe changed composition");
+    }
+    context->doc->reject_write = true;
+    check(!key(keys, context.Get(), '1'), "failed numeric edit consumed shortcut");
+    list->GetSelection(&selected); check(selected == 1 && context->doc->text == L"感じ" && !context->composition->ended,
+        "failed numeric edit changed selection");
+    context->doc->reject_write = false;
     check(context->layout != nullptr, "composition did not subscribe to layout changes");
     auto layout = context->layout;
     // Destruction invalidates older layout requests; later changes may resume.
@@ -383,7 +395,7 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     check(context->layout_queries == queries + 1, "layout queries did not resume for a new view");
     // Queue a layout update and end before it runs. It must not resurrect UI.
     layout->OnLayoutChange(context.Get(), TF_LC_CHANGE, nullptr);
-    key(keys, context.Get(), VK_RETURN); context->pump();
+    check(key(keys, context.Get(), '1') && context->doc->text == L"感じ", "numeric selection did not use host page"); context->pump();
     check(!host->ui && host->ui_ends == 1 && !context->layout, "commit retained UI or layout sink");
     list->Show(TRUE); list->IsShown(&shown); check(!shown, "retained UI reopened after commit");
     type(keys, context.Get(), "KaKu");
@@ -399,6 +411,18 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     ComPtr<test_host::Context> modified; modified.Attach(new test_host::Context);
     type(keys, modified.Get(), "Kanji"); key(keys, modified.Get(), VK_SPACE);
     check(!key(keys, modified.Get(), VK_NEXT, true) && modified->composition->ended && modified->doc->text == L"漢字", "shift-page did not preserve application navigation");
+    host->reject_ui = false;
+    ComPtr<test_host::Context> replaced; replaced.Attach(new test_host::Context);
+    type(keys, replaced.Get(), "Kanji"); key(keys, replaced.Get(), VK_SPACE);
+    replaced->doc->replace(0, 2, L"置換済み"); // Host edit notification has not arrived yet.
+    check(key(keys, replaced.Get(), '2') && replaced->doc->text == L"置換済み2" && !host->ui,
+        "numeric shortcut reused a stale composition");
+    ComPtr<test_host::Context> punctuation; punctuation.Attach(new test_host::Context);
+    type(keys, punctuation.Get(), "Kanji"); key(keys, punctuation.Get(), VK_SPACE); type(keys, punctuation.Get(), "!");
+    check(punctuation->doc->text == L"漢字!" && !host->ui, "shifted punctuation selected a numeric row");
+    type(keys, punctuation.Get(), "Kanji"); key(keys, punctuation.Get(), VK_SPACE);
+    check(!key(keys, punctuation.Get(), '1', false, true) && punctuation->composition->ended && !host->ui,
+        "Ctrl-number shortcut was consumed");
     succeeded(service->Deactivate(), "modified page deactivation failed");
 }
 }

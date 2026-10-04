@@ -100,6 +100,10 @@ std::pair<UINT, UINT> CandidateList::visible_rows() const {
     if (selection_ - first >= page_size) first = selection_ - page_size + 1;
     return {first, first + std::min(page_size, end - first)};
 }
+std::size_t CandidateList::shortcut_index(std::size_t slot) const noexcept {
+    const auto [first, end] = visible_rows();
+    return !closed_ && slot < end - first ? first + slot : std::numeric_limits<std::size_t>::max();
+}
 HRESULT CandidateList::GetCurrentPage(UINT* value) { if (!value) return E_POINTER; *value = current_page(); return S_OK; }
 void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     if (closed_) return;
@@ -113,6 +117,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
         const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
         const auto draft = wide(engine.registration_text());
         const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
+            engine.input_stage() == Stage::Selecting ? L"1〜7: 欄へ追加  PgDn/PgUp: 7件  Enter: 登録  Esc: 戻る" :
             L"語幹を入力  Enter: 登録  C-j: かな  Esc: 取消";
         if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
         heading_ = heading; draft_ = draft; hint_ = hint;
@@ -179,7 +184,7 @@ void CandidateList::render() noexcept {
         int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
         if (registration_) width = std::max(width, MulDiv(580, dpi_, 96));
         for (UINT i = first; i < visible_end; ++i) {
-            const auto row = std::to_wstring(i + 1) + L"  " + label(rows_[i].text) + L"  " + label(rows_[i].annotation);
+            const auto row = std::to_wstring(i - first + 1) + L"  " + label(rows_[i].text) + L"  — " + label(rows_[i].annotation);
             SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
             width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
         }
@@ -204,7 +209,7 @@ void CandidateList::render() noexcept {
 }
 std::wstring CandidateList::footer() const {
     return registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
-        L"   Space/x: 次/前  PgDn/PgUp: 7件  Enter: 確定";
+        L"   1〜7: 選択  Space/x: 次/前  PgDn/PgUp: 7件  Enter: 確定";
 }
 void CandidateList::paint(HDC dc) const {
     RECT area{}; GetClientRect(window_, &area);
@@ -234,7 +239,7 @@ void CandidateList::paint(HDC dc) const {
             if (i == selection_) FillRect(dc, &row, GetSysColorBrush(COLOR_HIGHLIGHT));
             SetTextColor(dc, GetSysColor(i == selection_ ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
             row.left += padding_; row.right -= padding_;
-            const auto text = std::to_wstring(i + 1) + L"  " + label(rows_[i].text) +
+            const auto text = std::to_wstring(i - first + 1) + L"  " + label(rows_[i].text) +
                 (rows_[i].annotation.empty() ? L"" : L"  — " + label(rows_[i].annotation));
             DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &row, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
@@ -304,6 +309,12 @@ void CandidatePresenter::locate(ITfContext* context, ITfComposition* composition
     if (list_.Get() == list.Get()) list->locate(owner, &rect);
 }
 void CandidatePresenter::hide() noexcept { if (list_) list_->locate(nullptr, nullptr); }
+Key CandidatePresenter::selection_key(Key key, const Engine& engine) const noexcept {
+    if (list_ && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character &&
+        key.character >= '1' && key.character <= '7')
+        return {KeyCode::SelectCandidate, 0, list_->shortcut_index(static_cast<std::size_t>(key.character - '1'))};
+    return key;
+}
 void CandidatePresenter::close() noexcept {
     // Invalidate before notifying the host; retained elements cannot reopen UI.
     auto list = std::move(list_); auto manager = std::move(manager_);

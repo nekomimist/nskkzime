@@ -1,6 +1,7 @@
 #include "nskkzime/engine.h"
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -72,6 +73,64 @@ int main() {
             }
             s.key({KeyCode::PageDown}); const auto selected = s.key({KeyCode::Enter});
             equal(s.committed, U"候補7"); require(selected.learning && selected.learning->candidate.text == U"候補7", "page selected wrong learning event");
+        }},
+        {"conversion/numeric-selection-on-every-page-with-okuri", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>(); std::vector<Candidate> candidates;
+            for (int i = 0; i < 16; ++i) candidates.push_back({std::to_string(i), U"候補" + ascii(std::to_string(i)), U"注釈"});
+            dictionary->add({U"か", 'k'}, candidates);
+            for (std::size_t index = 0; index < candidates.size(); ++index) {
+                Session s{Engine(dictionary)}; s.type("KaKu");
+                for (std::size_t page = 0; page < index / candidate_page_size; ++page) s.key({KeyCode::PageDown});
+                const Key select{KeyCode::Character, static_cast<char>('1' + index % candidate_page_size)};
+                const auto revision = s.engine.revision();
+                require(s.engine.would_handle(select) && s.engine.revision() == revision, "numeric probe changed state");
+                const auto result = s.key(select);
+                equal(s.committed, candidates[index].text + U"く");
+                require(result.consumed && result.learning && result.learning->candidate.id == candidates[index].id &&
+                    result.learning->okuri == U"く" && s.engine.stage() == Stage::Direct, "numeric selection learned wrong candidate");
+            }
+        }},
+        {"conversion/missing-shortcut-and-host-index", [] {
+            Session s; s.type("Kanji"); s.key({KeyCode::Space});
+            for (const auto select : {Key{KeyCode::Character, '7'}, Key{KeyCode::SelectCandidate, 0, 2},
+                                      Key{KeyCode::SelectCandidate, 0, std::numeric_limits<std::size_t>::max()}}) {
+                const auto result = s.key(select);
+                require(result.consumed && !result.learning && !result.registration && result.committed.empty(), "missing row confirmed or leaked key");
+                equal(s.engine.preedit(), U"▼漢字");
+            }
+            const auto result = s.key({KeyCode::SelectCandidate, 0, 1});
+            equal(result.committed, U"感じ"); require(result.learning && result.learning->candidate.id == "kanji-2", "host index ignored");
+        }},
+        {"conversion/numbers-outside-selection-and-after-confirmation", [] {
+            for (const auto input : {"", "k", "Kanji", "KaK", "/abbrev", "l"}) {
+                Session s; s.type(input); const auto before = s.engine.preedit(); const auto revision = s.engine.revision();
+                require(!s.engine.would_handle({KeyCode::SelectCandidate}) && !s.key({KeyCode::SelectCandidate}).consumed &&
+                    s.engine.revision() == revision, "host selection claimed outside selection");
+                equal(s.engine.preedit(), before);
+            }
+            Session direct; direct.type("1234567890"); equal(direct.committed, U"1234567890");
+            Session abbrev; abbrev.type("/123"); abbrev.key({KeyCode::Enter}); equal(abbrev.committed, U"123");
+            Session after; after.type("Kanji"); after.key({KeyCode::Space}); after.key({KeyCode::Enter}); after.type("2");
+            equal(after.committed, U"漢字2");
+            for (const char ch : std::string("890")) {
+                Session other; other.type("Kanji"); other.key({KeyCode::Space}); other.key({KeyCode::Character, ch});
+                equal(other.committed, U"漢字" + ascii(std::string(1, ch)));
+            }
+        }},
+        {"conversion/direct-selection-trial-and-learning-policy", [] {
+            for (const auto source : {CandidateSource::Dictionary, CandidateSource::GeneratedLong}) {
+                for (const auto policy : {LearningPolicy::Learn, LearningPolicy::DoNotLearn}) {
+                    auto dictionary = std::make_shared<MemoryDictionary>();
+                    dictionary->add({U"かな"}, {{"one", U"仮名", {}, source, policy}});
+                    Session s{Engine(dictionary)}; s.type("Kana"); s.key({KeyCode::Space});
+                    const auto revision = s.engine.revision(); auto trial = s.engine;
+                    const auto result = trial.handle({KeyCode::Character, '1'});
+                    equal(result.committed, U"仮名"); equal(s.engine.preedit(), U"▼仮名");
+                    require(s.engine.revision() == revision && result.learning.has_value() ==
+                        (source != CandidateSource::GeneratedLong && policy == LearningPolicy::Learn), "trial state or policy changed");
+                    s.key({KeyCode::Character, '1'}); equal(s.committed, U"仮名");
+                }
+            }
         }},
         {"conversion/page-keys-pass-through-outside-selection", [] {
             for (const auto input : {"", "k", "Kanji", "KaK", "/abbrev", "l"}) {
@@ -284,10 +343,10 @@ int main() {
         {"unicode/non-bmp", [] { require(utf8(U"𠮷") == "\xf0\xa0\xae\xb7", "non-BMP UTF-8 failed"); equal(katakana(U"かな𠮷"), U"カナ𠮷"); }},
         {"state/random-key-invariants", [] {
             Session s; std::mt19937 random(12345);
-            const std::string alphabet = "KanjiTaBeruqxl'-,/";
+            const std::string alphabet = "KanjiTaBeruqxl'-,/127890";
             for (int i = 0; i < 10000; ++i) {
-                const auto choice = random() % 24;
-                const Key key = choice < alphabet.size() ? Key{KeyCode::Character, alphabet[choice]} : Key{static_cast<KeyCode>(1 + random() % 7)};
+                const auto choice = random() % (alphabet.size() + 7);
+                const Key key = choice < alphabet.size() ? Key{KeyCode::Character, alphabet[choice]} : Key{static_cast<KeyCode>(1 + random() % 8), 0, random() % 20};
                 const bool expected = s.engine.would_handle(key);
                 const auto result = s.key(key);
                 require(result.consumed == expected, "probe disagrees with handler");

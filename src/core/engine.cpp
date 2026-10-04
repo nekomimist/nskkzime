@@ -76,7 +76,8 @@ std::u32string Engine::composition_text() const {
     return display(input_.reading + input_.okuri) + ascii(input_.romaji.pending());
 }
 bool Engine::would_handle(Key key) const {
-    if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) return input_.stage == Stage::Selecting;
+    if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp || key.code == KeyCode::SelectCandidate)
+        return input_.stage == Stage::Selecting;
     if (registering()) return key.code != KeyCode::Character || (key.character >= 0x20 && key.character <= 0x7e);
     if (key.code == KeyCode::Hiragana) return true;
     if (input_.mode == Mode::Latin) return false;
@@ -206,6 +207,15 @@ Result Engine::handle_registration(Key key) {
 }
 Result Engine::handle_input(Key key) {
     Result result; result.consumed = true;
+    if (key.code == KeyCode::SelectCandidate || (input_.stage == Stage::Selecting &&
+        key.code == KeyCode::Character && key.character >= '1' && key.character <= '7')) {
+        const auto index = key.code == KeyCode::SelectCandidate ? key.candidate_index :
+            input_.candidate_index / candidate_page_size * candidate_page_size + static_cast<std::size_t>(key.character - '1');
+        // A missing row on the last page must not confirm a different word or
+        // leak the shortcut into the document. Registration keeps the word in its draft.
+        if (index < input_.candidates.size()) { input_.candidate_index = index; confirm(result); }
+        return result;
+    }
     if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) {
         if (key.code == KeyCode::PageDown)
             input_.candidate_index += std::min(candidate_page_size, input_.candidates.size() - 1 - input_.candidate_index);

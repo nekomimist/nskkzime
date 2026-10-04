@@ -57,6 +57,20 @@ int main() {
             s.key({KeyCode::PageDown}); s.enter(); equal(s.document, U"感じ");
             check(s.saved.size() == 1 && s.saved[0].key.reading == U"みち", "inner paging changed registration key");
         }},
+        {"numeric-selection-appends-to-draft-without-registering", [] {
+            for (const bool cancel : {false, true}) {
+                Session s; s.start(); s.type("Kanji"); s.space();
+                const auto invalid = s.key({KeyCode::Character, '7'});
+                check(invalid.consumed && !invalid.learning, "missing row learned");
+                equal(s.engine.registration_text(), U"▼漢字");
+                const auto selected = s.key({KeyCode::Character, '2'});
+                check(selected.committed.empty() && !selected.learning && !selected.registration && s.saved.empty(), "shortcut registered too early");
+                equal(s.engine.registration_text(), U"感じ"); equal(s.engine.composition_text(), U"みち");
+                s.type("desu"); equal(s.engine.registration_text(), U"感じです");
+                if (cancel) { s.cancel(); check(s.saved.empty(), "canceled numeric choice learned"); equal(s.document, U""); }
+                else { s.enter(); equal(s.document, U"感じです"); check(s.saved.size() == 1 && s.saved[0].key.reading == U"みち", "wrong registered key"); }
+            }
+        }},
         {"empty-enter-and-reading-cancel", [] {
             Session s; s.start(); s.enter(); equal(s.engine.preedit(), U"▽みち");
             s.space(); s.type("Kanji"); s.space(); s.cancel();

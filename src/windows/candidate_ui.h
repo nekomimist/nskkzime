@@ -34,6 +34,7 @@ public:
     void update(const Engine&, ITfDocumentMgr*);
     void locate(HWND owner, const RECT* anchor) noexcept;
     void close() noexcept;
+    std::size_t shortcut_index(std::size_t slot) const noexcept;
     bool registration() const { return registration_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
@@ -68,6 +69,7 @@ public:
     void locate(ITfContext*, ITfComposition*, TfEditCookie) noexcept;
     void hide() noexcept;
     void close() noexcept;
+    Key selection_key(Key, const Engine&) const noexcept;
     bool presentation_available() const { return list_ && list_->presentation_available(); }
 private:
     Microsoft::WRL::ComPtr<ITfUIElementMgr> manager_;
