@@ -107,10 +107,65 @@ int main() {
         {"conversion/reset-does-not-reuse-candidates", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.engine.reset(); s.type("a"); equal(s.committed, U"あ"); require(s.engine.candidates().empty(), "candidates survived reset"); }},
         {"conversion/probe-is-pure", [] { Session s; s.type("Kanji"); const auto revision = s.engine.revision(); for (int i = 0; i < 5; ++i) require(s.engine.would_handle({KeyCode::Space}), "expected handled key"); require(s.engine.revision() == revision, "probe changed revision"); equal(s.engine.preedit(), U"▽かんじ"); }},
         {"conversion/copy-is-independent", [] { Session s; s.type("Kanji"); auto trial = s.engine; trial.handle({KeyCode::Space}); equal(s.engine.preedit(), U"▽かんじ"); equal(trial.preedit(), U"▼漢字"); }},
+        {"abbrev/entry-and-literal-spelling", [] {
+            Session s; s.type("/"); require(s.engine.abbrev(), "slash did not enter abbrev");
+            equal(s.engine.preedit(), U"▽"); equal(s.engine.composition_text(), U"");
+            s.type("SKKqlx-1.,/"); equal(s.engine.preedit(), U"▽SKKqlx-1.,/");
+            s.key({KeyCode::Enter}); equal(s.committed, U"SKKqlx-1.,/");
+            require(!s.engine.abbrev(), "confirm retained abbrev");
+            s.type("a"); equal(s.committed, U"SKKqlx-1.,/あ");
+        }},
+        {"abbrev/case-sensitive-lookup-and-candidates", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>();
+            dictionary->add({U"skk"}, {{"lower", U"かな漢字変換", U"注釈"}, {"second", U"日本語入力", U""}});
+            dictionary->add({U"SKK"}, {{"upper", U"大文字", U""}});
+            Session s{Engine(dictionary)}; s.type("/skk"); s.key({KeyCode::Space});
+            equal(s.engine.preedit(), U"▼かな漢字変換"); s.key({KeyCode::Space});
+            equal(s.engine.preedit(), U"▼日本語入力"); s.type("x");
+            equal(s.engine.preedit(), U"▼かな漢字変換"); s.key({KeyCode::Enter});
+            s.type("/SKK"); s.key({KeyCode::Space}); s.type("desu");
+            equal(s.committed, U"かな漢字変換大文字です");
+        }},
+        {"abbrev/cancel-candidate-keeps-ascii-editing", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>();
+            dictionary->add({U"q"}, {{"q", U"候補", U""}});
+            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Backspace}, Key{KeyCode::Character, 'x'}}) {
+                Session s{Engine(dictionary)}; s.type("/q"); s.key({KeyCode::Space}); s.key(cancel);
+                equal(s.engine.preedit(), U"▽q"); require(s.engine.abbrev(), "candidate cancel lost abbrev");
+                s.type("l"); equal(s.engine.preedit(), U"▽ql");
+                s.key({KeyCode::Cancel}); s.type("a"); equal(s.committed, U"あ");
+            }
+        }},
+        {"abbrev/backspace-to-empty-and-exit", [] {
+            Session s; s.type("/a"); s.key({KeyCode::Backspace});
+            equal(s.engine.preedit(), U"▽"); require(s.engine.abbrev(), "last deletion prematurely exited abbrev");
+            require(!s.key({KeyCode::Space}).dictionary_miss, "empty abbrev requested a lookup");
+            s.key({KeyCode::Backspace}); require(!s.engine.abbrev(), "empty backspace did not exit abbrev");
+            s.type("a"); equal(s.committed, U"あ");
+        }},
+        {"abbrev/missing-word-and-control-j", [] {
+            Session s; s.type("/Missing"); require(s.key({KeyCode::Space}).dictionary_miss, "abbrev miss not signalled");
+            equal(s.engine.preedit(), U"▽Missing"); s.key({KeyCode::Hiragana});
+            require(!s.engine.abbrev(), "C-j retained abbrev"); s.type("a"); equal(s.committed, U"Missingあ");
+        }},
+        {"abbrev/katakana-return-and-latin-pass-through", [] {
+            Session s; s.type("q/Test"); equal(s.engine.preedit(), U"▽Test");
+            s.key({KeyCode::Enter}); s.type("a"); equal(s.committed, U"Testア");
+            s.type("l"); require(!s.key({KeyCode::Character, '/'}).consumed, "Latin slash entered abbrev");
+            require(!s.engine.abbrev(), "Latin slash changed mode");
+        }},
+        {"abbrev/copy-probe-and-reset", [] {
+            Session s; s.type("/SK"); const auto revision = s.engine.revision();
+            require(s.engine.would_handle({KeyCode::Character, 'K'}), "abbrev key not claimed");
+            require(s.engine.revision() == revision, "abbrev probe mutated state");
+            auto copy = s.engine; copy.handle({KeyCode::Character, 'K'});
+            equal(s.engine.preedit(), U"▽SK"); equal(copy.preedit(), U"▽SKK");
+            s.engine.reset(); s.type("a"); equal(s.committed, U"あ");
+        }},
         {"unicode/non-bmp", [] { require(utf8(U"𠮷") == "\xf0\xa0\xae\xb7", "non-BMP UTF-8 failed"); equal(katakana(U"かな𠮷"), U"カナ𠮷"); }},
         {"state/random-key-invariants", [] {
             Session s; std::mt19937 random(12345);
-            const std::string alphabet = "KanjiTaBeruqxl'-,";
+            const std::string alphabet = "KanjiTaBeruqxl'-,/";
             for (int i = 0; i < 10000; ++i) {
                 const auto choice = random() % 24;
                 const Key key = choice < alphabet.size() ? Key{KeyCode::Character, alphabet[choice]} : Key{static_cast<KeyCode>(1 + random() % 6)};

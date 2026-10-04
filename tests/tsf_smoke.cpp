@@ -123,6 +123,11 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
         key(keys, dictionary_context.Get(), VK_SPACE);
         key(keys, dictionary_context.Get(), VK_RETURN);
         check(dictionary_context->doc->text == L"辞書", "TSF did not use the configured dictionary file");
+        type(keys, dictionary_context.Get(), "/skk"); key(keys, dictionary_context.Get(), VK_SPACE);
+        check(dictionary_context->doc->text == L"辞書かな漢字変換" && host->ui, "abbrev did not use the dictionary or candidate UI");
+        key(keys, dictionary_context.Get(), VK_SPACE); key(keys, dictionary_context.Get(), VK_RETURN);
+        type(keys, dictionary_context.Get(), "a");
+        check(dictionary_context->doc->text == L"辞書日本語入力あ", "abbrev commit did not return to kana input");
     }
     succeeded(service->Deactivate(), "deactivation failed");
     context->pump(); next->pump();
@@ -133,6 +138,33 @@ void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
     succeeded(service->ActivateEx(host.Get(), 1, 0), "selection-test activate failed");
     auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    {
+        auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
+        type(keys, context.Get(), "/");
+        check(context->doc->text == L"前後" && context->composition && !context->composition->ended,
+            "empty abbrev must track its range without adding a slash");
+        type(keys, context.Get(), "SKKql");
+        check(context->doc->text == L"前SKKql後", "abbrev lost ASCII spelling or damaged surrounding text");
+        key(keys, context.Get(), VK_ESCAPE); type(keys, context.Get(), "a");
+        check(context->doc->text == L"前あ後", "abbrev cancel did not restore kana input");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "/a"); key(keys, context.Get(), VK_BACK);
+        check(context->doc->text.empty() && !context->composition->ended, "empty abbrev lost its composition after deletion");
+        type(keys, context.Get(), "q"); check(context->doc->text == L"q", "empty abbrev stopped accepting ASCII");
+        key(keys, context.Get(), VK_ESCAPE);
+        type(keys, context.Get(), "/"); key(keys, context.Get(), VK_BACK); type(keys, context.Get(), "a");
+        check(context->doc->text == L"あ", "backspace on empty abbrev did not exit");
+    }
+    {
+        auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
+        type(keys, context.Get(), "/"); context->move_selection(0, 0);
+        type(keys, context.Get(), "a"); context->pump();
+        check(context->doc->text == L"あ前後", "empty abbrev followed a caret move");
+        type(keys, context.Get(), "/"); keys->OnSetFocus(FALSE);
+        auto next = fresh(); type(keys, next.Get(), "a"); context->pump();
+        check(next->doc->text == L"あ", "empty abbrev leaked to the next input field");
+    }
     {
         auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
         type(keys, context.Get(), "Kanji");

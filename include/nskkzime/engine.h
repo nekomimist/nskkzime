@@ -55,6 +55,7 @@ public:
     void reset(); // Clear composition, retain input mode.
     Mode mode() const { return mode_; }
     Stage stage() const { return stage_; }
+    bool abbrev() const { return abbrev_; }
     std::uint64_t revision() const { return revision_; }
     std::u32string preedit() const;
     std::u32string composition_text() const; // Native composition, without diagnostic SKK markers.
@@ -71,6 +72,7 @@ private:
     std::shared_ptr<const Dictionary> dictionary_;
     Mode mode_ = Mode::Hiragana;
     Stage stage_ = Stage::Direct;
+    bool abbrev_ = false;
     Romaji romaji_;
     std::u32string reading_;
     std::u32string okuri_;

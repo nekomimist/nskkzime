@@ -404,6 +404,9 @@ private:
     }
     HRESULT apply(ITfContext* context, TfEditCookie cookie, std::u32string_view committed, Engine& next) {
         const auto preedit = next.composition_text();
+        // An empty reading (notably just after '/') still owns an input range.
+        // Track it so moving the caret or focus cannot carry its mode elsewhere.
+        const bool needs_composition = next.stage() != Stage::Direct || !preedit.empty();
         auto expected = utf16(preedit);
         const auto text = utf16(std::u32string(committed) + std::u32string(preedit));
         ComPtr<ITfRange> range;
@@ -413,8 +416,8 @@ private:
             hr = composition_->GetRange(&range);
             if (FAILED(hr)) return hr;
         } else {
-            if (text.empty()) return S_OK;
-            if (preedit.empty()) {
+            if (text.empty() && !needs_composition) return S_OK;
+            if (!needs_composition) {
                 ComPtr<ITfInsertAtSelection> insert;
                 hr = context->QueryInterface(IID_PPV_ARGS(&insert));
                 if (FAILED(hr)) return hr;
@@ -455,7 +458,7 @@ private:
         }
         HRESULT post_status = S_OK;
         clear_display_attribute(context, cookie, range.Get());
-        if (preedit.empty()) {
+        if (!needs_composition) {
             ending_ = true;
             post_status = composition_->EndComposition(cookie);
             ending_ = false;

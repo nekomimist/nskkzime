@@ -24,6 +24,7 @@ Engine::Engine(std::shared_ptr<const Dictionary> dictionary) : dictionary_(std::
 }
 void Engine::clear_composition() {
     stage_ = Stage::Direct;
+    abbrev_ = false;
     romaji_.clear(); reading_.clear(); okuri_.clear(); okuri_letter_ = 0;
     candidates_.clear(); candidate_index_ = 0;
 }
@@ -121,6 +122,15 @@ Result Engine::handle(Key key) {
             return result;
         }
         confirm(result); // Reprocess this key after committing the selected word.
+    }
+    if (abbrev_) {
+        // ASCII spelling and case are the dictionary key; q/l are ordinary letters.
+        reading_ += static_cast<unsigned char>(ch);
+        return result;
+    }
+    if (stage_ == Stage::Direct && romaji_.pending().empty() && ch == '/') {
+        stage_ = Stage::Reading; abbrev_ = true;
+        return result;
     }
     if (romaji_.pending().empty() && ch == 'q') {
         if (stage_ == Stage::Direct) mode_ = mode_ == Mode::Hiragana ? Mode::Katakana : Mode::Hiragana;

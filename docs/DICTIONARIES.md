@@ -14,6 +14,9 @@
 
 # 必要な場合は明示指定（すべての --dict に適用）
 .\out\build\windows-x64\Release\skk_trace.exe --encoding utf-8 --dict .\tests\fixtures\basic.utf8.skk 'Jisho<Space><Enter>'
+
+# abbrev: 英字見出しをそのまま検索する
+.\out\build\windows-x64\Release\skk_trace.exe --dict .\tests\fixtures\basic.utf8.skk '/skk<Space><Enter>'
 ```
 
 `--encoding` は `auto` / `utf-8` / `euc-jp`。`--dict` 省略時は内蔵の小さなテスト用辞書を使う。
