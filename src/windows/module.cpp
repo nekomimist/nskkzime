@@ -1,4 +1,5 @@
 #include "module.h"
+#include "runtime_dictionary.h"
 #include <new>
 
 namespace nskkzime::windows {
@@ -58,3 +59,12 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID clsid, REFIID iid, void*
 }
 extern "C" HRESULT __stdcall DllRegisterServer() { return nskkzime::windows::register_server(); }
 extern "C" HRESULT __stdcall DllUnregisterServer() { return nskkzime::windows::unregister_server(); }
+extern "C" HRESULT __stdcall NskkzimeGetDictionaryStatus(BSTR* output) {
+    if (!output) return E_POINTER;
+    *output = nullptr;
+    try {
+        const auto status = nskkzime::windows::runtime_dictionary_status();
+        *output = SysAllocStringLen(status.data(), static_cast<UINT>(status.size()));
+        return *output ? S_OK : E_OUTOFMEMORY;
+    } catch (...) { return E_OUTOFMEMORY; }
+}

@@ -36,22 +36,35 @@ if(BUILD_TESTING)
 endif()
 
 if(WIN32)
+  add_library(nskkzime_runtime STATIC src/windows/dictionary_settings.cpp src/windows/runtime_dictionary.cpp)
+  target_include_directories(nskkzime_runtime PUBLIC src/windows)
+  target_link_libraries(nskkzime_runtime PUBLIC skk_dictionary shell32 ole32 uuid)
+  add_executable(nskkzime_config src/tools/config.cpp)
+  target_link_libraries(nskkzime_config PRIVATE nskkzime_runtime)
   add_executable(ime_probe WIN32 src/tools/ime_probe.cpp)
   target_include_directories(ime_probe PRIVATE src/windows)
-  target_link_libraries(ime_probe PRIVATE project_options ole32 uuid user32 gdi32)
+  target_link_libraries(ime_probe PRIVATE project_options ole32 oleaut32 uuid user32 gdi32)
   add_library(nskkzime_tsf SHARED src/windows/text_service.cpp src/windows/module.cpp
-    src/windows/registration.cpp src/windows/runtime_dictionary.cpp src/windows/display_attributes.cpp
+    src/windows/registration.cpp src/windows/display_attributes.cpp
     src/windows/candidate_ui.cpp src/windows/nskkzime.def)
   target_include_directories(nskkzime_tsf PRIVATE src/windows)
-  target_link_libraries(nskkzime_tsf PRIVATE skk_dictionary ole32 oleaut32 advapi32 uuid user32 gdi32)
+  target_link_libraries(nskkzime_tsf PRIVATE nskkzime_runtime ole32 oleaut32 advapi32 uuid user32 gdi32)
   # Same native controls/TSF profile, but activate this build's COM DLL only
   # inside the probe. Normal applications continue to use the registered DLL.
   add_executable(ime_probe_local WIN32 src/tools/ime_probe.cpp src/tools/ime_probe_local.manifest)
   target_include_directories(ime_probe_local PRIVATE src/windows)
-  target_link_libraries(ime_probe_local PRIVATE project_options ole32 uuid user32 gdi32)
+  target_link_libraries(ime_probe_local PRIVATE project_options ole32 oleaut32 uuid user32 gdi32)
   target_compile_definitions(ime_probe_local PRIVATE NSKKZIME_LOCAL_PROBE)
   add_dependencies(ime_probe_local nskkzime_tsf)
   if(BUILD_TESTING)
+    add_executable(settings_tests tests/settings_tests.cpp)
+    target_link_libraries(settings_tests PRIVATE nskkzime_runtime)
+    add_test(NAME settings COMMAND settings_tests)
+    add_test(NAME config_cli COMMAND ${CMAKE_COMMAND}
+      -DCONFIG_EXE=$<TARGET_FILE:nskkzime_config>
+      -DDICTIONARY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk
+      -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/config-cli-$<CONFIG>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_cli.cmake)
     add_executable(candidate_ui_tests tests/candidate_ui_tests.cpp src/windows/candidate_ui.cpp)
     target_include_directories(candidate_ui_tests PRIVATE src/windows)
     target_link_libraries(candidate_ui_tests PRIVATE skk_core ole32 oleaut32 uuid user32 gdi32)
@@ -64,8 +77,13 @@ if(WIN32)
     add_executable(tsf_smoke tests/tsf_smoke.cpp)
     target_include_directories(tsf_smoke PRIVATE src/windows)
     target_link_libraries(tsf_smoke PRIVATE project_options ole32 oleaut32 uuid user32)
+    target_compile_definitions(tsf_smoke PRIVATE NSKKZIME_TEST_DICTIONARY=L"${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk")
     add_test(NAME tsf_smoke COMMAND tsf_smoke $<TARGET_FILE:nskkzime_tsf>)
     add_test(NAME tsf_dictionary COMMAND tsf_smoke $<TARGET_FILE:nskkzime_tsf> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk)
     add_test(NAME tsf_missing_dictionary COMMAND tsf_smoke $<TARGET_FILE:nskkzime_tsf> ${CMAKE_CURRENT_BINARY_DIR}/missing-dictionary.skk --expect-empty)
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test-settings.ini CONTENT "version=1\ndictionary=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk\n")
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/invalid-settings.ini CONTENT "version=unsupported\n")
+    add_test(NAME tsf_settings COMMAND tsf_smoke $<TARGET_FILE:nskkzime_tsf> ${CMAKE_CURRENT_BINARY_DIR}/test-settings.ini --config)
+    add_test(NAME tsf_invalid_settings COMMAND tsf_smoke $<TARGET_FILE:nskkzime_tsf> ${CMAKE_CURRENT_BINARY_DIR}/invalid-settings.ini --config-empty)
   endif()
 endif()

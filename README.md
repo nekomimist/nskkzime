@@ -28,6 +28,7 @@ MSBuildを実行できます。ユーザーの永続的な環境変数は変更�
 | `skk_trace.exe` | キー列と、未確定・確定文字列の遷移をJSON Linesで出力 |
 | `core_tests.exe` | 入力コアの回帰テスト |
 | `dictionary_tests.exe` | 辞書形式・文字コード・候補の統合の回帰テスト |
+| `nskkzime_config.exe` | ユーザーごとの辞書設定を保存・表示・検査 |
 | `nskkzime_tsf.dll` | 開発用のTSF Text Input Processor |
 | `tsf_smoke.exe` | DLLのCOMインターフェースとTSFアダプターの契約テスト |
 | `ime_probe.exe` | 標準EDIT／RichEditを使う、登録後の実入力検証アプリ |
@@ -55,8 +56,15 @@ CLIはUTF-8を出力します。入力はASCIIのキー列です。
 ```
 
 UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの件数・診断を標準エラーへ出します。
-`--dict` を繰り返すと先に指定した辞書を優先します。TSFでは開発用環境変数
-`NSKKZIME_DICTIONARY` に辞書1個の絶対パスを指定できます。
+`--dict` を繰り返すと先に指定した辞書を優先します。TSFの辞書設定は次のコマンドで保存できます。
+
+```powershell
+.\out\build\windows-x64\Release\nskkzime_config.exe --set-dictionaries 'C:\辞書\SKK-JISYO.L'
+.\out\build\windows-x64\Release\nskkzime_config.exe --check
+```
+
+保存先は `%LOCALAPPDATA%\nskkzime\settings.ini`。複数の絶対パスを並べると先の辞書を優先します。
+設定後は利用するアプリを起動し直します。`NSKKZIME_DICTIONARY` は一時的な上書き指定として使えます。
 詳しい設定と対応形式は [辞書の利用](docs/DICTIONARIES.md) を参照してください。
 
 ## 実装済み
@@ -68,6 +76,7 @@ UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの�
 - `/` からのabbrev入力。英字の綴り・大小文字を保った辞書検索と、確定・取消後のかな入力への復帰。
 - Windows APIに依存しないコアと辞書インターフェース。
 - SKK辞書のUTF-8／EUC-JP取り込み、注釈、送り仮名別候補、複数辞書の優先順と重複排除。
+- TSFの複数辞書設定の保存、設定CLI、検証アプリでの実際の読み込み結果・エラーの表示。
 - TSFのCOM生成・初期化・終了、キー通知、編集セッション、composition。
 - 失敗した同期編集でキーを奪わない処理と、フォーカス移動時の旧入力欄の後処理。
 - 選択範囲・アプリ側の変更の監視、上書き前の内容照合、読み／候補のTSF下線表示。
@@ -80,6 +89,8 @@ UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの�
 2026-10-05、MSVC 19.44 / Windows SDK 10.0.26100.0で検証しています。
 `core` は46ケース（固定シードによる10,000イベントの状態検査を含む）、
 `dictionary` は31ケースで、形式・文字コード・送り仮名・辞書間の候補統合を検証します。
+`settings` は14ケースで、設定形式・保存失敗時の保全・複数辞書の部分的な読み込み失敗を検証します。
+`config_cli` で設定コマンド、`tsf_settings` / `tsf_invalid_settings` で保存設定のTSF接続を検証します。
 `tsf_smoke` はCOM生成・参照寿命、実TSFマネージャーの起動、テスト用ホスト上での
 入力・候補確定・取消・失敗時の復旧・遅延した後処理と新入力欄の分離を検証します。
 辞書を指定したTSF入力、辞書読み込み失敗時のかな入力、CLIの辞書読み込みもCTestで確認します。
@@ -96,6 +107,7 @@ TSFを有効にしたRichEditでは、ビルド版DLLで矢印移動後の入力
 登録解除・更新後のDLLハッシュと実入力を確認しました。
 2026-10-05には、ビルド版の候補一覧・注釈・選択行の追従と確定時の終了をRichEditで確認しています。
 abbrevの英字入力・確定後のかなへの復帰も標準EDIT／RichEditで確認しました。
+保存した外部辞書を環境変数なしで読み込み、RichEditの「辞書」と標準EDITのabbrev「SKK」を確定できました。
 ブラウザ等の互換性は引き続き検証します。
 
 候補のクリック／直接選択、ユーザー辞書の永続化・単語登録、モードアイコン、

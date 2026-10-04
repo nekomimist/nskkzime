@@ -383,9 +383,14 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
 }
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2 || argc > 4 || (argc == 4 && std::wstring_view(argv[3]) != L"--expect-empty")) return 2;
+    if (argc < 2 || argc > 4) return 2;
+    const auto option = argc == 4 ? std::wstring_view(argv[3]) : std::wstring_view{};
+    if (!option.empty() && option != L"--expect-empty" && option != L"--config" && option != L"--config-empty") return 2;
+    const bool configured = option == L"--config" || option == L"--config-empty";
+    const bool empty = option == L"--expect-empty" || option == L"--config-empty";
     // Test process only. Do not inherit a user's configured dictionary into fixtures.
-    if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", argc >= 3 ? argv[2] : nullptr)) return 2;
+    if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", configured ? nullptr : argc >= 3 ? argv[2] : NSKKZIME_TEST_DICTIONARY)) return 2;
+    if (configured && !SetEnvironmentVariableW(L"NSKKZIME_CONFIG", argv[2])) return 2;
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
     const auto library = LoadLibraryW(argv[1]);
@@ -394,13 +399,21 @@ int wmain(int argc, wchar_t** argv) {
     try {
         using GetFactory = HRESULT(WINAPI*)(REFCLSID, REFIID, void**);
         using CanUnload = HRESULT(WINAPI*)();
+        using GetStatus = HRESULT(WINAPI*)(BSTR*);
         // GetProcAddress is the documented Windows pattern for these COM exports.
 #pragma warning(push)
 #pragma warning(disable: 4191)
         const auto get_factory = reinterpret_cast<GetFactory>(GetProcAddress(library, "DllGetClassObject"));
         const auto can_unload = reinterpret_cast<CanUnload>(GetProcAddress(library, "DllCanUnloadNow"));
+        const auto get_status = reinterpret_cast<GetStatus>(GetProcAddress(library, "NskkzimeGetDictionaryStatus"));
 #pragma warning(pop)
         check(get_factory && can_unload, "missing COM exports");
+        check(get_status && get_status(nullptr) == E_POINTER, "invalid diagnostic export contract");
+        const auto status_text = [&] {
+            BSTR value = nullptr; succeeded(get_status(&value), "dictionary status failed");
+            const std::wstring text(value, SysStringLen(value)); SysFreeString(value); return text;
+        };
+        check(status_text().find(L"まだ読み込んでいません") != std::wstring::npos, "status triggered dictionary loading");
         check(GetProcAddress(library, "DllRegisterServer") && GetProcAddress(library, "DllUnregisterServer"), "missing registration exports");
         check(can_unload() == S_OK, "fresh DLL cannot unload");
         {
@@ -431,12 +444,16 @@ int wmain(int argc, wchar_t** argv) {
             succeeded(manager->Activate(&client), "TSF manager activate failed");
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
             attribute_tests(service.Get());
-            if (argc == 4) missing_dictionary_tests(service.Get(), keys.Get());
-            else { adapter_tests(service.Get(), keys.Get(), argc == 3); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
+            if (empty) missing_dictionary_tests(service.Get(), keys.Get());
+            else { adapter_tests(service.Get(), keys.Get(), argc >= 3); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
+            const auto status = status_text();
+            check(status.find(L"まだ読み込んでいません") == status.npos, "activation failed to update status");
+            if (!empty) check(status.find(L"読み込み済み") != status.npos, "loaded dictionary invisible");
+            if (configured && !empty) check(status.find(argv[2]) != status.npos, "saved configuration source invisible");
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
         std::cout << "PASS COM exports/identity/unload, real TSF manager startup, "
-                  << (argc == 4 ? "kana fallback without dictionary" : "test-host activation/composition/cancel/failure/focus isolation") << '\n';
+                  << (empty ? "kana fallback without dictionary" : "test-host activation/composition/cancel/failure/focus isolation") << '\n';
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; result = 1; }
     // Unload only after the tested COM objects and sinks have been released.
     if (!result) FreeLibrary(library); // A failed assertion may leave a subscription alive until process exit.

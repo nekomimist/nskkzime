@@ -32,6 +32,16 @@ struct Probe {
             wchar_t path[32768]{};
             const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path));
             if (size && size < ARRAYSIZE(path)) text += std::wstring(L"\r\nDLL: ") + path;
+            using GetStatus = HRESULT (__stdcall*)(BSTR*);
+#pragma warning(push)
+#pragma warning(disable: 4191) // The diagnostic export is resolved from this loaded DLL.
+            const auto get_status = reinterpret_cast<GetStatus>(GetProcAddress(module, "NskkzimeGetDictionaryStatus"));
+#pragma warning(pop)
+            BSTR dictionary_status = nullptr;
+            if (get_status && SUCCEEDED(get_status(&dictionary_status)) && dictionary_status)
+                text += std::wstring(L"\r\n") + dictionary_status;
+            else text += L"\r\n辞書診断: このDLLでは取得できません。";
+            SysFreeString(dictionary_status);
         }
         SetWindowTextW(status, text.c_str());
     }
@@ -73,7 +83,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         control(window, L"STATIC", L"RichEdit (TSF)", 0, 16, 250, 600, 26, 0, probe->font);
         probe->rich = control(window, MSFTEDIT_CLASS, L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 282, 660, 105, 202, probe->font);
-        probe->status = control(window, L"STATIC", L"", 0, 16, 405, 660, 105, 0, probe->status_font);
+        probe->status = control(window, L"EDIT", L"", WS_TABSTOP | ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
+            16, 405, 660, 230, 203, probe->status_font);
         if (!probe->plain || !probe->rich || !probe->status) return -1;
         // RichEdit defaults to IMM compatibility input. Explicitly enable its
         // native TSF text store so the two controls exercise different hosts.
@@ -83,7 +94,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     }
     case WM_COMMAND:
-        if (HIWORD(wparam) == EN_SETFOCUS) { probe->last_edit = reinterpret_cast<HWND>(lparam); return 0; }
+        if (HIWORD(wparam) == EN_SETFOCUS && (LOWORD(wparam) == 201 || LOWORD(wparam) == 202)) {
+            probe->last_edit = reinterpret_cast<HWND>(lparam); return 0;
+        }
         if (LOWORD(wparam) == activate_id) {
             if (!probe->previous_valid) probe->previous_valid = probe->profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &probe->previous) == S_OK;
             // Never change desktop/session defaults; no ENABLEPROFILE registry flag.
@@ -125,7 +138,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             klass.lpszClassName = L"nskkzime-input-probe";
             if (RegisterClassW(&klass)) {
                 const auto window = CreateWindowExW(0, klass.lpszClassName, window_title, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 565, nullptr, nullptr, instance, &probe);
+                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 690, nullptr, nullptr, instance, &probe);
                 if (window) {
                     ShowWindow(window, show); UpdateWindow(window); SetFocus(probe.plain);
                     ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);
