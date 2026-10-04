@@ -7,6 +7,8 @@ namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr UINT page_size = static_cast<UINT>(candidate_page_size);
+constexpr DWORD popup_style = WS_POPUP | WS_BORDER;
+constexpr DWORD popup_ex_style = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
 constexpr DWORD all_updates = TF_CLUIE_DOCUMENTMGR | TF_CLUIE_COUNT | TF_CLUIE_SELECTION |
     TF_CLUIE_STRING | TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
 struct SelectedFont {
@@ -154,8 +156,8 @@ void CandidateList::render() noexcept {
             cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = class_name_.c_str();
             cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
             if (!RegisterClassW(&cls)) { class_name_.clear(); return; }
-            window_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-                class_name_.c_str(), registration_ ? L"nskkzime 単語登録" : L"nskkzime 候補", WS_POPUP | WS_BORDER, 0, 0, 0, 0,
+            window_ = CreateWindowExW(popup_ex_style,
+                class_name_.c_str(), registration_ ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
                 owner_ ? GetAncestor(owner_, GA_ROOT) : nullptr, nullptr, module_instance, this);
             if (!window_) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
@@ -183,6 +185,11 @@ void CandidateList::render() noexcept {
         }
         width = std::min(width, MulDiv(680, dpi_, 96));
         int height = (static_cast<int>(visible_end - first + 1) + (registration_ ? 2 : 0)) * line_height_ + padding_ * 2;
+        // The measured text and padding describe the client area. The border
+        // must be added before passing the outer dimensions to SetWindowPos.
+        RECT outer{0, 0, width, height};
+        if (!AdjustWindowRectExForDpi(&outer, popup_style, FALSE, popup_ex_style, dpi_)) return;
+        width = outer.right - outer.left; height = outer.bottom - outer.top;
         MONITORINFO monitor{sizeof(MONITORINFO)};
         if (!GetMonitorInfoW(MonitorFromRect(&anchor_, MONITOR_DEFAULTTONEAREST), &monitor)) return;
         width = std::min(width, static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));

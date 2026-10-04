@@ -1,0 +1,13 @@
+;; -*- coding: utf-8 -*-
+;; Original data for isolated native UI checks, including three candidate pages.
+;; okuri-ari entries.
+たb /食/
+かk /書/描/[く/書/描/]/[け/描/書/]/
+;; okuri-nasi entries.
+かんじ /漢字;文字/感じ;感覚/
+にほん /日本/
+かいとう /回答/解答/解凍/
+じしょ /辞書;ファイルから読み込み/
+かな /仮名/
+skk /かな漢字変換;英字見出しの検証/日本語入力/
+p /候補01;ページ検証/候補02/候補03/候補04/候補05/候補06/候補07/候補08/候補09/候補10/候補11/候補12/候補13/候補14/候補15/候補16/

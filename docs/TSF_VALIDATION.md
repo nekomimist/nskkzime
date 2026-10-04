@@ -94,15 +94,13 @@ COMマニフェストで、この検証プロセスだけ実行ファイルと�
 補助プロセスもビルド先を使用するため、アプリを閉じてから約10秒のアイドル終了を待つ。
 補助プロセスや学習ファイルを強制的に削除する必要はない。
 
-`ime_probe_isolated.exe` は自作fixtureの小辞書を使い、実行ファイルと同じ場所の
+`ime_probe_isolated.exe` は自作の `tests/fixtures/probe.utf8.skk`（9見出し・33候補）を使い、実行ファイルと同じ場所の
 `probe-user-dictionary.nskkdb` にだけ保存する。ユーザーの設定・辞書には触れず、
 単語登録を繰り返し検証できる。画面タイトルの「隔離データ」と診断欄の保存先で区別する。
 通常版と同様に初回のIME登録が必要。隔離した保存ファイルは検証アプリを再起動しても保持する。
-
-単語登録とPageDown／PageUp追加後の実画面確認は未実施。Computer Useによる隔離版の起動がアプリ承認待ちで
-タイムアウトしたため、自動テストの成功を実入力での確認済みとは扱わない。
-確認時は、未知語→登録欄内で漢字変換→Enter、送りありの語幹登録、取消、別欄へのフォーカス移動、
-再起動後の登録語の変換を両方の入力欄で試す。
+`/p` → Spaceで16候補を表示するため、3ページにわたるPageDown／PageUpの検証にも使える。
+確定して学習すると次回の順位が変わるので、番号順を確認するときは取消で終えるか、
+辞書管理CLIでこの隔離ファイルの `p` の学習語だけを削除する。
 
 ### 2026-10-04の実測結果
 
@@ -141,7 +139,8 @@ Windows x64、内蔵の5見出し辞書、実際のキーイベントで確認�
 - 検証後の「元のIMEに戻す」が成功し、別IMEに戻ったことを確認してアプリを終了。
 
 この候補UIの検証はビルド版DLLで行った。登録版に反映するには、次の登録更新が必要。
-外部アプリ、候補が8件以上ある場合の実画面、DPI・複数画面の実測は未確認。
+この時点では外部アプリ、候補が8件以上ある場合の実画面、DPI・複数画面の実測は未確認だった。
+複数ページの実測結果は下記の隔離版での検証を参照。
 
 同日のabbrev追加後、ビルド版DLLで以下の実入力も確認した。
 
@@ -172,6 +171,34 @@ Windows x64、内蔵の5見出し辞書、実際のキーイベントで確認�
 学習を見送ることも実測した。検証アプリでは `SetInputScope(IS_TEXT)` を追加して解消したが、
 属性を提供しない外部アプリでの学習には制限が残る。通常の変換は継続する。
 
+同日の単語登録・ページ移動追加後、Computer UseでReleaseの `ime_probe_isolated.exe` を操作し、
+ビルド先DLLのパスと隔離した保存先を確認して以下を検証した。
+最初の登録は基本fixture（8見出し・17候補）、ページ移動以降は上記の専用fixtureを使用した。
+
+- RichEdit: `Michi` → Spaceで未知語の登録欄を表示し、その中で `Nihon` → Space → Enter。
+  登録中の本文は「みち」を保ち、確定後は「日本」になる。保存内容も「みち → 日本」と照合した。
+- アプリを終了して起動し直し、標準EDITの `Michi` → Space → Enterでも「日本」を利用できた。
+- 標準EDIT: `/p` → Space → PageDown → PageDown → PageUpで、候補01 → 08 → 15 → 08。
+  一覧はそれぞれ1〜7件目、8〜14件目、15〜16件目を表示し、Escapeで読みへ戻って取り消せた。
+- RichEdit: 同じ16候補で01 → 08 → 15 → 16と移動し、末尾のPageDownを繰り返しても16を保持。
+  PageUpで09へ戻り、Enterで「候補09」を確定して一覧を閉じた。
+- 標準EDIT: `MiRu` の登録欄内で `/p` → Space → PageDown → Enterを操作し、「候補08る」を確定。
+  保存内容は読み「み」・送りキー `r`・送り「る」・語幹「候補08」で、内側の `p` は学習されなかった。
+  次の起動ではRichEditの `MiRu` でも「候補08る」を変換・確定できた。
+- 標準EDIT: `/c` → Space → `ka` で登録途中にRichEditへ移ると、登録欄が閉じる。
+  移動元は読み `c` を保ち、未登録の「か」は本文・移動先・辞書のいずれにも入らなかった。
+- RichEdit: `/a` の登録欄内で `/b` を再帰登録し、「か」を入力して内側だけEnterで確定。
+  外側をEscapeで取り消し、さらに読みを取り消しても既存本文を保持した。
+  保存内容は `b → か` のみで、取り消した `a` は含まれなかった。
+- 候補一覧の操作案内の末尾が欠ける問題を発見し、計測したクライアント領域へウィンドウ枠の幅を加える修正を行った。
+  修正版を再起動し、通常候補の各ページ・登録欄とも表示が収まることを確認した。
+- 最後に診断欄の保存済み・同期済み世代6、未保存0件・受付不可0件を確認。
+  毎回、元のIMEへの復帰成功を確認してアプリを終了した。
+
+修正後のDebug／ReleaseはCTest各18件がすべて成功した。
+今回の書き込み先は隔離ファイルのみ。Windowsの登録DLLは更新しておらず、
+外部アプリ・異なるDPIや複数画面の組み合わせは引き続き未確認。
+
 ### 既知の制限
 
 標準EDITの互換入力経路では `Ka` → Left が確定だけになり、直後の `a` は「かあ」になる。
@@ -189,8 +216,9 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 | 英数切替 | 未確認 | 確認済み | 未確認 |
 | 漢字変換・候補送り・確定 | 確認済み | 確認済み | 未確認 |
 | 候補学習・保存順位の利用 | 再起動後の利用と保存を確認済み | 学習保存を確認済み | 属性の提供状況を含め未確認 |
-| 候補一覧・注釈 | 未確認 | ビルド版で確認済み | 未確認 |
-| PageDown／PageUpによる候補移動 | 自動ホストのみ | 自動ホストのみ | 未確認 |
+| 候補一覧・注釈 | ビルド版で確認済み | ビルド版で確認済み | 未確認 |
+| PageDown／PageUpによる候補移動 | 3ページと取消を確認済み | 3ページ・末尾保持・確定を確認済み | 未確認 |
+| 単語登録・再起動後の利用 | 送りあり登録・再利用・フォーカス移動時の破棄を確認済み | 登録内変換・再帰登録・取消・送りあり再利用を確認済み | 未確認 |
 | 送り仮名 | 確認済み | 確認済み | 未確認 |
 | フォーカス移動・IME切替 | 一部確認済み（上記参照） | 別入力欄への移動で確認済み | 未確認 |
 | 矢印移動 | 最初の1回が確定のみ | Leftで確認済み | 未確認 |
@@ -209,6 +237,7 @@ TSFキー判定の終了処理は [Microsoft SampleIMEのキー通知](https://g
 [COMマニフェスト](https://learn.microsoft.com/en-us/windows/win32/sbscs/assembly-manifests) を参照。
 候補一覧は [ITfCandidateListUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfcandidatelistuielement)、
 [BeginUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfuielementmgr-beginuielement)、
-[GetTextExt](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-gettextext) を参照。
+[GetTextExt](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-gettextext)、
+枠を含む寸法の計算は [AdjustWindowRectExForDpi](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-adjustwindowrectexfordpi) を参照。
 学習の入力属性判定は [GetValue](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfreadonlyproperty-getvalue)、
 検証ホストの属性設定は [SetInputScope](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-setinputscope) を参照。
