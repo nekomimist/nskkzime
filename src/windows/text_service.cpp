@@ -235,7 +235,13 @@ public:
                 try { auto fresh = engine_; fresh.reset(); *eaten = fresh.would_handle(*key); }
                 catch (...) { return E_OUTOFMEMORY; }
             } else *eaten = engine_.would_handle(*key);
-        } else if (composition_ && finishes_before_key(code)) *eaten = TRUE;
+        } else if (composition_ && finishes_before_key(code)) {
+            // A native host can consume the first application key if it arrives
+            // while still composing. Finish during the preflight and decline
+            // the key. This lifecycle cleanup is idempotent; ordinary SKK key
+            // probes never advance the engine or edit the document.
+            finish_composition(composition_context_.Get() == context ? TF_ES_ASYNCDONTCARE : TF_ES_ASYNC);
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
@@ -244,14 +250,13 @@ public:
         if (!manager_ || !editable(context)) return S_OK;
         if (composition_context_ && composition_context_.Get() != context) finish_composition();
         const auto key = translate_key(code, parameter);
-        const bool passthrough = !key && composition_ && finishes_before_key(code);
-        if (!passthrough && (!key || !engine_.would_handle(*key))) return S_OK;
+        if (!key || !engine_.would_handle(*key)) return S_OK;
         try {
             const ComPtr<TextService> self(this);
             const ComPtr<ITfContext> target(context);
             bool applied = false;
             const auto hr = request_edit(context, client_, TF_ES_SYNC | TF_ES_READWRITE,
-                [self, target, key, passthrough, &applied](TfEditCookie cookie) {
+                [self, target, key, &applied](TfEditCookie cookie) {
                     for (const auto& pending : self->pending_) {
                         if (!pending->done && pending->context.Get() == target.Get()) {
                             const auto status = pending->finish(cookie);
@@ -259,9 +264,8 @@ public:
                         }
                     }
                     std::erase_if(self->pending_, [](const auto& pending) { return pending->done; });
-                    if (self->composition_ && (passthrough || !self->composition_valid(cookie))) {
+                    if (self->composition_ && !self->composition_valid(cookie)) {
                         self->end_composition(cookie);
-                        if (passthrough) return S_OK;
                     }
                     auto next = self->engine_;
                     const auto result = next.handle(*key);
@@ -270,7 +274,6 @@ public:
                     if (SUCCEEDED(status)) { self->engine_ = std::move(next); applied = true; }
                     return status;
                 });
-            if (passthrough && FAILED(hr)) finish_composition();
             // A refused synchronous session leaves both the key and engine untouched.
             if (SUCCEEDED(hr) && applied) {
                 *eaten = TRUE;
@@ -442,7 +445,7 @@ private:
         // Once SetText succeeds, consume the key even if a subsequent host operation fails.
         return S_OK;
     }
-    void finish_composition() noexcept {
+    void finish_composition(DWORD scheduling = TF_ES_ASYNC) noexcept {
         try {
             if (!composition_ || !composition_context_) { engine_.reset(); return; }
             auto pending = std::make_shared<PendingComposition>();
@@ -451,7 +454,7 @@ private:
             pending_.push_back(pending);
             // Detach before scheduling: this session must never operate on a new input field.
             detach_composition(); engine_.reset();
-            const auto status = request_edit(pending->context.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
+            const auto status = request_edit(pending->context.Get(), client_, scheduling | TF_ES_READWRITE,
                 [pending](TfEditCookie cookie) { return pending->finish(cookie); });
             if (FAILED(status)) std::erase(pending_, pending);
         } catch (...) { detach_composition(); engine_.reset(); }

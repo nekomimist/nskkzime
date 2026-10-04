@@ -6,6 +6,11 @@
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr int activate_id = 101, restore_id = 102, refresh_id = 103;
+#ifdef NSKKZIME_LOCAL_PROBE
+constexpr auto window_title = L"nskkzime 入力検証 (ビルド版)";
+#else
+constexpr auto window_title = L"nskkzime 入力検証";
+#endif
 struct Probe {
     ComPtr<ITfThreadMgr> manager;
     ComPtr<ITfInputProcessorProfileMgr> profiles;
@@ -13,7 +18,7 @@ struct Probe {
     bool previous_valid = false;
     bool switched = false;
     HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr;
-    HFONT font = nullptr;
+    HFONT font = nullptr, status_font = nullptr;
     void report(const wchar_t* operation, HRESULT result) {
         wchar_t code[32]{};
         swprintf_s(code, L"0x%08lX", static_cast<unsigned long>(result));
@@ -23,6 +28,11 @@ struct Probe {
         std::wstring text = std::wstring(operation) + L": " + code + L"\r\n現在のIME: " + (ours ? L"nskkzime" : L"別のIME／キーボード");
         if (result == S_FALSE) text += L"\r\nプロファイルが無効です。開発用登録手順を確認してください。";
         if (FAILED(result)) text += L"\r\nDLLの登録と、日本語入力言語の選択を確認してください。";
+        if (const auto module = GetModuleHandleW(L"nskkzime_tsf.dll")) {
+            wchar_t path[32768]{};
+            const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path));
+            if (size && size < ARRAYSIZE(path)) text += std::wstring(L"\r\nDLL: ") + path;
+        }
         SetWindowTextW(status, text.c_str());
     }
     HRESULT restore() {
@@ -51,6 +61,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_CREATE: {
         probe->font = CreateFontW(-20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
+        probe->status_font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
         control(window, L"STATIC", L"このウィンドウだけでIMEの入力を検証します。内容は保存しません。", 0, 16, 12, 680, 30, 0, probe->font);
         control(window, L"BUTTON", L"nskkzimeを選ぶ", WS_TABSTOP, 16, 48, 190, 36, activate_id, probe->font);
         control(window, L"BUTTON", L"元のIMEに戻す", WS_TABSTOP, 218, 48, 180, 36, restore_id, probe->font);
@@ -58,11 +70,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         control(window, L"STATIC", L"標準 EDIT", 0, 16, 100, 600, 26, 0, probe->font);
         probe->plain = control(window, L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 132, 660, 105, 201, probe->font);
-        control(window, L"STATIC", L"RichEdit", 0, 16, 250, 600, 26, 0, probe->font);
+        control(window, L"STATIC", L"RichEdit (TSF)", 0, 16, 250, 600, 26, 0, probe->font);
         probe->rich = control(window, MSFTEDIT_CLASS, L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 282, 660, 105, 202, probe->font);
-        probe->status = control(window, L"STATIC", L"", 0, 16, 405, 660, 105, 0, probe->font);
+        probe->status = control(window, L"STATIC", L"", 0, 16, 405, 660, 105, 0, probe->status_font);
         if (!probe->plain || !probe->rich || !probe->status) return -1;
+        // RichEdit defaults to IMM compatibility input. Explicitly enable its
+        // native TSF text store so the two controls exercise different hosts.
+        SendMessageW(probe->rich, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
         probe->last_edit = probe->plain;
         probe->report(L"起動", S_OK);
         return 0;
@@ -80,9 +95,13 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (LOWORD(wparam) == restore_id) { probe->report(L"IME復帰", probe->restore()); SetFocus(probe->last_edit); return 0; }
         if (LOWORD(wparam) == refresh_id) { probe->report(L"状態確認", S_OK); SetFocus(probe->last_edit); return 0; }
         break;
+    case WM_CLOSE:
+        probe->restore();
+        DestroyWindow(window); return 0;
     case WM_DESTROY:
         probe->restore();
         if (probe->font) DeleteObject(probe->font);
+        if (probe->status_font) DeleteObject(probe->status_font);
         PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window, message, wparam, lparam);
@@ -105,7 +124,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             klass.hCursor = LoadCursorW(nullptr, IDC_IBEAM); klass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
             klass.lpszClassName = L"nskkzime-input-probe";
             if (RegisterClassW(&klass)) {
-                const auto window = CreateWindowExW(0, klass.lpszClassName, L"nskkzime 入力検証", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+                const auto window = CreateWindowExW(0, klass.lpszClassName, window_title, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                     CW_USEDEFAULT, CW_USEDEFAULT, 720, 565, nullptr, nullptr, instance, &probe);
                 if (window) {
                     ShowWindow(window, show); UpdateWindow(window); SetFocus(probe.plain);

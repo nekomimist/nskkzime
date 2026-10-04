@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="nskkzime.LocalInputProbe" version="0.0.1.0" />
+  <file name="nskkzime_tsf.dll">
+    <comClass clsid="{6EF45A57-E12E-49F1-8A4E-2569D8361A50}" threadingModel="Apartment" />
+  </file>
+</assembly>

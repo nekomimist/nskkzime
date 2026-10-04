@@ -181,6 +181,7 @@ class Context final : public ITfContext, public ITfContextComposition, public IT
 public:
     std::shared_ptr<Document> doc = std::make_shared<Document>();
     bool reject_session = false;
+    bool defer_optional_session = false;
     bool reject_composition = false;
     bool readonly = false;
     bool reject_edit_sink = false;
@@ -199,7 +200,9 @@ public:
     }
     HRESULT STDMETHODCALLTYPE RequestEditSession(TfClientId, ITfEditSession* edit, DWORD flags, HRESULT* status) override {
         if (reject_session) { *status = TF_E_SYNCHRONOUS; return S_OK; }
-        if (flags & TF_ES_ASYNC) { queued.emplace_back(edit); *status = TF_S_ASYNC; }
+        if ((flags & TF_ES_ASYNC) || (defer_optional_session && !(flags & TF_ES_SYNC))) {
+            queued.emplace_back(edit); *status = TF_S_ASYNC;
+        }
         else { *status = edit->DoEditSession(1); notify(); }
         return S_OK;
     }

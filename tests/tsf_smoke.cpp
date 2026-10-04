@@ -26,7 +26,8 @@ bool key(ITfKeyEventSink* sink, ITfContext* context, WPARAM code, bool shift = f
     BOOL probe = FALSE;
     succeeded(sink->OnTestKeyDown(context, code, parameter, &probe), "key probe failed");
     BOOL eaten = FALSE;
-    succeeded(sink->OnKeyDown(context, code, parameter, &eaten), "key handling failed");
+    // A host need not call OnKeyDown when the probe declines the key.
+    if (probe) succeeded(sink->OnKeyDown(context, code, parameter, &eaten), "key handling failed");
     BOOL up = FALSE;
     succeeded(sink->OnTestKeyUp(context, code, parameter, &up), "key-up probe failed");
     check(up == eaten, "key-up disagrees with key-down");
@@ -171,15 +172,40 @@ void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     }
     {
         auto context = fresh(); type(keys, context.Get(), "Kanji");
+        BYTE state[256]{}; SetKeyboardState(state);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            BOOL eaten = FALSE;
+            succeeded(keys->OnTestKeyDown(context.Get(), 'A', 0, &eaten), "SKK key probe failed");
+            check(eaten && context->doc->text == L"かんじ" && !context->composition->ended, "SKK key probe mutated state");
+        }
+        for (const auto code : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_DELETE, VK_TAB}) {
+            BOOL eaten = TRUE;
+            succeeded(keys->OnTestKeyDown(context.Get(), code, 0, &eaten), "navigation probe failed");
+            check(!eaten, "navigation probe claimed an application key");
+            check(context->composition->ended && context->doc->text == L"かんじ", "navigation preflight changed text or did not finish");
+            context = fresh(); type(keys, context.Get(), "Kanji");
+        }
         check(!key(keys, context.Get(), VK_LEFT), "navigation key was consumed");
-        check(context->composition->ended && !context->edits && context->doc->text == L"かんじ", "navigation did not finish before passing through");
+        check(context->composition->ended && context->queued.empty(), "navigation preflight did not finish the composition");
+        context->move_selection(2, 2); // The application receives the first Left.
+        type(keys, context.Get(), "a"); context->pump();
+        check(context->composition->ended && !context->edits && context->doc->text == L"かんあじ", "input did not use the application's new caret");
     }
     {
         auto context = fresh(); type(keys, context.Get(), "Kanji");
+        BYTE state[256]{}; state[VK_CONTROL] = state[VK_LCONTROL] = 0x80;
+        for (const auto code : {'A', 'C', 'V', 'X', 'Z'}) {
+            SetKeyboardState(state);
+            BOOL eaten = TRUE;
+            succeeded(keys->OnTestKeyDown(context.Get(), code, 0, &eaten), "shortcut probe failed");
+            check(!eaten, "shortcut probe claimed an application key");
+            check(context->composition->ended && context->doc->text == L"かんじ", "shortcut preflight changed text or did not finish");
+            context = fresh(); type(keys, context.Get(), "Kanji");
+        }
         check(!key(keys, context.Get(), 'V', false, true), "paste shortcut was consumed");
-        check(context->composition->ended, "paste shortcut retained a live composition");
+        check(context->composition->ended && context->queued.empty(), "shortcut preflight did not finish the composition");
         context->host_replace(0, 3, L"貼り付け");
-        type(keys, context.Get(), "a");
+        type(keys, context.Get(), "a"); context->pump();
         check(context->doc->text == L"貼り付けあ", "input after paste restored stale text");
     }
     {
@@ -188,6 +214,19 @@ void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
         check(context->doc->text.empty() && !context->composition, "failed edit sink changed the document");
         context->reject_edit_sink = false; type(keys, context.Get(), "a");
         check(context->doc->text == L"あ", "failed edit sink changed the engine");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji");
+        auto previous = context->composition;
+        context->defer_optional_session = true;
+        check(!key(keys, context.Get(), VK_LEFT), "deferred cleanup claimed navigation");
+        check(!key(keys, context.Get(), VK_LEFT), "repeated navigation probe claimed the key");
+        check(context->queued.size() == 1 && !context->edits, "repeated probe duplicated deferred cleanup");
+        context->move_selection(0, 0);
+        type(keys, context.Get(), "KaKu"); context->pump();
+        check(previous->ended && !context->composition->ended && context->doc->text == L"書くかんじ",
+            "deferred preflight cleanup changed the new composition");
+        key(keys, context.Get(), VK_RETURN);
     }
     {
         auto context = fresh(); type(keys, context.Get(), "Kanji");
