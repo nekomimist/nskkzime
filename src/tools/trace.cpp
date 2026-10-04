@@ -27,6 +27,8 @@ nskkzime::Key token(std::string_view name) {
     if (name == "BS") return {Backspace};
     if (name == "C-g" || name == "Esc") return {Cancel};
     if (name == "C-j") return {Hiragana};
+    if (name == "PageDown") return {PageDown};
+    if (name == "PageUp") return {PageUp};
     throw std::invalid_argument("unknown key token: " + std::string(name));
 }
 }

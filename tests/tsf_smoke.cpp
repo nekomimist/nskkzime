@@ -355,6 +355,21 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     check(correct, "candidate UI text or annotation incorrect");
     key(keys, context.Get(), VK_SPACE);
     list->GetSelection(&selected); check(selected == 1 && host->ui_updates == 1, "candidate UI selection not updated");
+    // Page probes stay pure; an actual page edit adopts the selection only on success.
+    for (int i = 0; i < 3; ++i) {
+        BOOL eaten = FALSE; succeeded(keys->OnTestKeyDown(context.Get(), VK_PRIOR, 0, &eaten), "page probe failed");
+        list->GetSelection(&selected);
+        check(eaten && selected == 1 && context->doc->text == L"感じ" && !context->composition->ended, "page probe changed selection or committed");
+    }
+    check(key(keys, context.Get(), VK_PRIOR), "page up not consumed");
+    list->GetSelection(&selected); check(selected == 0 && context->doc->text == L"漢字", "page up did not select first");
+    context->doc->reject_write = true;
+    check(!key(keys, context.Get(), VK_NEXT), "failed page edit consumed key");
+    list->GetSelection(&selected); check(selected == 0 && context->doc->text == L"漢字", "failed page edit changed selection");
+    context->doc->reject_write = false;
+    check(key(keys, context.Get(), VK_NEXT) && key(keys, context.Get(), VK_NEXT), "page down or edge not consumed");
+    list->GetSelection(&selected);
+    check(selected == 1 && context->doc->text == L"感じ" && !context->composition->ended, "page edge committed or exhausted");
     check(context->layout != nullptr, "composition did not subscribe to layout changes");
     auto layout = context->layout;
     // Destruction invalidates older layout requests; later changes may resume.
@@ -380,6 +395,11 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     check(context->doc->text == L"感じ書く漢字", "candidate UI failure broke conversion");
     succeeded(service->Deactivate(), "candidate UI deactivation failed");
     check(!host->ui && !host->keys && !host->events, "candidate UI leaked subscriptions");
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "modified page activation failed");
+    ComPtr<test_host::Context> modified; modified.Attach(new test_host::Context);
+    type(keys, modified.Get(), "Kanji"); key(keys, modified.Get(), VK_SPACE);
+    check(!key(keys, modified.Get(), VK_NEXT, true) && modified->composition->ended && modified->doc->text == L"漢字", "shift-page did not preserve application navigation");
+    succeeded(service->Deactivate(), "modified page deactivation failed");
 }
 }
 int wmain(int argc, wchar_t** argv) {

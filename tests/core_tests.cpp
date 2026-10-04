@@ -56,6 +56,44 @@ int main() {
         {"conversion/reading-and-first-candidate", [] { Session s; s.type("Kanji"); equal(s.engine.preedit(), U"▽かんじ"); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼漢字"); s.key({KeyCode::Enter}); equal(s.committed, U"漢字"); equal(s.engine.preedit(), U""); }},
         {"conversion/next-previous", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼感じ"); s.type("x"); equal(s.engine.preedit(), U"▼漢字"); s.type("x"); equal(s.engine.preedit(), U"▽かんじ"); }},
         {"conversion/exhaustion-retains-selection", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Space}); require(s.key({KeyCode::Space}).candidates_exhausted, "exhaustion must be signalled"); equal(s.engine.preedit(), U"▼感じ"); }},
+        {"conversion/page-keys-clamp-without-confirming-or-registering", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>(); std::vector<Candidate> candidates;
+            for (int i = 0; i < 16; ++i) candidates.push_back({std::to_string(i), U"候補" + ascii(std::to_string(i)), {}});
+            dictionary->add({U"かんじ"}, candidates);
+            Session s{Engine(dictionary)}; s.type("Kanji"); s.key({KeyCode::Space});
+            for (const auto expected : {7u, 14u, 15u, 15u}) {
+                const auto revision = s.engine.revision();
+                require(s.engine.would_handle({KeyCode::PageDown}) && s.engine.revision() == revision, "page probe mutated engine");
+                const auto result = s.key({KeyCode::PageDown});
+                require(result.consumed && !result.learning && !result.registration && s.engine.candidate_index() == expected, "page down changed selection incorrectly");
+            }
+            for (const auto expected : {8u, 1u, 0u, 0u}) {
+                s.key({KeyCode::PageUp}); require(s.engine.candidate_index() == expected, "page up did not clamp");
+            }
+            s.key({KeyCode::PageDown}); const auto selected = s.key({KeyCode::Enter});
+            equal(s.committed, U"候補7"); require(selected.learning && selected.learning->candidate.text == U"候補7", "page selected wrong learning event");
+        }},
+        {"conversion/page-keys-pass-through-outside-selection", [] {
+            for (const auto input : {"", "k", "Kanji", "KaK", "/abbrev", "l"}) {
+                Session s; s.type(input); const auto before = s.engine.preedit(), committed = s.committed; const auto revision = s.engine.revision();
+                for (const auto key : {KeyCode::PageUp, KeyCode::PageDown})
+                    require(!s.engine.would_handle({key}) && !s.key({key}).consumed, "page claimed outside candidate selection");
+                equal(s.engine.preedit(), before); equal(s.committed, committed);
+                require(s.engine.revision() == revision, "unhandled page changed revision");
+            }
+        }},
+        {"conversion/page-keys-preserve-okuri-and-abbrev", [] {
+            for (const auto input : {"KaKu", "/AI"}) {
+                auto dictionary = std::make_shared<MemoryDictionary>();
+                dictionary->add({U"か", 'k'}, {{"one", U"書", {}}, {"two", U"描", {}}});
+                dictionary->add({U"AI"}, {{"one", U"人工知能", {}}, {"two", U"知能", {}}});
+                Session s{Engine(dictionary)}; s.type(input); if (s.engine.abbrev()) s.key({KeyCode::Space});
+                auto trial = s.engine; trial.handle({KeyCode::PageDown}); require(s.engine.candidate_index() == 0, "page trial changed original");
+                s.key({KeyCode::PageDown}); const auto result = s.key({KeyCode::Enter});
+                equal(s.committed, std::string_view(input) == "KaKu" ? U"描く" : U"知能");
+                require(result.learning.has_value(), "page confirmed candidate did not learn");
+            }
+        }},
         {"conversion/cancel-twice", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U"▽かんじ"); s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U""); equal(s.committed, U""); }},
         {"conversion/continue-typing", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.type("desu"); equal(s.committed, U"漢字です"); }},
         {"conversion/okuri", [] { Session s; s.type("KaKu"); equal(s.engine.preedit(), U"▼書く"); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼描く"); s.key({KeyCode::Enter}); equal(s.committed, U"描く"); }},
@@ -249,7 +287,7 @@ int main() {
             const std::string alphabet = "KanjiTaBeruqxl'-,/";
             for (int i = 0; i < 10000; ++i) {
                 const auto choice = random() % 24;
-                const Key key = choice < alphabet.size() ? Key{KeyCode::Character, alphabet[choice]} : Key{static_cast<KeyCode>(1 + random() % 6)};
+                const Key key = choice < alphabet.size() ? Key{KeyCode::Character, alphabet[choice]} : Key{static_cast<KeyCode>(1 + random() % 7)};
                 const bool expected = s.engine.would_handle(key);
                 const auto result = s.key(key);
                 require(result.consumed == expected, "probe disagrees with handler");

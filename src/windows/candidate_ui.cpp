@@ -6,7 +6,7 @@
 namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
 namespace {
-constexpr UINT page_size = 7;
+constexpr UINT page_size = static_cast<UINT>(candidate_page_size);
 constexpr DWORD all_updates = TF_CLUIE_DOCUMENTMGR | TF_CLUIE_COUNT | TF_CLUIE_SELECTION |
     TF_CLUIE_STRING | TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
 struct SelectedFont {
@@ -172,8 +172,10 @@ void CandidateList::render() noexcept {
         WindowDC dc(window_);
         if (!dc.value) return;
         SelectedFont selected(dc.value, font_);
-        int width = MulDiv(360, dpi_, 96);
-        if (registration_) width = MulDiv(580, dpi_, 96);
+        const auto footer_text = footer(); SIZE footer_size{};
+        GetTextExtentPoint32W(dc.value, footer_text.c_str(), static_cast<int>(footer_text.size()), &footer_size);
+        int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
+        if (registration_) width = std::max(width, MulDiv(580, dpi_, 96));
         for (UINT i = first; i < visible_end; ++i) {
             const auto row = std::to_wstring(i + 1) + L"  " + label(rows_[i].text) + L"  " + label(rows_[i].annotation);
             SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
@@ -192,6 +194,10 @@ void CandidateList::render() noexcept {
         SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         InvalidateRect(window_, nullptr, FALSE);
     } catch (...) { if (window_) ShowWindow(window_, SW_HIDE); }
+}
+std::wstring CandidateList::footer() const {
+    return registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
+        L"   Space/x: 次/前  PgDn/PgUp: 7件  Enter: 確定";
 }
 void CandidateList::paint(HDC dc) const {
     RECT area{}; GetClientRect(window_, &area);
@@ -227,7 +233,7 @@ void CandidateList::paint(HDC dc) const {
         }
     }
     SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
-    line(registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) + L"   Space: 次  x: 前  Enter: 確定");
+    line(footer());
 }
 LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* self = reinterpret_cast<CandidateList*>(GetWindowLongPtrW(window, GWLP_USERDATA));

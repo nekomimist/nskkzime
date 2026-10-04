@@ -43,6 +43,12 @@ int main() {
             check(list->GetCurrentPage(&page) == S_OK && page == 1, "selection did not advance to next page");
             DWORD flags = 0; list->GetUpdatedFlags(&flags);
             check((flags & TF_CLUIE_SELECTION) && !(flags & TF_CLUIE_STRING), "selection update replaced strings");
+            engine.handle({KeyCode::PageDown}); list->update(engine, nullptr);
+            list->GetSelection(&selection); list->GetCurrentPage(&page);
+            check(selection == 15 && page == 2, "page down did not reach last partial page");
+            engine.handle({KeyCode::PageUp}); list->update(engine, nullptr);
+            list->GetSelection(&selection); list->GetCurrentPage(&page);
+            check(selection == 8 && page == 1, "page up did not update UI selection");
             UINT custom[]{0, 4, 9};
             check(list->SetPageIndex(custom, 3) == S_OK, "host page boundaries rejected");
             list->GetCurrentPage(&page); check(page == 1, "host current page incorrect");

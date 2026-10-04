@@ -47,6 +47,16 @@ int main() {
             equal(s.engine.preedit(), U"▽かんじ"); check(s.saved.empty(), "canceled draft learned");
             s.enter(); equal(s.document, U"かんじ");
         }},
+        {"page-keys-only-change-inner-candidate", [] {
+            Session s; s.start();
+            check(!s.key({KeyCode::PageDown}).consumed && !s.key({KeyCode::PageUp}).consumed, "empty registration claimed page");
+            s.type("Kanji"); s.space(); s.key({KeyCode::PageDown});
+            equal(s.engine.registration_text(), U"▼感じ"); equal(s.engine.composition_text(), U"みち");
+            check(s.saved.empty(), "paging in a registration learned tentative text");
+            s.key({KeyCode::PageUp}); equal(s.engine.registration_text(), U"▼漢字");
+            s.key({KeyCode::PageDown}); s.enter(); equal(s.document, U"感じ");
+            check(s.saved.size() == 1 && s.saved[0].key.reading == U"みち", "inner paging changed registration key");
+        }},
         {"empty-enter-and-reading-cancel", [] {
             Session s; s.start(); s.enter(); equal(s.engine.preedit(), U"▽みち");
             s.space(); s.type("Kanji"); s.space(); s.cancel();
@@ -125,7 +135,7 @@ int main() {
             for (int i = 0; i < 10000; ++i) {
                 if (i % 100 == 0) { s.engine.reset(); s.key({KeyCode::Hiragana}); s.start(); }
                 const auto choice = random() % 20;
-                const Key key = choice < keys.size() ? Key{KeyCode::Character, keys[choice]} : Key{static_cast<KeyCode>(1 + random() % 6)};
+                const Key key = choice < keys.size() ? Key{KeyCode::Character, keys[choice]} : Key{static_cast<KeyCode>(1 + random() % 7)};
                 const bool handled = s.engine.would_handle(key); const auto result = s.key(key);
                 check(result.consumed == handled, "probe and handle disagree");
                 check(s.engine.registration_depth() <= 8, "unbounded registration depth");

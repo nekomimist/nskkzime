@@ -76,6 +76,9 @@ std::optional<Key> translate_key(WPARAM code, LPARAM parameter) {
     case VK_RETURN: return Key{KeyCode::Enter};
     case VK_BACK: return Key{KeyCode::Backspace};
     case VK_ESCAPE: return Key{KeyCode::Cancel};
+    case VK_NEXT: case VK_PRIOR:
+        if (GetKeyState(VK_SHIFT) & 0x8000) return {}; // Preserve application range-selection shortcuts.
+        return Key{code == VK_NEXT ? KeyCode::PageDown : KeyCode::PageUp};
     default: break;
     }
     BYTE state[256]{};
@@ -276,7 +279,8 @@ public:
                 try { auto fresh = engine_; fresh.reset(); *eaten = fresh.would_handle(*key); }
                 catch (...) { return E_OUTOFMEMORY; }
             } else *eaten = engine_.would_handle(*key);
-        } else if (composition_ && finishes_before_key(code)) {
+        }
+        if (!*eaten && composition_ && finishes_before_key(code)) {
             // A native host can consume the first application key if it arrives
             // while still composing. Finish during the preflight and decline
             // the key. This lifecycle cleanup is idempotent; ordinary SKK key

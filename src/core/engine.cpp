@@ -76,6 +76,7 @@ std::u32string Engine::composition_text() const {
     return display(input_.reading + input_.okuri) + ascii(input_.romaji.pending());
 }
 bool Engine::would_handle(Key key) const {
+    if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) return input_.stage == Stage::Selecting;
     if (registering()) return key.code != KeyCode::Character || (key.character >= 0x20 && key.character <= 0x7e);
     if (key.code == KeyCode::Hiragana) return true;
     if (input_.mode == Mode::Latin) return false;
@@ -205,6 +206,12 @@ Result Engine::handle_registration(Key key) {
 }
 Result Engine::handle_input(Key key) {
     Result result; result.consumed = true;
+    if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) {
+        if (key.code == KeyCode::PageDown)
+            input_.candidate_index += std::min(candidate_page_size, input_.candidates.size() - 1 - input_.candidate_index);
+        else input_.candidate_index -= std::min(candidate_page_size, input_.candidate_index);
+        return result; // Reaching either edge never confirms or starts registration.
+    }
     if (key.code == KeyCode::Hiragana) {
         confirm(result);
         input_.mode = Mode::Hiragana;

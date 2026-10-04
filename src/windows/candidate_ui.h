@@ -40,6 +40,7 @@ private:
     struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
     UINT current_page() const;
     std::pair<UINT, UINT> visible_rows() const;
+    std::wstring footer() const;
     void render() noexcept;
     void paint(HDC) const;
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);

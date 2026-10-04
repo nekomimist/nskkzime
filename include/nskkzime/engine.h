@@ -10,7 +10,8 @@
 namespace nskkzime {
 enum class Mode { Hiragana, Katakana, Latin };
 enum class Stage { Direct, Reading, Okuri, Selecting, Registering };
-enum class KeyCode { Character, Space, Enter, Backspace, Cancel, Hiragana };
+enum class KeyCode { Character, Space, Enter, Backspace, Cancel, Hiragana, PageDown, PageUp };
+inline constexpr std::size_t candidate_page_size = 7;
 struct Key { KeyCode code = KeyCode::Character; char character = 0; };
 enum class CandidateSource { Dictionary, GeneratedLong, GeneratedFallback };
 enum class LearningPolicy { Learn, DoNotLearn };
