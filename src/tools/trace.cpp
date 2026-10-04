@@ -91,6 +91,7 @@ int run(const std::vector<std::string>& arguments) {
                 key.character = keys[i];
             }
             const auto result = engine.handle(key);
+            if (result.registration && result.learning) engine.remember_registration(*result.learning); // CLI session only; no disk writes.
             document += result.committed;
             if (!result.consumed) {
                 if (key.code == nskkzime::KeyCode::Character) document += static_cast<unsigned char>(key.character);
@@ -104,6 +105,9 @@ int run(const std::vector<std::string>& arguments) {
                       << ",\"document\":" << json_string(document)
                       << ",\"dictionary_miss\":" << (result.dictionary_miss ? "true" : "false")
                       << ",\"candidates_exhausted\":" << (result.candidates_exhausted ? "true" : "false")
+                      << ",\"registration_depth\":" << engine.registration_depth()
+                      << ",\"registered\":" << (result.registration ? "true" : "false")
+                      << ",\"registration_limit\":" << (result.registration_limit ? "true" : "false")
                       << ",\"candidate_index\":" << engine.candidate_index() << ",\"candidates\":[";
             bool first = true;
             for (const auto& item : engine.candidates()) {

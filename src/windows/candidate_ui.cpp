@@ -40,11 +40,12 @@ std::wstring label(std::wstring_view text) {
     return value;
 }
 }
-CandidateList::CandidateList() { ++module_objects; }
+CandidateList::CandidateList(bool registration) : registration_(registration) { ++module_objects; }
 CandidateList::~CandidateList() { close(); --module_objects; }
 HRESULT CandidateList::QueryInterface(REFIID iid, void** output) {
     if (!output) return E_POINTER;
     *output = nullptr;
+    if (registration_ && iid == IID_ITfCandidateListUIElement) return E_NOINTERFACE;
     if (iid != IID_IUnknown && iid != IID_ITfUIElement && iid != IID_ITfCandidateListUIElement) return E_NOINTERFACE;
     *output = static_cast<ITfCandidateListUIElement*>(this); AddRef(); return S_OK;
 }
@@ -52,9 +53,13 @@ ULONG CandidateList::AddRef() { return ++refs_; }
 ULONG CandidateList::Release() { const auto count = --refs_; if (!count) delete this; return count; }
 HRESULT CandidateList::GetDescription(BSTR* value) {
     if (!value) return E_POINTER;
-    *value = SysAllocString(L"nskkzime 候補一覧"); return *value ? S_OK : E_OUTOFMEMORY;
+    *value = nullptr;
+    try {
+        const auto description = registration_ ? heading_ + L"\n" + draft_ + L"\n" + hint_ : L"nskkzime 候補一覧";
+        *value = SysAllocString(description.c_str()); return *value ? S_OK : E_OUTOFMEMORY;
+    } catch (...) { return E_OUTOFMEMORY; }
 }
-HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = candidate_ui_guid; return S_OK; }
+HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = registration_ ? registration_ui_guid : candidate_ui_guid; return S_OK; }
 HRESULT CandidateList::Show(BOOL show) { requested_visible_ = show != FALSE; render(); return S_OK; }
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
@@ -85,6 +90,7 @@ UINT CandidateList::current_page() const {
     return pages_.empty() ? 0 : static_cast<UINT>(std::upper_bound(pages_.begin(), pages_.end(), selection_) - pages_.begin() - 1);
 }
 std::pair<UINT, UINT> CandidateList::visible_rows() const {
+    if (pages_.empty()) return {0, 0};
     const auto page = current_page();
     auto first = pages_[page];
     const auto end = page + 1 < pages_.size() ? pages_[page + 1] : static_cast<UINT>(rows_.size());
@@ -101,6 +107,14 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     for (std::size_t i = 0; i < engine.candidates().size(); ++i)
         rows.push_back({wide(engine.candidate_text(i)), wide(engine.candidates()[i].annotation)});
     updated_ = 0;
+    if (registration_) {
+        const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
+        const auto draft = wide(engine.registration_text());
+        const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
+            L"語幹を入力  Enter: 登録  C-j: かな  Esc: 取消";
+        if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
+        heading_ = heading; draft_ = draft; hint_ = hint;
+    }
     if (document_.Get() != document) updated_ |= TF_CLUIE_DOCUMENTMGR;
     document_ = document;
     if (rows != rows_) {
@@ -127,7 +141,7 @@ void CandidateList::close() noexcept {
     owner_ = nullptr; document_.Reset();
 }
 void CandidateList::render() noexcept {
-    if (closed_ || !located_ || !requested_visible_ || rows_.empty()) {
+    if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && !registration_)) {
         if (window_) ShowWindow(window_, SW_HIDE);
         return;
     }
@@ -141,7 +155,7 @@ void CandidateList::render() noexcept {
             cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
             if (!RegisterClassW(&cls)) { class_name_.clear(); return; }
             window_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-                class_name_.c_str(), L"nskkzime 候補", WS_POPUP | WS_BORDER, 0, 0, 0, 0,
+                class_name_.c_str(), registration_ ? L"nskkzime 単語登録" : L"nskkzime 候補", WS_POPUP | WS_BORDER, 0, 0, 0, 0,
                 owner_ ? GetAncestor(owner_, GA_ROOT) : nullptr, nullptr, module_instance, this);
             if (!window_) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
@@ -159,13 +173,14 @@ void CandidateList::render() noexcept {
         if (!dc.value) return;
         SelectedFont selected(dc.value, font_);
         int width = MulDiv(360, dpi_, 96);
+        if (registration_) width = MulDiv(580, dpi_, 96);
         for (UINT i = first; i < visible_end; ++i) {
             const auto row = std::to_wstring(i + 1) + L"  " + label(rows_[i].text) + L"  " + label(rows_[i].annotation);
             SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
             width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
         }
         width = std::min(width, MulDiv(680, dpi_, 96));
-        int height = static_cast<int>(visible_end - first + 1) * line_height_ + padding_ * 2;
+        int height = (static_cast<int>(visible_end - first + 1) + (registration_ ? 2 : 0)) * line_height_ + padding_ * 2;
         MONITORINFO monitor{sizeof(MONITORINFO)};
         if (!GetMonitorInfoW(MonitorFromRect(&anchor_, MONITOR_DEFAULTTONEAREST), &monitor)) return;
         width = std::min(width, static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));
@@ -183,9 +198,24 @@ void CandidateList::paint(HDC dc) const {
     FillRect(dc, &area, GetSysColorBrush(COLOR_WINDOW));
     SelectedFont selected(dc, font_);
     SetBkMode(dc, TRANSPARENT);
+    int top = padding_;
+    const auto line = [&](std::wstring_view value, UINT format = DT_END_ELLIPSIS) {
+        RECT rect{padding_, top, area.right - padding_, top + line_height_};
+        DrawTextW(dc, value.data(), static_cast<int>(value.size()), &rect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | format);
+        top += line_height_;
+    };
+    if (registration_) {
+        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT)); line(label(heading_));
+        // Keep the currently edited tail visible for a long registration.
+        const auto offset = draft_.size() > 160 ? draft_.size() - 160 : 0;
+        auto tail = draft_.substr(offset);
+        if (!tail.empty() && tail.front() >= 0xdc00 && tail.front() <= 0xdfff) tail.erase(0, 1);
+        const auto text = (offset ? L"…" : L"") + tail + L"▏";
+        SIZE size{}; GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
+        line(text, size.cx > area.right - padding_ * 2 ? DT_RIGHT : DT_END_ELLIPSIS);
+    }
     if (!pages_.empty()) {
         const auto [first, end] = visible_rows();
-        int top = padding_;
         for (UINT i = first; i < end; ++i, top += line_height_) {
             RECT row{0, top, area.right, top + line_height_};
             if (i == selection_) FillRect(dc, &row, GetSysColorBrush(COLOR_HIGHLIGHT));
@@ -195,11 +225,9 @@ void CandidateList::paint(HDC dc) const {
                 (rows_[i].annotation.empty() ? L"" : L"  — " + label(rows_[i].annotation));
             DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &row, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
-        RECT footer{padding_, top, area.right - padding_, top + line_height_};
-        SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
-        const auto text = std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) + L"   Space: 次  x: 前  Enter: 確定";
-        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &footer, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
+    SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+    line(registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) + L"   Space: 次  x: 前  Enter: 確定");
 }
 LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* self = reinterpret_cast<CandidateList*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -218,13 +246,14 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     return DefWindowProcW(window, message, wparam, lparam);
 }
 void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine) noexcept {
-    if (engine.stage() != Stage::Selecting || engine.candidates().empty()) { close(); return; }
+    if (!engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close(); return; }
+    if (list_ && list_->registration() != engine.registering()) close();
     try {
         ComPtr<ITfDocumentMgr> document;
         if (!context || FAILED(context->GetDocumentMgr(&document)) || !document) { close(); return; }
         if (!list_) {
             if (!thread || FAILED(thread->QueryInterface(IID_PPV_ARGS(&manager_)))) return;
-            list_.Attach(new CandidateList);
+            list_.Attach(new CandidateList(engine.registering()));
             list_->update(engine, document.Get());
             BOOL show = TRUE;
             const auto list = list_; const auto manager = manager_;

@@ -56,6 +56,20 @@ int main() {
             list->close(); list->Show(TRUE); list->IsShown(&shown); check(!shown, "retained element reopened after end");
             check(text(list.Get(), 8) == L"候補8く", "retained element lost its immutable snapshot");
         }
+        {
+            Engine engine(demo_dictionary()); type(engine, "Michi"); engine.handle({KeyCode::Space});
+            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(true)); popup->update(engine, nullptr);
+            ComPtr<ITfUIElement> element; check(SUCCEEDED(popup.As(&element)), "registration UI element unavailable");
+            ComPtr<ITfCandidateListUIElement> candidates;
+            check(element.As(&candidates) == E_NOINTERFACE, "registration advertised editable text as a candidate list");
+            GUID guid{}; element->GetGUID(&guid); check(guid == registration_ui_guid, "registration identity missing");
+            type(engine, "Nihon"); engine.handle({KeyCode::Space}); popup->update(engine, nullptr);
+            BSTR description = nullptr; element->GetDescription(&description);
+            const std::wstring contents(description, SysStringLen(description)); SysFreeString(description);
+            check(contents.find(L"みち") != contents.npos && contents.find(L"▼日本") != contents.npos, "registration description lost reading or draft");
+            popup->close(); element->Show(TRUE); BOOL shown = TRUE; element->IsShown(&shown);
+            check(!shown, "retained registration element reopened");
+        }
         check(module_objects == 0, "candidate COM object leaked");
         std::cout << "PASS candidate text/okuri, 7-row pages, host pagination, bounds, update flags, retained UI lifetime\n";
         return 0;

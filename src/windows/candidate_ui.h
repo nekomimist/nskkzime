@@ -10,9 +10,10 @@ namespace nskkzime::windows {
 inline constexpr GUID candidate_ui_guid = {0x680bc7bf, 0xbe19, 0x42e9, {0xa4, 0x38, 0x0d, 0x8d, 0xf2, 0x99, 0xf5, 0x0b}};
 
 // Snapshot owned by the UI manager. It never points back to the text service.
+inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
 class CandidateList final : public ITfCandidateListUIElement {
 public:
-    CandidateList();
+    explicit CandidateList(bool registration = false);
     ~CandidateList();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -33,6 +34,8 @@ public:
     void update(const Engine&, ITfDocumentMgr*);
     void locate(HWND owner, const RECT* anchor) noexcept;
     void close() noexcept;
+    bool registration() const { return registration_; }
+    bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
     struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
     UINT current_page() const;
@@ -44,6 +47,8 @@ private:
     Microsoft::WRL::ComPtr<ITfDocumentMgr> document_;
     std::vector<Row> rows_;
     std::vector<UINT> pages_;
+    const bool registration_;
+    std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
     bool requested_visible_ = false, located_ = false, closed_ = false;
@@ -62,6 +67,7 @@ public:
     void locate(ITfContext*, ITfComposition*, TfEditCookie) noexcept;
     void hide() noexcept;
     void close() noexcept;
+    bool presentation_available() const { return list_ && list_->presentation_available(); }
 private:
     Microsoft::WRL::ComPtr<ITfUIElementMgr> manager_;
     Microsoft::WRL::ComPtr<CandidateList> list_;

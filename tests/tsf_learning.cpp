@@ -77,8 +77,63 @@ int wmain(int argc, wchar_t** argv) {
         type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
         check(context->doc->text == L"感じ", "updated snapshot not used by next conversion");
         key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        context.Attach(new test_host::Context);
+        type(keys.Get(), context.Get(), "Michi"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(host->ui != nullptr && context->doc->text == L"みち", "registration did not retain host reading");
+        ComPtr<ITfCandidateListUIElement> list;
+        check(host->ui.As(&list) == E_NOINTERFACE, "registration exposed draft as candidates");
+        type(keys.Get(), context.Get(), "Nihon"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"みち", "registration draft leaked into document");
+        context->doc->reject_write = true;
+        check(!key(keys.Get(), context.Get(), VK_RETURN), "failed registration consumed Enter");
+        context->doc->reject_write = false;
+        check(key(keys.Get(), context.Get(), VK_RETURN), "registration retry failed");
+        check(context->doc->text == L"日本", "registered text not applied");
+        // Reuse immediately, before waiting for IPC or a snapshot refresh.
+        type(keys.Get(), context.Get(), "Michi"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"日本日本" && host->ui && SUCCEEDED(host->ui.As(&list)), "new registration not immediately available");
+        list.Reset(); key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        until([&] { return read_user_dictionary(file).revision() == 2; });
+        check(read_user_dictionary(file).lookup({U"みち"})[0].text == U"日本", "registered word not saved");
+
+        context.Attach(new test_host::Context);
+        type(keys.Get(), context.Get(), "/outer"); key(keys.Get(), context.Get(), VK_SPACE);
+        type(keys.Get(), context.Get(), "/inner"); key(keys.Get(), context.Get(), VK_SPACE);
+        type(keys.Get(), context.Get(), "kana"); key(keys.Get(), context.Get(), VK_RETURN);
+        check(context->doc->text == L"outer", "nested registration leaked into host");
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        until([&] { return read_user_dictionary(file).revision() == 3; });
+        check(read_user_dictionary(file).lookup({U"inner"})[0].text == U"かな" &&
+            read_user_dictionary(file).lookup({U"outer"}).empty(), "nested registration/cancel persistence incorrect");
+
+        context.Attach(new test_host::Context);
+        type(keys.Get(), context.Get(), "/aborted"); key(keys.Get(), context.Get(), VK_SPACE);
+        type(keys.Get(), context.Get(), "Nihon"); key(keys.Get(), context.Get(), VK_SPACE);
+        host->events->OnSetFocus(nullptr, nullptr); context->pump();
+        check(context->doc->text == L"aborted" && !host->ui, "focus loss inserted registration draft or retained UI");
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "a");
+        check(context->doc->text == L"あ", "registration followed focus into another field");
+        for (const bool unknown : {false, true}) {
+            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE; context->unknown_scope = unknown;
+            type(keys.Get(), context.Get(), "/secret"); key(keys.Get(), context.Get(), VK_SPACE);
+            check(context->doc->text == L"secret" && !host->ui, "private/unknown field started registration");
+            key(keys.Get(), context.Get(), VK_RETURN); type(keys.Get(), context.Get(), "kana");
+            check(context->doc->text == L"secretかな", "private field lost normal input");
+        }
+        // A scope can change while the editor is open; recheck before saving.
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "/changed"); key(keys.Get(), context.Get(), VK_SPACE);
+        type(keys.Get(), context.Get(), "kana"); context->input_scope = IS_PRIVATE; key(keys.Get(), context.Get(), VK_RETURN);
+        check(context->doc->text == L"かな", "scope change lost confirmed text");
+        Sleep(1200);
+        check(read_user_dictionary(file).revision() == 3, "canceled/private registration persisted");
+        context.Attach(new test_host::Context); host->reject_ui = true;
+        type(keys.Get(), context.Get(), "/no-ui"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(!host->ui && context->doc->text == L"no-ui", "unavailable editor lost reading");
+        key(keys.Get(), context.Get(), VK_RETURN); type(keys.Get(), context.Get(), "a");
+        check(context->doc->text == L"no-uiあ", "invisible registration consumed more input");
+        host->reject_ui = false;
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
-        std::cout << "PASS TSF edit success, failed edit retry, private/password/unknown scopes, cancel, asynchronous ranking\n";
+        std::cout << "PASS TSF learning, transactional registration, immediate reuse, recursive cancel, private scopes, focus/UI failure\n";
         result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     if (library && !result) FreeLibrary(library); // Worker owns a separate reference until its callback returns.

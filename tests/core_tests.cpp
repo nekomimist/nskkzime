@@ -13,7 +13,7 @@ void equal(std::u32string_view actual, std::u32string_view expected) {
     if (actual != expected) throw std::runtime_error("expected " + utf8(expected) + ", got " + utf8(actual));
 }
 struct Session {
-    Engine engine{demo_dictionary()};
+    Engine engine{demo_dictionary(), false}; // Existing conversion contract with registration disabled.
     std::u32string committed;
     Result key(Key key) { auto result = engine.handle(key); committed += result.committed; return result; }
     void type(std::string_view text) { for (char ch : text) key({KeyCode::Character, ch}); }

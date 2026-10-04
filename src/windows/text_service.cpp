@@ -230,7 +230,11 @@ public:
         if (manager_) return E_UNEXPECTED;
         if (!dictionary_loaded_) {
             // Display-attribute-only COM instances never load a dictionary.
-            try { dictionary_ = runtime_dictionary(); engine_ = Engine(dictionary_); dictionary_loaded_ = true; }
+            try {
+                dictionary_ = runtime_dictionary();
+                engine_ = Engine(dictionary_, dynamic_cast<const LearningDictionary*>(dictionary_.get()) != nullptr);
+                dictionary_loaded_ = true;
+            }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
             catch (...) { return E_FAIL; }
         }
@@ -308,12 +312,18 @@ public:
                     const auto result = next.handle(*key);
                     if (!result.consumed) return S_OK;
                     std::wstring learning_reason;
-                    const bool may_learn = result.learning && learning_allowed(target.Get(), self->composition_.Get(), cookie, learning_reason);
+                    const bool starting_registration = next.registration_depth() > self->engine_.registration_depth();
+                    const bool persistence_allowed = (result.learning || starting_registration) &&
+                        learning_allowed(target.Get(), self->composition_.Get(), cookie, learning_reason);
+                    if (starting_registration && !persistence_allowed) next.abandon_registration();
                     const auto status = self->apply(target.Get(), cookie, result.committed, next);
                     if (SUCCEEDED(status)) {
                         self->engine_ = std::move(next); applied = true;
-                        if (may_learn) publish_learning(self->dictionary_, *result.learning);
-                        else if (result.learning) {
+                        if (result.learning && persistence_allowed) {
+                            publish_learning(self->dictionary_, *result.learning);
+                            if (result.registration) self->engine_.remember_registration(*result.learning);
+                        }
+                        else if (result.learning || (starting_registration && !persistence_allowed)) {
                             if (const auto* learning = dynamic_cast<const LearningDictionary*>(self->dictionary_.get())) learning->skipped(std::move(learning_reason));
                         }
                         self->refresh_candidates(cookie);
@@ -374,7 +384,7 @@ public:
                 [self, generation](TfEditCookie cookie) {
                     if (self->layout_generation_ != generation) return S_OK;
                     self->layout_pending_ = false;
-                    if (self->composition_ && self->engine_.stage() == Stage::Selecting)
+                    if (self->composition_ && (self->engine_.stage() == Stage::Selecting || self->engine_.registering()))
                         self->candidates_.locate(self->composition_context_.Get(), self->composition_.Get(), cookie);
                     return S_OK;
                 });
@@ -414,6 +424,11 @@ private:
     void refresh_candidates(TfEditCookie cookie) noexcept {
         candidates_.update(manager_.Get(), composition_context_.Get(), engine_);
         candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
+        if (engine_.registering() && !candidates_.presentation_available()) {
+            // The host text is still the outer reading. Never capture more keys
+            // in an editor the user cannot see, even when popup creation fails.
+            engine_.abandon_registration(); candidates_.close();
+        }
     }
     bool composition_valid(TfEditCookie cookie) const {
         ComPtr<ITfRange> range;

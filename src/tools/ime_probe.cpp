@@ -2,12 +2,15 @@
 #include <wrl/client.h>
 #include <richedit.h>
 #include <inputscope.h>
+#include <filesystem>
 #include <string>
 
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr int activate_id = 101, restore_id = 102, refresh_id = 103;
-#ifdef NSKKZIME_LOCAL_PROBE
+#ifdef NSKKZIME_PROBE_DICTIONARY
+constexpr auto window_title = L"nskkzime 入力検証 (隔離データ)";
+#elif defined(NSKKZIME_LOCAL_PROBE)
 constexpr auto window_title = L"nskkzime 入力検証 (ビルド版)";
 #else
 constexpr auto window_title = L"nskkzime 入力検証";
@@ -136,6 +139,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 }
 }
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+#ifdef NSKKZIME_PROBE_DICTIONARY
+    // Interactive development fixture; never load or write the user's settings/store.
+    wchar_t executable[32768]{};
+    const auto length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    if (!length || length == ARRAYSIZE(executable)) return 2;
+    const auto file = std::filesystem::path(executable).parent_path() / L"probe-user-dictionary.nskkdb";
+    if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", NSKKZIME_PROBE_DICTIONARY) ||
+        !SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1") || !SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str())) return 2;
+#endif
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 1;
     const auto rich_module = LoadLibraryW(L"msftedit.dll");
