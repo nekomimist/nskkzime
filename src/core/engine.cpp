@@ -73,6 +73,9 @@ void Engine::convert(Result& result) {
 }
 void Engine::confirm(Result& result) {
     result.committed += literal_text();
+    if (stage_ == Stage::Selecting && candidates_[candidate_index_].learning == LearningPolicy::Learn &&
+        candidates_[candidate_index_].source != CandidateSource::GeneratedLong)
+        result.learning = LearningEvent{{reading_, okuri_letter_}, okuri_, candidates_[candidate_index_]};
     clear_composition();
 }
 Result Engine::handle(Key key) {

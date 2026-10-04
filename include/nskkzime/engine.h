@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,11 +41,20 @@ private:
 // Explicit fixture for the first vertical slice, NOT a production SKK dictionary.
 std::shared_ptr<const Dictionary> demo_dictionary();
 
+struct LearningEvent {
+    LookupKey key;
+    std::u32string okuri; // Hiragana, separate from the candidate's stem.
+    Candidate candidate;
+};
 struct Result {
     bool consumed = false;
     std::u32string committed;
     bool dictionary_miss = false;
     bool candidates_exhausted = false;
+    // A proposed event, not a dictionary mutation. Hosts may publish it only
+    // after successfully applying this Result's text and adopting the Engine.
+    // DoNotLearn candidates and long generations never produce this event.
+    std::optional<LearningEvent> learning;
 };
 
 class Engine {

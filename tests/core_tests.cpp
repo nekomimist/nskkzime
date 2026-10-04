@@ -162,6 +162,87 @@ int main() {
             equal(s.engine.preedit(), U"▽SK"); equal(copy.preedit(), U"▽SKK");
             s.engine.reset(); s.type("a"); equal(s.committed, U"あ");
         }},
+        {"learning/explicit-confirm-once-with-selected-metadata", [] {
+            for (const auto confirm : {KeyCode::Enter, KeyCode::Hiragana}) {
+                Session s; s.type("Kanji");
+                require(!s.key({KeyCode::Space}).learning, "lookup learned before confirmation");
+                require(!s.key({KeyCode::Space}).learning, "navigation learned before confirmation");
+                require(!s.key({KeyCode::Space}).learning, "candidate exhaustion learned before confirmation");
+                const auto result = s.key({confirm});
+                require(result.learning.has_value(), "selected candidate was not emitted");
+                const auto& event = *result.learning;
+                require(event.key == LookupKey{U"かんじ"} && event.okuri.empty(), "wrong learning key");
+                equal(event.candidate.text, U"感じ"); equal(event.candidate.annotation, U"感覚");
+                require(event.candidate.id == "kanji-2" && event.candidate.source == CandidateSource::Dictionary, "candidate metadata lost");
+                require(!s.key({KeyCode::Enter}).learning && !s.key({KeyCode::Hiragana}).learning, "duplicate learning event");
+            }
+        }},
+        {"learning/implicit-confirm-separates-following-input", [] {
+            Session s; s.type("Kanji"); s.key({KeyCode::Space});
+            const auto result = s.key({KeyCode::Character, 'a'});
+            equal(result.committed, U"漢字あ"); require(result.learning.has_value(), "implicit confirmation missing");
+            equal(result.learning->candidate.text, U"漢字"); equal(result.learning->key.reading, U"かんじ");
+            s.type("Kanji"); s.key({KeyCode::Space});
+            const auto next = s.key({KeyCode::Character, 'N'});
+            require(next.learning.has_value() && s.engine.stage() == Stage::Reading, "new conversion lost old event");
+            s.type("ihon"); s.key({KeyCode::Space});
+            const auto japanese = s.key({KeyCode::Enter});
+            require(japanese.learning.has_value(), "new conversion missing event"); equal(japanese.learning->key.reading, U"にほん");
+            equal(next.learning->candidate.text, U"漢字");
+        }},
+        {"learning/okuri-stem-and-normalized-reading", [] {
+            for (const auto sequence : {"KaKU", "qKaKU"}) {
+                Session s; s.type(sequence); s.key({KeyCode::Space});
+                const auto result = s.key({KeyCode::Enter}); require(result.learning.has_value(), "okuri event missing");
+                require(result.learning->key == LookupKey{U"か", 'k'}, "okuri key changed with display mode");
+                equal(result.learning->okuri, U"く"); equal(result.learning->candidate.text, U"描");
+            }
+        }},
+        {"learning/abbrev-preserves-case", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>();
+            dictionary->add({U"SKK"}, {{"upper", U"日本語入力", U""}});
+            Session s{Engine(dictionary)}; s.type("/SKK"); s.key({KeyCode::Space});
+            const auto result = s.key({KeyCode::Enter}); require(result.learning.has_value(), "abbrev event missing");
+            require(result.learning->key == LookupKey{U"SKK"}, "abbrev learning case changed");
+        }},
+        {"learning/cancel-edit-and-reset-do-not-learn", [] {
+            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Backspace}, Key{KeyCode::Character, 'x'}}) {
+                Session s; s.type("Kanji"); s.key({KeyCode::Space});
+                require(!s.key(cancel).learning && !s.key({KeyCode::Enter}).learning, "canceled candidate was learned");
+            }
+            Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.engine.reset();
+            require(!s.key({KeyCode::Enter}).learning, "reset retained learning");
+        }},
+        {"learning/literal-and-missing-words-do-not-learn", [] {
+            for (const auto sequence : {"kana", "n", "Kanji", "/literal"}) {
+                Session s; s.type(sequence); require(!s.key({KeyCode::Enter}).learning, "literal input learned");
+            }
+            Session s; s.type("Michi"); require(!s.key({KeyCode::Space}).learning, "dictionary miss learned");
+            require(!s.key({KeyCode::Enter}).learning, "missing word learned without registration");
+        }},
+        {"learning/policy-controls-generated-and-dictionary-candidates", [] {
+            for (const auto source : {CandidateSource::Dictionary, CandidateSource::GeneratedLong, CandidateSource::GeneratedFallback}) {
+                for (const auto policy : {LearningPolicy::Learn, LearningPolicy::DoNotLearn}) {
+                    auto dictionary = std::make_shared<MemoryDictionary>();
+                    dictionary->add({U"かな"}, {{"candidate", U"仮名", U"注釈", source, policy}});
+                    Session s{Engine(dictionary)}; s.type("Kana"); s.key({KeyCode::Space});
+                    const auto result = s.key({KeyCode::Enter}); equal(result.committed, U"仮名");
+                    require(result.learning.has_value() == (policy == LearningPolicy::Learn && source != CandidateSource::GeneratedLong),
+                        "learning policy or long-generation exclusion ignored");
+                    if (result.learning) require(result.learning->candidate.source == source, "candidate source changed");
+                }
+            }
+        }},
+        {"learning/trial-does-not-mutate-shared-dictionary", [] {
+            auto dictionary = demo_dictionary(); Session s{Engine(dictionary)}; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Space});
+            auto trial = s.engine; const auto revision = s.engine.revision();
+            const auto proposed = trial.handle({KeyCode::Enter}); require(proposed.learning.has_value(), "trial event missing");
+            equal(s.engine.preedit(), U"▼感じ"); require(s.engine.revision() == revision, "trial modified original state");
+            equal(dictionary->lookup({U"かんじ"})[0].text, U"漢字");
+            const auto retried = s.key({KeyCode::Enter}); require(retried.learning.has_value(), "retry event missing");
+            equal(retried.learning->candidate.text, proposed.learning->candidate.text);
+            require(!s.key({KeyCode::Enter}).learning, "applied confirmation emitted twice");
+        }},
         {"unicode/non-bmp", [] { require(utf8(U"𠮷") == "\xf0\xa0\xae\xb7", "non-BMP UTF-8 failed"); equal(katakana(U"かな𠮷"), U"カナ𠮷"); }},
         {"state/random-key-invariants", [] {
             Session s; std::mt19937 random(12345);
@@ -172,6 +253,9 @@ int main() {
                 const bool expected = s.engine.would_handle(key);
                 const auto result = s.key(key);
                 require(result.consumed == expected, "probe disagrees with handler");
+                if (result.learning) require(result.consumed && !result.committed.empty() && result.learning->candidate.learning == LearningPolicy::Learn &&
+                    result.learning->candidate.source != CandidateSource::GeneratedLong,
+                    "invalid learning event");
                 require(result.committed.find(U'▽') == std::u32string::npos && result.committed.find(U'▼') == std::u32string::npos, "marker committed");
                 if (s.engine.stage() == Stage::Selecting) require(s.engine.candidate_index() < s.engine.candidates().size(), "invalid candidate index");
                 if (i % 50 == 0) s.engine.reset();

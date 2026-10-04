@@ -111,7 +111,19 @@ int run(const std::vector<std::string>& arguments) {
                 first = false;
                 std::cout << "{\"text\":" << json_string(item.text) << ",\"annotation\":" << json_string(item.annotation) << '}';
             }
-            std::cout << "]}\n";
+            std::cout << "],\"learning\":";
+            if (result.learning) {
+                const auto& event = *result.learning;
+                const auto source = event.candidate.source == nskkzime::CandidateSource::Dictionary ? U"dictionary" :
+                    event.candidate.source == nskkzime::CandidateSource::GeneratedLong ? U"generated_long" : U"generated_fallback";
+                std::cout << "{\"reading\":" << json_string(event.key.reading)
+                          << ",\"okuri_letter\":" << json_string(event.key.okuri ? nskkzime::ascii(std::string(1, event.key.okuri)) : U"")
+                          << ",\"okuri\":" << json_string(event.okuri)
+                          << ",\"text\":" << json_string(event.candidate.text)
+                          << ",\"annotation\":" << json_string(event.candidate.annotation)
+                          << ",\"source\":" << json_string(source) << '}';
+            } else std::cout << "null";
+            std::cout << "}\n";
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 2;
