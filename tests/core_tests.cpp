@@ -59,6 +59,46 @@ int main() {
         {"conversion/cancel-twice", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U"▽かんじ"); s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U""); equal(s.committed, U""); }},
         {"conversion/continue-typing", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.type("desu"); equal(s.committed, U"漢字です"); }},
         {"conversion/okuri", [] { Session s; s.type("KaKu"); equal(s.engine.preedit(), U"▼書く"); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼描く"); s.key({KeyCode::Enter}); equal(s.committed, U"描く"); }},
+        {"conversion/shift-release-during-first-kana", [] {
+            for (const auto input : {"Kanji", "KAnji"}) {
+                Session s; s.type(input); equal(s.engine.preedit(), U"▽かんじ");
+                s.key({KeyCode::Space}); s.key({KeyCode::Enter}); equal(s.committed, U"漢字");
+            }
+            for (const auto input : {"Kyou", "KYou", "KYOu"}) {
+                Session s; s.type(input); equal(s.engine.preedit(), U"▽きょう");
+                require(s.engine.stage() == Stage::Reading, "extra Shift started okuri inside the first kana");
+            }
+            Session s; s.type("NEko"); equal(s.engine.preedit(), U"▽ねこ");
+        }},
+        {"conversion/shift-release-with-okuri", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>();
+            dictionary->add({U"ころ", 'n'}, {{"korobu", U"転", U""}});
+            for (const auto input : {"KoroNde", "KOroNde", "KOroNDe", "KOroNDE"}) {
+                Session s{Engine(dictionary)}; s.type(input);
+                equal(s.engine.preedit(), U"▼転んで");
+                s.key({KeyCode::Enter}); equal(s.committed, U"転んで");
+            }
+            for (const auto input : {"KaKu", "KAKu", "KaKU", "KAKU"}) {
+                Session s; s.type(input); equal(s.engine.preedit(), U"▼書く");
+            }
+        }},
+        {"conversion/shift-keeps-okuri-boundary-and-terminal-n", [] {
+            Session s; s.type("KAnJ"); equal(s.engine.preedit(), U"▽かん*j");
+            s.type("I"); equal(s.engine.preedit(), U"▽かん*じ");
+            Session vowel; vowel.type("AI"); equal(vowel.engine.preedit(), U"▽あ*い");
+        }},
+        {"conversion/shift-release-after-backspace-and-cancel", [] {
+            Session s; s.type("KY"); s.key({KeyCode::Backspace}); s.type("Anji");
+            equal(s.engine.preedit(), U"▽かんじ");
+            s.key({KeyCode::Cancel}); s.type("KAKU"); equal(s.engine.preedit(), U"▼書く");
+            s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U"▽か*く");
+        }},
+        {"conversion/shift-release-in-katakana-mode", [] {
+            Session s; s.type("qKAnji"); equal(s.engine.preedit(), U"▽カンジ");
+            s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼漢字");
+            s.key({KeyCode::Cancel}); s.key({KeyCode::Cancel}); s.type("KAKU");
+            equal(s.engine.preedit(), U"▼書ク");
+        }},
         {"conversion/okuri-continued", [] { Session s; s.type("TaBeru"); equal(s.committed, U"食べる"); }},
         {"conversion/okuri-cancel", [] { Session s; s.type("KaKu"); s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U"▽か*く"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"▽か*"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"▽か"); }},
         {"conversion/missing-word-preserves-reading", [] { Session s; s.type("Michi"); require(s.key({KeyCode::Space}).dictionary_miss, "missing lookup must be signalled"); equal(s.engine.preedit(), U"▽みち"); s.key({KeyCode::Enter}); equal(s.committed, U"みち"); }},

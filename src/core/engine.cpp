@@ -136,12 +136,16 @@ Result Engine::handle(Key key) {
         return result;
     }
     if (ch >= 'A' && ch <= 'Z') {
-        append(romaji_.flush(), result);
         ch = static_cast<char>(ch - 'A' + 'a');
-        if (stage_ == Stage::Direct) stage_ = Stage::Reading;
-        else if (stage_ == Stage::Reading && !reading_.empty()) {
+        if (stage_ == Stage::Direct) {
+            append(romaji_.flush(), result);
+            stage_ = Stage::Reading;
+        } else if (stage_ == Stage::Reading && !reading_.empty()) {
+            append(romaji_.flush(), result);
             stage_ = Stage::Okuri; okuri_letter_ = ch;
         }
+        // While forming the first kana or an established okuri, an extra
+        // shifted letter continues the romaji (KAnji, KYOu, KaKU, KOroNDe).
     }
     append(romaji_.push(ch), result);
     if (stage_ == Stage::Okuri && !okuri_.empty() && romaji_.pending().empty()) convert(result);

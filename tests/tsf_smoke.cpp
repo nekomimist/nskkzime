@@ -106,6 +106,17 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     check(next->doc->text == L"書くあ", "terminated composition reused old state");
     next->readonly = true;
     check(!key(keys, next.Get(), 'A'), "read-only context consumed input");
+    {
+        ComPtr<test_host::Context> shifted; shifted.Attach(new test_host::Context);
+        type(keys, shifted.Get(), "KA");
+        check(shifted->doc->text == L"か", "held Shift split the first romaji syllable");
+        type(keys, shifted.Get(), "nji");
+        key(keys, shifted.Get(), VK_SPACE); key(keys, shifted.Get(), VK_RETURN);
+        type(keys, shifted.Get(), "KAKU");
+        check(shifted->doc->text == L"漢字書く", "held Shift broke dictionary conversion or okuri");
+        key(keys, shifted.Get(), VK_RETURN);
+        check(shifted->composition->ended, "shifted input left a composition open");
+    }
     if (file_dictionary) {
         ComPtr<test_host::Context> dictionary_context; dictionary_context.Attach(new test_host::Context);
         type(keys, dictionary_context.Get(), "Jisho");
