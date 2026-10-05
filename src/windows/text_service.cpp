@@ -229,7 +229,7 @@ public:
             // Display-attribute-only COM instances never load a dictionary.
             try {
                 dictionary_ = runtime_dictionary();
-                engine_ = Engine(dictionary_, dynamic_cast<const LearningDictionary*>(dictionary_.get()) != nullptr, runtime_romaji_rules());
+                engine_ = Engine(dictionary_, true, runtime_romaji_rules());
                 dictionary_loaded_ = true;
             }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
@@ -561,10 +561,10 @@ private:
             cancel_inference();
             engine_ = std::move(next); applied = true;
             if (result.learning && persistence_allowed) {
-                publish_learning(dictionary_, *result.learning);
+                publish_runtime_learning(dictionary_, *result.learning);
                 if (result.registration) engine_.remember_registration(*result.learning);
             } else if (result.learning || (starting_registration && !persistence_allowed)) {
-                if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary_.get())) learning->skipped(std::move(learning_reason));
+                skip_runtime_learning(dictionary_, std::move(learning_reason));
             }
             refresh_candidates(cookie);
             // Inner registration input has its own modes. Keep Windows open

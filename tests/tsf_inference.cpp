@@ -1,3 +1,5 @@
+#include "dictionary_wait.h"
+#include "runtime_dictionary.h"
 #include "tsf_test_host.h"
 #include "inference_client.h"
 #include "candidate_ui.h"
@@ -13,7 +15,7 @@ struct Session {
     ComPtr<test_host::Manager> host; ComPtr<test_host::Context> context; ComPtr<ITfTextInputProcessorEx> service; ComPtr<ITfKeyEventSink> keys;
     Session() {
         host.Attach(new test_host::Manager); context.Attach(new test_host::Context); context->doc->text=L"前後"; context->doc->caret=1;
-        check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))),"create"); service.As(&keys); check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"activate");
+        check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))),"create"); service.As(&keys); check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"activate"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
     }
     ~Session() { service->Deactivate(); context->pump(); }
     void key(WPARAM code,bool shift=false) {

@@ -141,4 +141,5 @@ std::shared_ptr<const Dictionary> with_learning(std::shared_ptr<const Dictionary
 void publish_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
     if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary.get())) learning->learn(event);
 }
+std::filesystem::path learning_helper_path() { return helper_path(); }
 } // namespace nskkzime::windows

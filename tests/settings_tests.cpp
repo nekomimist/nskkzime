@@ -1,6 +1,7 @@
 #include "dictionary_settings.h"
 #include "runtime_dictionary.h"
 #include "romaji_settings.h"
+#include "dictionary_wait.h"
 #include <windows.h>
 #include <chrono>
 #include <fstream>
@@ -195,9 +196,11 @@ int main() {
             const auto path = files.path(L"cache.ini"); save_dictionary_settings(path, {{first}});
             Environment no_override(L"NSKKZIME_DICTIONARY", nullptr), config_env(L"NSKKZIME_CONFIG", path.c_str());
             auto initial = runtime_dictionary(); auto same = runtime_dictionary();
+            wait_for_dictionary([&] { return initial->ready(); });
             require(initial == same, "snapshot not reused");
             save_dictionary_settings(path, {{second}});
             const auto changed = runtime_dictionary();
+            wait_for_dictionary([&] { return changed->ready(); });
             require(initial != changed && changed->lookup({U"かな"})[0].annotation == U"共通", "new configuration used stale snapshot");
             require(initial->lookup({U"かな"})[0].annotation == U"優先", "existing snapshot changed");
             require(runtime_dictionary_status().find(second.native()) != std::wstring::npos, "status did not reflect loaded configuration");
@@ -205,12 +208,16 @@ int main() {
         {"runtime/invalid-config-kana-fallback-with-status", [&] {
             const auto path = files.write(L"invalid-runtime.ini", "version=7");
             Environment no_override(L"NSKKZIME_DICTIONARY", nullptr), config_env(L"NSKKZIME_CONFIG", path.c_str());
-            require(runtime_dictionary()->lookup({U"かんじ"}).empty(), "broken configuration fell back to demo");
+            const auto dictionary = runtime_dictionary();
+            wait_for_dictionary([&] { return dictionary->ready(); });
+            require(dictionary->lookup({U"かんじ"}).empty(), "broken configuration fell back to demo");
             require(runtime_dictionary_status().find(L"読み込めません") != std::wstring::npos, "configuration failure invisible");
         }},
         {"runtime/environment-bypasses-invalid-config-path", [&] {
             Environment config_env(L"NSKKZIME_CONFIG", L"relative.ini"), override_env(L"NSKKZIME_DICTIONARY", first.c_str());
-            require(runtime_dictionary()->lookup({U"かな"}).size() == 2, "valid dictionary blocked by invalid config path");
+            const auto dictionary = runtime_dictionary();
+            wait_for_dictionary([&] { return dictionary->ready(); });
+            require(dictionary->lookup({U"かな"}).size() == 2, "valid dictionary blocked by invalid config path");
             require(runtime_dictionary_status().find(L"NSKKZIME_DICTIONARY") != std::wstring::npos, "override source invisible");
         }}
     };

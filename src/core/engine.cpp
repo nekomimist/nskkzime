@@ -151,6 +151,7 @@ void Engine::append(std::u32string text, Result& result) {
 void Engine::convert(Result& result) {
     append(input_.romaji.flush(), result);
     if (input_.reading.empty()) return;
+    if (!dictionary_->ready()) { result.dictionary_pending = true; return; }
     result.conversion_started = true;
     input_.candidates_touched = input_.generation_attempted = false;
     const LookupKey lookup{input_.reading, input_.okuri_letter};
@@ -205,7 +206,7 @@ Result Engine::handle(Key key) {
     return result;
 }
 void Engine::begin_registration(Result& result) {
-    if (!registration_enabled_) return;
+    if (!registration_enabled_ || !dictionary_->registration_allowed()) return;
     if (registrations_.size() >= 8 || input_.reading.size() > 1024 || input_.okuri.size() > 1024) {
         result.registration_limit = registration_limit_ = true; return;
     }

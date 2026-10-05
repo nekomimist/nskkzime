@@ -5,6 +5,7 @@ EXPORTS
     DllRegisterServer PRIVATE
     DllUnregisterServer PRIVATE
     NskkzimeGetDictionaryStatus PRIVATE
+    NskkzimeIsDictionaryReady PRIVATE
     NskkzimeEnableContextPreview PRIVATE
     NskkzimeGetContextPreview PRIVATE
     NskkzimeGetInferenceStatus PRIVATE

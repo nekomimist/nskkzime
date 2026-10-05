@@ -1,3 +1,4 @@
+#include "dictionary_wait.h"
 #include "module.h"
 #include "tsf_test_host.h"
 #include "inference_client.h"
@@ -16,7 +17,7 @@ struct Session {
         host.Attach(new test_host::Manager); context.Attach(new test_host::Context);
         context->doc->text=prefix; context->doc->caret=static_cast<LONG>(context->doc->text.size());
         check(SUCCEEDED(factory->CreateInstance(nullptr,IID_PPV_ARGS(&service))),"create"); service.As(&keys);
-        check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"activate");
+        check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"activate"); wait_for_dictionary();
     }
     ~Session() { service->Deactivate(); context->pump(); }
     void key(WPARAM code,bool shift=false) {

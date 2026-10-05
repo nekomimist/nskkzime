@@ -1,3 +1,5 @@
+#include "dictionary_wait.h"
+#include "runtime_dictionary.h"
 #include "tsf_mode_host.h"
 #include "learning_ipc.h"
 #include "candidate_ui.h"
@@ -23,7 +25,7 @@ struct Session {
         if (closed) host->open->value = 0;
         host->reject_bar = reject_bar;
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))), "create service"); service.As(&keys);
-        check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activate service");
+        check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activate service"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
     }
     ~Session() { service->Deactivate(); context->pump(); }
     bool key(WPARAM code, bool control = false, bool shift = false, bool repeat = false) {

@@ -1,3 +1,4 @@
+#include "dictionary_wait.h"
 #include "module.h"
 #include "display_attributes.h"
 #include "tsf_test_host.h"
@@ -49,12 +50,12 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     check(!host->keys && !host->events, "partial activation leaked a sink");
     host->reject_sink = false;
     for (int i = 0; i < 3; ++i) {
-        succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed");
+        succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed"); wait_for_dictionary();
         check(service->ActivateEx(host.Get(), 1, 0) == E_UNEXPECTED, "double activation accepted");
         succeeded(service->Deactivate(), "test-host deactivate failed");
         check(!host->keys && !host->events, "deactivation leaked a sink");
     }
-    succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed");
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed"); wait_for_dictionary();
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
     check(context->doc->text == L"かんじ", "reading was not composed");
@@ -136,7 +137,7 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
 void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
-    succeeded(service->ActivateEx(host.Get(), 1, 0), "selection-test activate failed");
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "selection-test activate failed"); wait_for_dictionary();
     auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
     {
         auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
@@ -325,7 +326,7 @@ void attribute_tests(ITfTextInputProcessorEx* service) {
 void missing_dictionary_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
-    succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed");
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed"); wait_for_dictionary();
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
     key(keys, context.Get(), VK_SPACE);
@@ -340,7 +341,7 @@ void missing_dictionary_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink*
 void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
-    succeeded(service->ActivateEx(host.Get(), 1, 0), "candidate UI activation failed");
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "candidate UI activation failed"); wait_for_dictionary();
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
     check(!host->ui, "reading showed candidate UI");
@@ -407,7 +408,7 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     check(context->doc->text == L"感じ書く漢字", "candidate UI failure broke conversion");
     succeeded(service->Deactivate(), "candidate UI deactivation failed");
     check(!host->ui && !host->keys && !host->events, "candidate UI leaked subscriptions");
-    succeeded(service->ActivateEx(host.Get(), 1, 0), "modified page activation failed");
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "modified page activation failed"); wait_for_dictionary();
     ComPtr<test_host::Context> modified; modified.Attach(new test_host::Context);
     type(keys, modified.Get(), "Kanji"); key(keys, modified.Get(), VK_SPACE);
     check(!key(keys, modified.Get(), VK_NEXT, true) && modified->composition->ended && modified->doc->text == L"漢字", "shift-page did not preserve application navigation");

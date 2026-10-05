@@ -1,3 +1,5 @@
+#include "dictionary_wait.h"
+#include "runtime_dictionary.h"
 #include "candidate_ui.h"
 #include "learning_ipc.h"
 #include "tsf_test_host.h"
@@ -21,7 +23,7 @@ struct Session {
     Session() {
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))), "create service failed");
         service.As(&keys); host.Attach(new test_host::Manager); context.Attach(new test_host::Context);
-        check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activation failed");
+        check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activation failed"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
     }
     ~Session() { service->Deactivate(); context->pump(); }
     void key(WPARAM code, bool shift = false) {
@@ -99,7 +101,7 @@ int wmain(int argc, wchar_t** argv) {
             Session s; s.convert(); auto list = s.snapshot(); list->request_selection(1);
             s.service->Deactivate(); s.context->pump(); list->request_selection(1);
             check(s.context->doc->text == L"漢字" && !s.host->ui && s.context->queued.empty(), "deactivated service received click");
-            check(SUCCEEDED(s.service->ActivateEx(s.host.Get(), 1, 0)), "reactivation failed");
+            check(SUCCEEDED(s.service->ActivateEx(s.host.Get(), 1, 0)), "reactivation failed"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
             s.convert(); list->request_selection(1); check(s.context->queued.empty(), "old endpoint affected new activation");
         }
         {

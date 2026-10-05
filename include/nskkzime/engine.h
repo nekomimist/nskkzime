@@ -36,6 +36,9 @@ class Dictionary {
 public:
     virtual ~Dictionary() = default;
     virtual std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const = 0;
+    // An asynchronous host dictionary distinguishes loading from a true miss.
+    virtual bool ready() const { return true; }
+    virtual bool registration_allowed() const { return true; }
     // Immutable/CLI dictionaries keep local registrations until lookup observes
     // them. A persistence wrapper can release the cache after durable delivery.
     virtual bool registration_pending(const LearningEvent&) const { return true; }
@@ -59,6 +62,7 @@ struct Result {
     bool consumed = false;
     std::u32string committed;
     bool dictionary_miss = false;
+    bool dictionary_pending = false;
     bool candidates_exhausted = false;
     bool conversion_started = false; // A fresh dictionary lookup, including automatic okuri conversion.
     bool registration = false; // learning is an explicitly registered word (possibly inside another registration).

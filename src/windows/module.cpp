@@ -89,3 +89,9 @@ extern "C" HRESULT __stdcall NskkzimeGetDictionaryStatus(BSTR* output) {
         return *output ? S_OK : E_OUTOFMEMORY;
     } catch (...) { return E_OUTOFMEMORY; }
 }
+extern "C" HRESULT __stdcall NskkzimeIsDictionaryReady(BOOL* output) {
+    if (!output) return E_POINTER;
+    *output = FALSE;
+    try { *output = nskkzime::windows::runtime_dictionary_ready() ? TRUE : FALSE; return S_OK; }
+    catch (...) { return E_FAIL; }
+}

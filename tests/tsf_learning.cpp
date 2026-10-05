@@ -1,3 +1,4 @@
+#include "dictionary_wait.h"
 #include "module.h"
 #include "learning_ipc.h"
 #include "tsf_test_host.h"
@@ -49,7 +50,7 @@ int wmain(int argc, wchar_t** argv) {
         ComPtr<ITfTextInputProcessorEx> service; check(SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&service))), "service failed");
         ComPtr<ITfKeyEventSink> keys; service.As(&keys);
         ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
-        check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activation failed");
+        check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activation failed"); wait_for_dictionary();
         ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
         context->scope_requires_text_range = true; // Inspect the whole conversion, not a caret outside it.
         type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
