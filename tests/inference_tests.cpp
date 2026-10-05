@@ -49,6 +49,8 @@ void core_tests() {
     engine.reset(); type(engine,"KaKu"); check(engine.inference_reading().empty(),"okuri submitted for generation");
 }
 void ipc_tests(const std::filesystem::path& server) {
+    const char* phase = "initial connection";
+    try {
     const auto name = token(); const auto process = launch_dummy_server(server,name,250,1000);
     NativeHandle cancel(CreateEventW(nullptr,TRUE,FALSE,nullptr));
     InferenceResponse first;
@@ -58,16 +60,19 @@ void ipc_tests(const std::filesystem::path& server) {
         catch (const InferenceFailure& f) { if (f.status != InferenceStatus::Unavailable || GetTickCount64() >= ready) throw; Sleep(10); }
     }
     check(first.candidates.front() == U"試験〈みかん〉","real pipe response");
+    phase = "concurrent connections";
     std::vector<std::future<InferenceResponse>> peers;
     for (std::uint64_t i=2;i<8;++i) peers.push_back(std::async(std::launch::async,[&,i] { return inference_exchange(name,{i,U"同時",U"",U"",1},GetTickCount64()+3000,cancel.get()); }));
     for (std::size_t i=0;i<peers.size();++i) check(peers[i].get().id == i+2,"concurrent response mixed");
     const auto start = GetTickCount64();
+    phase = "cancellation";
     auto cancelled = std::async(std::launch::async,[&] { try { inference_exchange(name,{9,U"取消",U"",U"",1},GetTickCount64()+1500,cancel.get()); } catch (const InferenceFailure& f) { return f.status; } return InferenceStatus::Ok; });
     Sleep(30); SetEvent(cancel.get()); check(cancelled.get() == InferenceStatus::Cancelled && GetTickCount64()-start < 800,"I/O cancellation stalled");
     ResetEvent(cancel.get());
     try { inference_exchange(name,{10,U"期限",U"",U"",1},GetTickCount64()+30,cancel.get()); check(false,"timeout accepted"); }
     catch (const InferenceFailure& f) { check(f.status == InferenceStatus::Timeout,"wrong timeout status"); }
     {
+        phase = "client replacement";
         std::vector<InferenceCompletion> delivered; InferenceClient client({name,{},250,1500},[&](auto value) { delivered.push_back(std::move(value)); });
         const auto now = GetTickCount64(); client.submit({11,U"古い",U"",U"",1}); client.submit({12,U"新しい",U"",U"",1});
         check(GetTickCount64()-now < 100,"UI submission waited for server");
@@ -77,10 +82,26 @@ void ipc_tests(const std::filesystem::path& server) {
         client.submit({13,U"破棄",U"",U"",1}); client.cancel(); Sleep(300); client.poll(); check(delivered.size()==1,"cancelled callback delivered");
     }
     check(WaitForSingleObject(process.get(),5000)==WAIT_OBJECT_0,"dummy server failed to idle out");
+    phase = "restart";
     DWORD exit = 1; GetExitCodeProcess(process.get(),&exit); check(exit==0,"dummy server failed");
-    const auto restarted = launch_dummy_server(server,name,0,300); Sleep(100);
-    check(inference_exchange(name,{14,U"再開",U"",U"",1},GetTickCount64()+1500,cancel.get()).id==14,"restart failed");
+    const auto restarted = launch_dummy_server(server,name,0,600);
+    const auto restart_ready = GetTickCount64()+3000;
+    for (;;) {
+        try { check(inference_exchange(name,{14,U"再開",U"",U"",1},restart_ready,cancel.get()).id==14,"restart failed"); break; }
+        catch (const InferenceFailure& failure) {
+            if (failure.status!=InferenceStatus::Unavailable || GetTickCount64()>=restart_ready) throw;
+            check(WaitForSingleObject(restarted.get(),0)==WAIT_TIMEOUT,"restarted server exited before readiness"); Sleep(10);
+        }
+    }
+    phase = "idle-check boundary connections";
+    for (std::uint64_t i=0;i<12;++i) {
+        Sleep(90+static_cast<DWORD>(i%3)*10);
+        check(inference_exchange(name,{100+i,U"接続",U"",U"",1},GetTickCount64()+1500,cancel.get()).id==100+i,"accept lost at idle-check boundary");
+    }
     check(WaitForSingleObject(restarted.get(),3000)==WAIT_OBJECT_0,"restarted helper did not exit");
+    } catch (const InferenceFailure& failure) {
+        throw std::runtime_error(std::string(phase) + ": IPC status " + std::to_string(static_cast<int>(failure.status)));
+    }
 }
 }
 int wmain(int argc,wchar_t** argv) {

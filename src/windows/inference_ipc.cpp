@@ -129,7 +129,24 @@ int serve_dummy_inference(std::wstring_view token, DWORD delay_ms, DWORD idle_ms
             const auto connected = ConnectNamedPipe(pipe, &operation); const auto error = connected ? ERROR_SUCCESS : GetLastError();
             try {
                 if (!connected && error != ERROR_PIPE_CONNECTED) {
-                    SetLastError(error); finish(pipe, operation, connected, GetTickCount64() + 100, stop.get());
+                    need(error == ERROR_IO_PENDING);
+                    // An idle check must not cancel a live accept every 100 ms:
+                    // a connection completing at that boundary could be dropped.
+                    // Keep this operation pending until it connects or the whole
+                    // server is idle. Always drain before its stack frame ends.
+                    for (;;) {
+                        const auto waited = WaitForSingleObject(event.get(),100);
+                        if (waited == WAIT_OBJECT_0) {
+                            DWORD count = 0; need(GetOverlappedResult(pipe,&operation,&count,FALSE) != 0); break;
+                        }
+                        if (waited == WAIT_TIMEOUT && GetTickCount64() - activity.load() < idle_ms) continue;
+                        CancelIoEx(pipe,&operation);
+                        DWORD count = 0;
+                        const auto completed = GetOverlappedResult(pipe,&operation,&count,TRUE);
+                        // Cancellation may lose a race with a successful accept.
+                        // In that case the connection is still ours to serve.
+                        need(completed != 0,InferenceStatus::Timeout); break;
+                    }
                 }
                 check_peer(pipe, true); activity = GetTickCount64();
                 send_line(pipe, inference_hello(), GetTickCount64() + 1000, stop.get());
