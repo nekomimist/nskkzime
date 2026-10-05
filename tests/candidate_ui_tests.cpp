@@ -74,6 +74,43 @@ int main() {
             check(list->shortcut_index(0) == std::numeric_limits<std::size_t>::max(), "closed UI accepted shortcut");
         }
         {
+            // Hit testing uses the same client dimensions, padding, header and
+            // visible row interval as painting, independently of a desktop.
+            for (const int scale : {1, 2, 3}) {
+                const int padding = 10 * scale, line = 32 * scale;
+                const SIZE area{500 * scale, 300 * scale};
+                for (const bool registration : {false, true}) {
+                    const int top = padding + (registration ? 2 * line : 0);
+                    check(!candidate_row_at({5, top - 1}, area, padding, line, registration, 14, 16), "header or padding selected row");
+                    check(candidate_row_at({0, top}, area, padding, line, registration, 14, 16) == 14, "first row boundary missed");
+                    check(candidate_row_at({area.cx - 1, top + 2 * line - 1}, area, padding, line, registration, 14, 16) == 15, "last row boundary missed");
+                    check(!candidate_row_at({5, top + 2 * line}, area, padding, line, registration, 14, 16), "footer selected row");
+                    for (const auto point : {POINT{-1, top}, POINT{area.cx, top}, POINT{5, -1}, POINT{5, area.cy}})
+                        check(!candidate_row_at(point, area, padding, line, registration, 14, 16), "outside point selected row");
+                    check(!candidate_row_at({5, top}, area, padding, line, registration, 0, 0), "empty registration selected row");
+                }
+            }
+            CandidatePointer pointer;
+            check(!pointer.up(1), "release without press selected row");
+            pointer.down(1); check(pointer.up(1) == 1 && !pointer.up(1), "click lost or repeated");
+            pointer.down(1); check(!pointer.up(2), "drag to another row selected it");
+            pointer.down(1); check(!pointer.up({}), "release outside selected row");
+            pointer.down(1); pointer.cancel(); check(!pointer.up(1), "canceled gesture selected row");
+        }
+        {
+            Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});
+            auto actions = std::make_shared<CandidateActions>();
+            std::size_t selected = 99; std::uint64_t revision = 0; unsigned calls = 0;
+            actions->select = [&](std::size_t index, std::uint64_t value) { selected = index; revision = value; ++calls; };
+            ComPtr<CandidateList> list; list.Attach(new CandidateList(false, actions)); list->update(engine, nullptr);
+            list->request_selection(2); check(calls == 0, "out-of-range click dispatched");
+            list->request_selection(1); check(calls == 1 && selected == 1 && revision == engine.revision(), "click lost snapshot revision");
+            actions.reset(); list->request_selection(0); check(calls == 1, "expired service received click");
+            actions = std::make_shared<CandidateActions>(); actions->select = [&](std::size_t, std::uint64_t) { ++calls; };
+            list.Attach(new CandidateList(false, actions)); list->update(engine, nullptr); list->close(); list->request_selection(0);
+            check(calls == 1, "closed snapshot dispatched click");
+        }
+        {
             Engine engine(demo_dictionary()); type(engine, "Michi"); engine.handle({KeyCode::Space});
             ComPtr<CandidateList> popup; popup.Attach(new CandidateList(true)); popup->update(engine, nullptr);
             ComPtr<ITfUIElement> element; check(SUCCEEDED(popup.As(&element)), "registration UI element unavailable");

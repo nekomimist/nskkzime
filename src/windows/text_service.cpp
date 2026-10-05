@@ -241,10 +241,14 @@ public:
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
             catch (...) { return E_FAIL; }
         }
+        try {
+            candidate_actions_ = std::make_shared<CandidateActions>();
+            candidate_actions_->select = [this](std::size_t index, std::uint64_t revision) { select_candidate(index, revision); };
+        } catch (...) { candidate_actions_.reset(); return E_OUTOFMEMORY; }
         manager_ = manager; client_ = client;
         auto hr = manager_.As(&keys_);
         if (SUCCEEDED(hr)) hr = keys_->AdviseKeyEventSink(client_, this, TRUE);
-        if (FAILED(hr)) { keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL; return hr; }
+        if (FAILED(hr)) { candidate_actions_.reset(); keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL; return hr; }
         ComPtr<ITfSource> source;
         hr = manager_.As(&source);
         if (SUCCEEDED(hr)) hr = source->AdviseSink(IID_ITfThreadMgrEventSink,
@@ -254,6 +258,7 @@ public:
         return hr;
     }
     HRESULT STDMETHODCALLTYPE Deactivate() override {
+        candidate_actions_.reset();
         finish_composition();
         if (keys_) keys_->UnadviseKeyEventSink(client_);
         if (manager_ && sink_cookie_ != TF_INVALID_COOKIE) {
@@ -312,27 +317,7 @@ public:
                     if (self->composition_ && !self->composition_valid(cookie)) {
                         self->end_composition(cookie);
                     }
-                    auto next = self->engine_;
-                    const auto result = next.handle(self->candidates_.selection_key(*key, next));
-                    if (!result.consumed) return S_OK;
-                    std::wstring learning_reason;
-                    const bool starting_registration = next.registration_depth() > self->engine_.registration_depth();
-                    const bool persistence_allowed = (result.learning || starting_registration) &&
-                        learning_allowed(target.Get(), self->composition_.Get(), cookie, learning_reason);
-                    if (starting_registration && !persistence_allowed) next.abandon_registration();
-                    const auto status = self->apply(target.Get(), cookie, result.committed, next);
-                    if (SUCCEEDED(status)) {
-                        self->engine_ = std::move(next); applied = true;
-                        if (result.learning && persistence_allowed) {
-                            publish_learning(self->dictionary_, *result.learning);
-                            if (result.registration) self->engine_.remember_registration(*result.learning);
-                        }
-                        else if (result.learning || (starting_registration && !persistence_allowed)) {
-                            if (const auto* learning = dynamic_cast<const LearningDictionary*>(self->dictionary_.get())) learning->skipped(std::move(learning_reason));
-                        }
-                        self->refresh_candidates(cookie);
-                    }
-                    return status;
+                    return self->apply_key(target.Get(), cookie, self->candidates_.selection_key(*key, self->engine_), applied);
                 });
             // A refused synchronous session leaves both the key and engine untouched.
             if (SUCCEEDED(hr) && applied) {
@@ -377,6 +362,7 @@ public:
         if (context != composition_context_.Get() || !composition_) return S_OK;
         if (code == TF_LC_DESTROY) {
             ++layout_generation_; layout_pending_ = false;
+            ++selection_request_; selection_pending_ = false;
             candidates_.hide(); return S_OK;
         }
         if (layout_pending_) return S_OK;
@@ -425,8 +411,57 @@ public:
         return S_OK;
     }
 private:
+    HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied) {
+        auto next = engine_;
+        const auto result = next.handle(key);
+        if (!result.consumed) return S_OK;
+        const auto revision = engine_.revision();
+        const auto current = composition_;
+        std::wstring learning_reason;
+        const bool starting_registration = next.registration_depth() > engine_.registration_depth();
+        const bool persistence_allowed = (result.learning || starting_registration) &&
+            learning_allowed(target, current.Get(), cookie, learning_reason);
+        // Property callbacks can end or replace the composition while answering.
+        if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
+        if (starting_registration && !persistence_allowed) next.abandon_registration();
+        const auto status = apply(target, cookie, result.committed, next);
+        if (SUCCEEDED(status)) {
+            engine_ = std::move(next); applied = true;
+            if (result.learning && persistence_allowed) {
+                publish_learning(dictionary_, *result.learning);
+                if (result.registration) engine_.remember_registration(*result.learning);
+            } else if (result.learning || (starting_registration && !persistence_allowed)) {
+                if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary_.get())) learning->skipped(std::move(learning_reason));
+            }
+            refresh_candidates(cookie);
+        }
+        return status;
+    }
+    void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
+        if (selection_pending_ || !manager_ || !composition_ || !composition_context_ ||
+            engine_.revision() != revision || engine_.input_stage() != Stage::Selecting || index >= engine_.candidates().size()) return;
+        const auto request = ++selection_request_;
+        selection_pending_ = true;
+        try {
+            const ComPtr<TextService> self(this);
+            const auto target = composition_context_;
+            const auto current = composition_;
+            const auto status = request_edit(target.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
+                [self, target, current, index, revision, request](TfEditCookie cookie) {
+                    if (self->selection_request_ != request) return S_OK;
+                    self->selection_pending_ = false;
+                    if (!self->manager_ || self->composition_context_.Get() != target.Get() ||
+                        self->composition_.Get() != current.Get() || self->engine_.revision() != revision ||
+                        self->engine_.input_stage() != Stage::Selecting || !editable(target.Get())) return S_OK;
+                    if (!self->composition_valid(cookie)) { self->end_composition(cookie); return S_OK; }
+                    bool applied = false;
+                    return self->apply_key(target.Get(), cookie, {KeyCode::SelectCandidate, 0, index}, applied);
+                });
+            if (FAILED(status) && selection_request_ == request) selection_pending_ = false;
+        } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
+    }
     void refresh_candidates(TfEditCookie cookie) noexcept {
-        candidates_.update(manager_.Get(), composition_context_.Get(), engine_);
+        candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_);
         candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
         if (engine_.registering() && !candidates_.presentation_available()) {
             // The host text is still the outer reading. Never capture more keys
@@ -441,6 +476,7 @@ private:
     }
     void detach_composition() noexcept {
         ++layout_generation_; layout_pending_ = false;
+        ++selection_request_; selection_pending_ = false;
         candidates_.close();
         if (composition_context_ && layout_sink_cookie_ != TF_INVALID_COOKIE) {
             ComPtr<ITfSource> source;
@@ -578,6 +614,9 @@ private:
     std::wstring expected_text_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
+    std::shared_ptr<CandidateActions> candidate_actions_;
+    std::uint64_t selection_request_ = 0;
+    bool selection_pending_ = false;
     std::uint64_t layout_generation_ = 0;
     bool layout_pending_ = false;
     TfGuidAtom input_atom_ = TF_INVALID_GUIDATOM;

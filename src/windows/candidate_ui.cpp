@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <windowsx.h>
 
 namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
@@ -42,7 +43,15 @@ std::wstring label(std::wstring_view text) {
     return value;
 }
 }
-CandidateList::CandidateList(bool registration) : registration_(registration) { ++module_objects; }
+std::optional<std::size_t> candidate_row_at(POINT point, SIZE client, int padding, int line_height,
+    bool registration, std::size_t first, std::size_t end) noexcept {
+    const auto top = padding + (registration ? 2 * line_height : 0);
+    if (line_height <= 0 || point.x < 0 || point.x >= client.cx || point.y < top || point.y >= client.cy || first >= end) return {};
+    const auto row = static_cast<std::size_t>((point.y - top) / line_height);
+    return row < end - first ? std::optional{first + row} : std::nullopt;
+}
+CandidateList::CandidateList(bool registration, std::weak_ptr<CandidateActions> actions)
+    : registration_(registration), actions_(std::move(actions)) { ++module_objects; }
 CandidateList::~CandidateList() { close(); --module_objects; }
 HRESULT CandidateList::QueryInterface(REFIID iid, void** output) {
     if (!output) return E_POINTER;
@@ -62,7 +71,7 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
     } catch (...) { return E_OUTOFMEMORY; }
 }
 HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = registration_ ? registration_ui_guid : candidate_ui_guid; return S_OK; }
-HRESULT CandidateList::Show(BOOL show) { requested_visible_ = show != FALSE; render(); return S_OK; }
+HRESULT CandidateList::Show(BOOL show) { if (!show) cancel_pointer(); requested_visible_ = show != FALSE; render(); return S_OK; }
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
 HRESULT CandidateList::GetDocumentMgr(ITfDocumentMgr** value) { if (!value) return E_POINTER; return document_.CopyTo(value); }
@@ -85,7 +94,7 @@ HRESULT CandidateList::SetPageIndex(UINT* indices, UINT count) {
     if (!indices) return E_POINTER;
     if (!count || count > rows_.size() || indices[0] != 0) return E_INVALIDARG;
     for (UINT i = 0; i < count; ++i) if (indices[i] >= rows_.size() || (i && indices[i] <= indices[i - 1])) return E_INVALIDARG;
-    try { pages_.assign(indices, indices + count); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
+    try { cancel_pointer(); pages_.assign(indices, indices + count); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
     catch (...) { return E_OUTOFMEMORY; }
 }
 UINT CandidateList::current_page() const {
@@ -104,9 +113,27 @@ std::size_t CandidateList::shortcut_index(std::size_t slot) const noexcept {
     const auto [first, end] = visible_rows();
     return !closed_ && slot < end - first ? first + slot : std::numeric_limits<std::size_t>::max();
 }
+void CandidateList::request_selection(std::size_t index) noexcept {
+    if (closed_ || index >= rows_.size()) return;
+    if (const auto actions = actions_.lock(); actions && actions->select) {
+        try { actions->select(index, revision_); } catch (...) { /* Preserve the existing selection on failure. */ }
+    }
+}
+std::optional<std::size_t> CandidateList::hit_test(POINT point) const noexcept {
+    RECT area{};
+    if (closed_ || !located_ || !requested_visible_ || !window_ || !IsWindowVisible(window_) || !GetClientRect(window_, &area)) return {};
+    const auto [first, end] = visible_rows();
+    return candidate_row_at(point, {area.right, area.bottom}, padding_, line_height_, registration_, first, end);
+}
+void CandidateList::cancel_pointer() noexcept {
+    pointer_.cancel();
+    if (window_ && GetCapture() == window_) ReleaseCapture();
+}
 HRESULT CandidateList::GetCurrentPage(UINT* value) { if (!value) return E_POINTER; *value = current_page(); return S_OK; }
 void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     if (closed_) return;
+    if (revision_ != engine.revision()) cancel_pointer();
+    revision_ = engine.revision();
     if (engine.candidates().size() > std::numeric_limits<UINT>::max()) throw std::length_error("too many candidates");
     std::vector<Row> rows;
     rows.reserve(engine.candidates().size());
@@ -117,7 +144,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
         const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
         const auto draft = wide(engine.registration_text());
         const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
-            engine.input_stage() == Stage::Selecting ? L"1〜7: 欄へ追加  PgDn/PgUp: 7件  Enter: 登録  Esc: 戻る" :
+            engine.input_stage() == Stage::Selecting ? L"クリック/1〜7: 欄へ追加  PgDn/PgUp: 7件  Enter: 登録  Esc: 戻る" :
             L"語幹を入力  Enter: 登録  C-j: かな  Esc: 取消";
         if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
         heading_ = heading; draft_ = draft; hint_ = hint;
@@ -135,6 +162,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     selection_ = selection;
 }
 void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
+    if (!anchor || owner_ != owner || !EqualRect(&anchor_, anchor)) cancel_pointer();
     owner_ = owner;
     located_ = anchor && anchor->bottom > anchor->top;
     if (located_) anchor_ = *anchor;
@@ -142,6 +170,7 @@ void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
 }
 void CandidateList::close() noexcept {
     closed_ = true; located_ = false; requested_visible_ = false;
+    actions_.reset(); cancel_pointer();
     if (window_) { DestroyWindow(window_); window_ = nullptr; }
     if (!class_name_.empty()) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); }
     if (font_) { DeleteObject(font_); font_ = nullptr; }
@@ -149,6 +178,7 @@ void CandidateList::close() noexcept {
 }
 void CandidateList::render() noexcept {
     if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && !registration_)) {
+        cancel_pointer();
         if (window_) ShowWindow(window_, SW_HIDE);
         return;
     }
@@ -209,7 +239,7 @@ void CandidateList::render() noexcept {
 }
 std::wstring CandidateList::footer() const {
     return registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
-        L"   1〜7: 選択  Space/x: 次/前  PgDn/PgUp: 7件  Enter: 確定";
+        L"   クリック/1〜7: 選択  Space/x: 次/前  PgDn/PgUp: 7件  Enter: 確定";
 }
 void CandidateList::paint(HDC dc) const {
     RECT area{}; GetClientRect(window_, &area);
@@ -254,7 +284,33 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-    if (message == WM_NCHITTEST) return HTTRANSPARENT;
+    // Eat popup clicks, including its header/footer, without activating it or
+    // letting them move the caret in the document underneath.
+    if (message == WM_NCHITTEST) return HTCLIENT;
+    if (message == WM_SETCURSOR && self) {
+        POINT point{};
+        const bool row = GetCursorPos(&point) && ScreenToClient(window, &point) && self->hit_test(point).has_value();
+        SetCursor(LoadCursorW(nullptr, row ? IDC_HAND : IDC_ARROW)); return TRUE;
+    }
+    if (message == WM_LBUTTONDOWN && self) {
+        const ComPtr<CandidateList> keep(self);
+        self->cancel_pointer();
+        self->pointer_.down(self->hit_test({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}));
+        if (self->pointer_.pressed) SetCapture(window);
+        return 0;
+    }
+    if (message == WM_LBUTTONUP && self) {
+        const ComPtr<CandidateList> keep(self);
+        const auto revision = self->revision_;
+        const auto row = self->pointer_.up(self->hit_test({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}));
+        self->cancel_pointer();
+        if (row && self->revision_ == revision) self->request_selection(*row);
+        return 0;
+    }
+    if ((message == WM_CAPTURECHANGED || message == WM_CANCELMODE) && self) {
+        if (message == WM_CANCELMODE) self->cancel_pointer(); else self->pointer_.cancel();
+        return 0;
+    }
     if (message == WM_PAINT && self) {
         PAINTSTRUCT paint{}; const auto dc = BeginPaint(window, &paint);
         try { self->paint(dc); } catch (...) { /* Never throw through the window procedure. */ }
@@ -263,7 +319,7 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     if (message == WM_NCDESTROY && self) { self->window_ = nullptr; SetWindowLongPtrW(window, GWLP_USERDATA, 0); }
     return DefWindowProcW(window, message, wparam, lparam);
 }
-void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine) noexcept {
+void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions) noexcept {
     if (!engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close(); return; }
     if (list_ && list_->registration() != engine.registering()) close();
     try {
@@ -271,7 +327,7 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
         if (!context || FAILED(context->GetDocumentMgr(&document)) || !document) { close(); return; }
         if (!list_) {
             if (!thread || FAILED(thread->QueryInterface(IID_PPV_ARGS(&manager_)))) return;
-            list_.Attach(new CandidateList(engine.registering()));
+            list_.Attach(new CandidateList(engine.registering(), std::move(actions)));
             list_->update(engine, document.Get());
             BOOL show = TRUE;
             const auto list = list_; const auto manager = manager_;

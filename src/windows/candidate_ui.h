@@ -2,6 +2,8 @@
 #include "module.h"
 #include "nskkzime/engine.h"
 #include <wrl/client.h>
+#include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,11 +11,23 @@
 namespace nskkzime::windows {
 inline constexpr GUID candidate_ui_guid = {0x680bc7bf, 0xbe19, 0x42e9, {0xa4, 0x38, 0x0d, 0x8d, 0xf2, 0x99, 0xf5, 0x0b}};
 
-// Snapshot owned by the UI manager. It never points back to the text service.
+// UI snapshots hold only weak references to this service-owned endpoint.
+struct CandidateActions { std::function<void(std::size_t, std::uint64_t)> select; };
+struct CandidatePointer {
+    std::optional<std::size_t> pressed;
+    void down(std::optional<std::size_t> row) { pressed = row; }
+    std::optional<std::size_t> up(std::optional<std::size_t> row) {
+        const auto before = std::exchange(pressed, {});
+        return before && before == row ? row : std::nullopt;
+    }
+    void cancel() { pressed.reset(); }
+};
+std::optional<std::size_t> candidate_row_at(POINT, SIZE client, int padding, int line_height,
+    bool registration, std::size_t first, std::size_t end) noexcept;
 inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
 class CandidateList final : public ITfCandidateListUIElement {
 public:
-    explicit CandidateList(bool registration = false);
+    explicit CandidateList(bool registration = false, std::weak_ptr<CandidateActions> actions = {});
     ~CandidateList();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -35,6 +49,7 @@ public:
     void locate(HWND owner, const RECT* anchor) noexcept;
     void close() noexcept;
     std::size_t shortcut_index(std::size_t slot) const noexcept;
+    void request_selection(std::size_t index) noexcept;
     bool registration() const { return registration_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
@@ -44,6 +59,8 @@ private:
     std::wstring footer() const;
     void render() noexcept;
     void paint(HDC) const;
+    std::optional<std::size_t> hit_test(POINT) const noexcept;
+    void cancel_pointer() noexcept;
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);
     std::atomic<ULONG> refs_{1};
     Microsoft::WRL::ComPtr<ITfDocumentMgr> document_;
@@ -60,12 +77,15 @@ private:
     std::wstring class_name_;
     int line_height_ = 28, padding_ = 10;
     UINT dpi_ = 0;
+    std::weak_ptr<CandidateActions> actions_;
+    std::uint64_t revision_ = 0;
+    CandidatePointer pointer_;
 };
 
 class CandidatePresenter {
 public:
     ~CandidatePresenter() { close(); }
-    void update(ITfThreadMgr*, ITfContext*, const Engine&) noexcept;
+    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}) noexcept;
     void locate(ITfContext*, ITfComposition*, TfEditCookie) noexcept;
     void hide() noexcept;
     void close() noexcept;

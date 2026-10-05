@@ -24,6 +24,9 @@
 - 数字キー1〜7による直接選択、ホスト指定ページとの一致、存在しない番号の保持、編集失敗時の再試行と学習の抑止。
 - 数字キーの判定で確定しないこと、外部編集の後で古い候補を選ばないこと、Shiftによる記号とCtrlショートカットの維持。
 - 登録欄内の数字選択が本文や永続辞書へ早期に反映されず、欄内の入力だけを確定すること。
+- `candidate_ui`: クリックする行の判定、登録欄の見出し・本文・操作案内の除外、行の外へのドラッグと捕捉解除時の取消。
+- `tsf_candidate_click`: 非同期のクリックを一度だけ処理し、追加入力・取消・別欄への移動・外部編集・レイアウト破棄・
+  IME無効化後の古い要求を破棄すること。編集拒否後の再試行、保護された入力欄の学習除外、登録欄内の選択と候補の保存。
 - TSF候補UIの開始・更新・終了、ホストによる表示抑制、UIを作れない場合の通常変換。
 - レイアウト通知の集約、ビュー破棄／確定後に届く古い通知の無効化、保持されたUIオブジェクトから再表示できないこと。
 - Shiftを離す遅れ（`KAnji`／`KAKU`）と、abbrevの英字見出しからの辞書検索・候補表示・確定。
@@ -218,6 +221,23 @@ Windows x64、内蔵の5見出し辞書、実際のキーイベントで確認�
 直接選択追加後もDebug／ReleaseのCTest各18件がすべて成功した。
 Windowsへの登録版の更新はこの検証には含まない。
 
+同日の候補クリック追加後、Releaseの隔離版で以下を確認した。
+
+- RichEdit: `/p` → Space → PageDownで2ページ目を表示し、操作案内行をクリックしても選択を保持。
+  1行目から2行目へドラッグして離しても確定せず、2行目のクリックで「候補06」を確定した。
+  一覧・下線が消え、続く `a` が同じ入力欄に入り「候補06あ」になった。
+- 標準EDIT: 同じ見出しの最終ページを表示し、2行目「候補15」をクリックで確定。
+  続く `a` も標準EDITへ入り、RichEditの本文は変わらなかった。
+- RichEdit: `/e` の登録欄内で `/p` を変換。見出し行のクリックは無効で、
+  2行目「候補06」のクリックは登録欄への追加になった。続く `a` も欄内に入った。
+  この時点の本文は元の読み `e` を保ち、保存ファイルに `e` は存在しなかった。
+  Enter後に本文と辞書へ「候補06あ」が反映され、内側の `p` の学習順位は変わらなかった。
+- 通常候補・登録欄とも、クリック操作を含む案内の末尾まで表示された。
+  最後に保存済み・同期済み世代12、未保存0件・受付不可0件を確認し、元のIMEへ戻して終了した。
+
+クリック追加後はDebug／ReleaseのCTest各19件がすべて成功した。
+書き込み先は隔離辞書のみ。Windowsへの登録版は更新していない。
+
 ### 既知の制限
 
 標準EDITの互換入力経路では `Ka` → Left が確定だけになり、直後の `a` は「かあ」になる。
@@ -238,6 +258,7 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 | 候補一覧・注釈 | ビルド版で確認済み | ビルド版で確認済み | 未確認 |
 | PageDown／PageUpによる候補移動 | 3ページと取消を確認済み | 3ページ・末尾保持・確定を確認済み | 未確認 |
 | 数字キー1〜7による直接選択 | 最終ページの確定・範囲外保持を確認済み | 2ページ目の確定・登録欄への追加を確認済み | 未確認 |
+| 候補行のクリック選択 | 最終ページの確定・継続入力を確認済み | 2ページ目・登録欄・ドラッグ取消・見出し除外を確認済み | 未確認 |
 | 単語登録・再起動後の利用 | 送りあり登録・再利用・フォーカス移動時の破棄を確認済み | 登録内変換・再帰登録・取消・送りあり再利用を確認済み | 未確認 |
 | 送り仮名 | 確認済み | 確認済み | 未確認 |
 | フォーカス移動・IME切替 | 一部確認済み（上記参照） | 別入力欄への移動で確認済み | 未確認 |
@@ -259,5 +280,7 @@ TSFキー判定の終了処理は [Microsoft SampleIMEのキー通知](https://g
 [BeginUIElement](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfuielementmgr-beginuielement)、
 [GetTextExt](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-gettextext)、
 枠を含む寸法の計算は [AdjustWindowRectExForDpi](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-adjustwindowrectexfordpi) を参照。
+クリック時のフォーカス維持は [WM_MOUSEACTIVATE](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mouseactivate)、
+押下と解放の追跡は [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) を参照。
 学習の入力属性判定は [GetValue](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfreadonlyproperty-getvalue)、
 検証ホストの属性設定は [SetInputScope](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-setinputscope) を参照。

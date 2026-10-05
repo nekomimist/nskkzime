@@ -102,6 +102,15 @@ if(WIN32)
     target_include_directories(candidate_ui_tests PRIVATE src/windows)
     target_link_libraries(candidate_ui_tests PRIVATE skk_core ole32 oleaut32 uuid user32 gdi32)
     add_test(NAME candidate_ui COMMAND candidate_ui_tests)
+    # Link the same adapter sources to exercise deferred click requests without
+    # injecting native input or relying on a registered IME/interactive desktop.
+    add_executable(tsf_candidate_click tests/tsf_candidate_click.cpp src/windows/text_service.cpp
+      src/windows/candidate_ui.cpp src/windows/display_attributes.cpp)
+    target_include_directories(tsf_candidate_click PRIVATE src/windows)
+    target_link_libraries(tsf_candidate_click PRIVATE nskkzime_runtime ole32 oleaut32 uuid user32 gdi32)
+    add_dependencies(tsf_candidate_click nskkzime_dictionary_server)
+    add_test(NAME tsf_candidate_click COMMAND tsf_candidate_click ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk)
+    set_tests_properties(tsf_candidate_click PROPERTIES TIMEOUT 40)
     add_executable(tsf_local_activation tests/tsf_local_activation.cpp src/tools/ime_probe_local.manifest)
     target_include_directories(tsf_local_activation PRIVATE src/windows)
     target_link_libraries(tsf_local_activation PRIVATE project_options ole32 uuid)
