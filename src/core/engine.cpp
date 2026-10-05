@@ -35,6 +35,7 @@ void Engine::reset() {
     registrations_.clear(); registered_.clear(); registration_limit_ = false;
     clear_composition(); ++revision_;
 }
+void Engine::set_mode(Mode mode) { reset(); input_.mode = mode; }
 std::u32string Engine::display(std::u32string_view text) const {
     return input_.mode == Mode::Katakana ? katakana(text) : std::u32string(text);
 }

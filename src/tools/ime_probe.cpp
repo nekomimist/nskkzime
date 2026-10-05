@@ -2,12 +2,14 @@
 #include <wrl/client.h>
 #include <richedit.h>
 #include <inputscope.h>
+#include <ctfutb.h>
+#include <ctffunc.h>
 #include <filesystem>
 #include <string>
 
 using Microsoft::WRL::ComPtr;
 namespace {
-constexpr int activate_id = 101, restore_id = 102, refresh_id = 103;
+constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104;
 #ifdef NSKKZIME_PROBE_DICTIONARY
 constexpr auto window_title = L"nskkzime 入力検証 (隔離データ)";
 #elif defined(NSKKZIME_LOCAL_PROBE)
@@ -21,8 +23,20 @@ struct Probe {
     TF_INPUTPROCESSORPROFILE previous{};
     bool previous_valid = false;
     bool switched = false;
-    HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr;
+    HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr, mode = nullptr;
     HFONT font = nullptr, status_font = nullptr;
+    ComPtr<ITfLangBarItemButton> mode_button() {
+        ComPtr<ITfLangBarItemMgr> bar; ComPtr<ITfLangBarItem> item; ComPtr<ITfLangBarItemButton> button;
+        TF_INPUTPROCESSORPROFILE active{};
+        if (profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active) == S_OK && active.clsid == nskkzime::windows::service_clsid &&
+            SUCCEEDED(manager.As(&bar)) && SUCCEEDED(bar->GetItem(GUID_LBI_INPUTMODE, &item)) && item) item.As(&button);
+        return button;
+    }
+    void update_mode() {
+        const auto button = mode_button(); BSTR value = nullptr;
+        const bool available = button && SUCCEEDED(button->GetText(&value)) && value;
+        SetWindowTextW(mode, available ? value : L"モード"); EnableWindow(mode, available); SysFreeString(value);
+    }
     HRESULT set_input_scopes(InputScope scope) {
         // This host owns ordinary text fields. Publish their scope explicitly;
         // RichEdit otherwise returns E_FAIL for GUID_PROP_INPUTSCOPE on some OS versions.
@@ -42,6 +56,11 @@ struct Probe {
         const auto current = profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active);
         const bool ours = current == S_OK && active.clsid == nskkzime::windows::service_clsid && active.guidProfile == nskkzime::windows::profile_guid;
         std::wstring text = std::wstring(operation) + L": " + code + L"\r\n現在のIME: " + (ours ? L"nskkzime" : L"別のIME／キーボード");
+        if (const auto button = mode_button()) {
+            BSTR label = nullptr;
+            if (SUCCEEDED(button->GetTooltipString(&label)) && label) text += std::wstring(L"\r\n入力モード: ") + label;
+            SysFreeString(label);
+        }
         if (result == S_FALSE) text += L"\r\nプロファイルが無効です。開発用登録手順を確認してください。";
         if (FAILED(result)) text += L"\r\nDLLの登録と、日本語入力言語の選択を確認してください。";
         if (const auto module = GetModuleHandleW(L"nskkzime_tsf.dll")) {
@@ -93,6 +112,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         control(window, L"BUTTON", L"nskkzimeを選ぶ", WS_TABSTOP, 16, 48, 190, 36, activate_id, probe->font);
         control(window, L"BUTTON", L"元のIMEに戻す", WS_TABSTOP, 218, 48, 180, 36, restore_id, probe->font);
         control(window, L"BUTTON", L"状態を更新", WS_TABSTOP, 410, 48, 150, 36, refresh_id, probe->font);
+        probe->mode = control(window, L"BUTTON", L"モード", WS_TABSTOP, 570, 48, 106, 36, mode_id, probe->font);
         control(window, L"STATIC", L"標準 EDIT", 0, 16, 100, 600, 26, 0, probe->font);
         probe->plain = control(window, L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 132, 660, 105, 201, probe->font);
@@ -108,8 +128,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (FAILED(probe->set_input_scopes(IS_TEXT))) return -1;
         probe->last_edit = probe->plain;
         probe->report(L"起動", S_OK);
+        probe->update_mode(); SetTimer(window, mode_id, 300, nullptr);
         return 0;
     }
+    case WM_TIMER:
+        if (wparam == mode_id) { probe->update_mode(); return 0; } break;
     case WM_COMMAND:
         if (HIWORD(wparam) == EN_SETFOCUS && (LOWORD(wparam) == 201 || LOWORD(wparam) == 202)) {
             probe->last_edit = reinterpret_cast<HWND>(lparam); return 0;
@@ -124,6 +147,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         if (LOWORD(wparam) == restore_id) { probe->report(L"IME復帰", probe->restore()); SetFocus(probe->last_edit); return 0; }
         if (LOWORD(wparam) == refresh_id) { probe->report(L"状態確認", S_OK); SetFocus(probe->last_edit); return 0; }
+        if (LOWORD(wparam) == mode_id) {
+            if (const auto button = probe->mode_button()) button->OnClick(TF_LBI_CLK_LEFT, {}, nullptr);
+            probe->update_mode(); SetFocus(probe->last_edit); return 0;
+        }
         break;
     case WM_CLOSE:
         probe->restore();

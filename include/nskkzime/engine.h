@@ -74,7 +74,9 @@ public:
     bool would_handle(Key key) const;
     Result handle(Key key);
     void reset(); // Clear composition, retain input mode.
+    void set_mode(Mode mode); // Host has ended its composition; discard input and select an explicit mode.
     Mode mode() const { return input_.mode; }
+    Mode outer_mode() const { return registering() ? registrations_.front().original.mode : input_.mode; }
     Stage stage() const { return registering() ? Stage::Registering : input_.stage; }
     Stage input_stage() const { return input_.stage; }
     bool abbrev() const { return input_.abbrev; }

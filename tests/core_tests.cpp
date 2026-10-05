@@ -54,6 +54,16 @@ int main() {
         }},
         {"input/katakana-mode", [] { Session s; s.type("qkanaqkana"); equal(s.committed, U"カナかな"); }},
         {"input/latin-mode", [] { Session s; s.type("l"); require(!s.key({KeyCode::Character, 'A'}).consumed, "Latin must pass through"); s.key({KeyCode::Hiragana}); s.type("a"); equal(s.committed, U"あ"); }},
+        {"input/host-mode-switch", [] {
+            Session s; s.type("Kanji"); s.key({KeyCode::Space}); const auto revision = s.engine.revision();
+            s.engine.set_mode(Mode::Katakana); equal(s.engine.preedit(), U"");
+            require(s.engine.revision() > revision && s.engine.stage() == Stage::Direct, "host switch retained conversion");
+            s.type("a"); equal(s.committed, U"ア");
+            s.type("/unknown"); s.key({KeyCode::Space}); s.type("ka");
+            s.engine.set_mode(Mode::Latin);
+            require(!s.engine.registering() && !s.key({KeyCode::Character, 'A'}).consumed, "host switch retained registration");
+            s.engine.set_mode(Mode::Hiragana); s.type("a"); equal(s.committed, U"アあ");
+        }},
         {"conversion/reading-and-first-candidate", [] { Session s; s.type("Kanji"); equal(s.engine.preedit(), U"▽かんじ"); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼漢字"); s.key({KeyCode::Enter}); equal(s.committed, U"漢字"); equal(s.engine.preedit(), U""); }},
         {"conversion/next-previous", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼感じ"); s.type("x"); equal(s.engine.preedit(), U"▼漢字"); s.type("x"); equal(s.engine.preedit(), U"▽かんじ"); }},
         {"conversion/exhaustion-retains-selection", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Space}); require(s.key({KeyCode::Space}).candidates_exhausted, "exhaustion must be signalled"); equal(s.engine.preedit(), U"▼感じ"); }},

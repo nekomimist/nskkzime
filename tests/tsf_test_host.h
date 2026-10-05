@@ -19,7 +19,7 @@ using Microsoft::WRL::ComPtr;
     ULONG refs_ = 1
 #define UNUSED_METHOD(name, ...) HRESULT STDMETHODCALLTYPE name(__VA_ARGS__) override { return E_NOTIMPL; }
 
-class Manager final : public ITfThreadMgr, public ITfKeystrokeMgr, public ITfSource, public ITfUIElementMgr {
+class Manager : public ITfThreadMgr, public ITfKeystrokeMgr, public ITfSource, public ITfUIElementMgr {
 public:
     bool reject_sink = false;
     ComPtr<ITfKeyEventSink> keys;

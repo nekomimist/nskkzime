@@ -6,6 +6,7 @@
 #include <inputscope.h>
 #include "display_attributes.h"
 #include "candidate_ui.h"
+#include "input_mode.h"
 #include <wrl/client.h>
 #include <atomic>
 #include <bitset>
@@ -115,6 +116,15 @@ bool editable(ITfContext* context) {
         if (_wcsicmp(name, L"Edit") == 0 && (GetWindowLongPtrW(focus, GWL_STYLE) & ES_PASSWORD)) return false;
     }
     return true;
+}
+std::optional<Mode> mode_key(WPARAM code, Mode current) {
+    if (GetKeyState(VK_MENU) & 0x8000 || GetKeyState(VK_LWIN) & 0x8000 || GetKeyState(VK_RWIN) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) return {};
+    const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    if ((code == VK_SPACE && control) || (code == VK_KANJI && !control))
+        return current == Mode::Latin ? Mode::Hiragana : Mode::Latin;
+    if (!control && code == VK_IME_ON) return Mode::Hiragana;
+    if (!control && code == VK_IME_OFF) return Mode::Latin;
+    return {};
 }
 
 bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCookie cookie, std::wstring& reason) {
@@ -254,10 +264,28 @@ public:
         if (SUCCEEDED(hr)) hr = source->AdviseSink(IID_ITfThreadMgrEventSink,
             static_cast<ITfThreadMgrEventSink*>(this), &sink_cookie_);
         if (FAILED(hr)) Deactivate();
-        if (SUCCEEDED(hr)) display_attribute_atoms(input_atom_, converted_atom_);
+        if (SUCCEEDED(hr)) {
+            display_attribute_atoms(input_atom_, converted_atom_);
+            try {
+                mode_actions_ = std::make_shared<ModeActions>();
+                mode_actions_->change = [this](Mode mode) { change_mode(mode); };
+                input_mode_.Attach(new InputMode);
+                input_mode_->connect(manager_.Get(), client_, mode_actions_, engine_.mode());
+                for (std::size_t i = 0; i < mode_keys.size(); ++i) {
+                    constexpr wchar_t description[] = L"nskkzime オン／オフ";
+                    preserved_[i] = SUCCEEDED(keys_->PreserveKey(client_, mode_key_ids[i], &mode_keys[i], description, ARRAYSIZE(description) - 1));
+                }
+            } catch (...) { Deactivate(); return E_OUTOFMEMORY; }
+        }
         return hr;
     }
     HRESULT STDMETHODCALLTYPE Deactivate() override {
+        mode_actions_.reset();
+        auto mode = std::move(input_mode_); if (mode) mode->disconnect();
+        for (std::size_t i = 0; i < mode_keys.size(); ++i) {
+            if (preserved_[i] && keys_) keys_->UnpreserveKey(mode_key_ids[i], &mode_keys[i]);
+            preserved_[i] = false;
+        }
         candidate_actions_.reset();
         finish_composition();
         if (keys_) keys_->UnadviseKeyEventSink(client_);
@@ -278,6 +306,7 @@ public:
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        if (mode_key(code, engine_.outer_mode())) { *eaten = TRUE; return S_OK; }
         const auto key = translate_key(code, parameter);
         if (key) {
             if (composition_context_ && composition_context_.Get() != context) {
@@ -298,6 +327,10 @@ public:
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        if (const auto mode = mode_key(code, engine_.outer_mode())) {
+            if (!(parameter & (static_cast<LPARAM>(1) << 30))) change_mode(*mode);
+            *eaten = TRUE; if (code < eaten_keys_.size()) eaten_keys_.set(code); return S_OK;
+        }
         if (composition_context_ && composition_context_.Get() != context) finish_composition();
         const auto key = translate_key(code, parameter);
         if (!key || !engine_.would_handle(*key)) return S_OK;
@@ -337,9 +370,15 @@ public:
         if (code < eaten_keys_.size()) eaten_keys_.reset(code);
         return hr;
     }
-    HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext*, REFGUID, BOOL* eaten) override {
+    HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext* context, REFGUID guid, BOOL* eaten) override {
         if (!eaten) return E_POINTER;
-        *eaten = FALSE; return S_OK;
+        *eaten = FALSE;
+        if (!manager_ || !editable(context)) return S_OK;
+        for (std::size_t i = 0; i < mode_keys.size(); ++i) if (preserved_[i] && guid == mode_key_ids[i]) {
+            change_mode(engine_.outer_mode() == Mode::Latin ? Mode::Hiragana : Mode::Latin);
+            *eaten = TRUE; break;
+        }
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnCompositionTerminated(TfEditCookie cookie, ITfComposition* composition) override {
         if (composition_.Get() != composition || ending_) return S_OK;
@@ -411,6 +450,14 @@ public:
         return S_OK;
     }
 private:
+    void change_mode(Mode mode) noexcept {
+        const ComPtr<TextService> self(this);
+        if (!manager_) return;
+        if (engine_.mode() != mode || engine_.registering()) {
+            finish_composition(); engine_.set_mode(mode);
+        }
+        const auto binding = input_mode_; if (binding) binding->publish(engine_.mode());
+    }
     HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied) {
         auto next = engine_;
         const auto result = next.handle(key);
@@ -434,6 +481,10 @@ private:
                 if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary_.get())) learning->skipped(std::move(learning_reason));
             }
             refresh_candidates(cookie);
+            // Inner registration input has its own modes. Keep Windows open
+            // until the outer editor is completed or explicitly abandoned.
+            const auto binding = input_mode_;
+            if (binding && !engine_.registering()) binding->publish(engine_.mode());
         }
         return status;
     }
@@ -614,6 +665,9 @@ private:
     std::wstring expected_text_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
+    ComPtr<InputMode> input_mode_;
+    std::shared_ptr<ModeActions> mode_actions_;
+    std::array<bool, 2> preserved_{};
     std::shared_ptr<CandidateActions> candidate_actions_;
     std::uint64_t selection_request_ = 0;
     bool selection_pending_ = false;
