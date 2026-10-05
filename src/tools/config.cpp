@@ -18,6 +18,8 @@ void help() {
         "  --set-learning on|off     Enable or disable persistent candidate learning\n"
         "  --set-romaji PATH         Validate and save a custom UTF-8 romaji rules file\n"
         "  --reset-romaji            Use built-in romaji rules\n"
+        "  --set-zenz MODEL SERVER    Enable zenz using absolute model and server file paths\n"
+        "  --disable-inference       Disable zenz and clear its saved paths\n"
         "  --help                    Show this help\n"
         "Default: %LOCALAPPDATA%\\nskkzime\\settings.ini (UTF-8)\n"
         "NSKKZIME_CONFIG overrides that file; NSKKZIME_DICTIONARY selects isolated dictionary settings.\n"
@@ -36,22 +38,32 @@ int wmain(int argc, wchar_t** argv) {
             if (!explicit_file->is_absolute()) throw std::invalid_argument("--config requires an absolute path");
         }
         const std::wstring_view action(argv[index++]);
-        if (action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji") {
+        if (action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
             help(); return 2;
         }
         const bool set = action == L"--set-dictionaries", disable = action == L"--disable-dictionaries";
         const bool learning = action == L"--set-learning";
         const bool romaji = action == L"--set-romaji", reset_romaji = action == L"--reset-romaji";
-        if ((!set && !learning && !romaji && index != argc) || (set && index == argc) || ((learning || romaji) && index + 1 != argc)) { help(); return 2; }
+        const bool zenz = action == L"--set-zenz", disable_inference = action == L"--disable-inference";
+        if ((!set && !learning && !romaji && !zenz && index != argc) || (set && index == argc) || ((learning || romaji) && index + 1 != argc) || (zenz && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
             const auto loaded = load_dictionaries(configuration);
             const auto rules = load_romaji_rules(configuration,environment_value(L"NSKKZIME_ROMAJI"));
+            show(zenz_settings_status(configuration.settings.zenz)); validate_zenz_settings(configuration.settings.zenz,true);
             show(loaded.status); show(rules.status); return loaded.failed || rules.failed ? 2 : 0;
         }
         const auto file = explicit_file ? *explicit_file : dictionary_settings_path();
         const auto dictionary_override = environment_value(L"NSKKZIME_DICTIONARY");
+        if (zenz || disable_inference) {
+            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            if (zenz) settings.zenz = {true,std::filesystem::path(argv[index]),std::filesystem::path(argv[index+1])};
+            else settings.zenz = {};
+            validate_zenz_settings(settings.zenz,true); save_dictionary_settings(file,settings);
+            show(zenz_settings_status(settings.zenz));
+            show(L"保存しました。利用するアプリを起動し直すと反映されます。モデルの実行確認にはサーバーの --convert を使ってください。"); return 0;
+        }
         if (romaji || reset_romaji) {
             DictionaryConfiguration proposed; proposed.file = file;
             if (std::filesystem::exists(file)) proposed.settings = read_dictionary_settings(file);
@@ -97,6 +109,7 @@ int wmain(int argc, wchar_t** argv) {
             else {
                 show(configuration.settings.learning ? L"学習: on" : L"学習: off");
                 show(configuration.settings.romaji_rules.empty() ? L"ローマ字: 内蔵ルール" : L"ローマ字: " + configuration.settings.romaji_rules.native());
+                show(zenz_settings_status(configuration.settings.zenz));
                 std::size_t number = 0;
                 for (const auto& path : configuration.settings.dictionaries) show(std::to_wstring(++number) + L". " + path.native());
                 if (!number) show(L"辞書は無効です（かな入力のみ）。");
@@ -107,6 +120,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto loaded = load_dictionaries(configuration);
         const auto rules = load_romaji_rules(configuration,environment_value(L"NSKKZIME_ROMAJI"));
         show(loaded.status); show(rules.status);
+        show(zenz_settings_status(configuration.settings.zenz)); validate_zenz_settings(configuration.settings.zenz,true);
         return loaded.failed || rules.failed ? 2 : 0;
     } catch (const std::exception& error) {
         std::cerr << "nskkzime_config: " << error.what() << '\n'; return 2;

@@ -3,10 +3,16 @@
 #include <optional>
 
 namespace nskkzime::windows {
+struct ZenzSettings {
+    bool enabled = false;
+    std::filesystem::path model, server;
+    unsigned int threads = 4, timeout_ms = 1000;
+};
 struct DictionarySettings {
     std::vector<std::filesystem::path> dictionaries; // Highest priority first.
     bool learning = true;
     std::filesystem::path romaji_rules; // Empty selects the built-in rules.
+    ZenzSettings zenz;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;
@@ -23,6 +29,8 @@ std::filesystem::path dictionary_settings_path();
 DictionarySettings parse_dictionary_settings(std::string_view bytes);
 DictionarySettings read_dictionary_settings(const std::filesystem::path&);
 void save_dictionary_settings(const std::filesystem::path&, const DictionarySettings&);
+void validate_zenz_settings(const ZenzSettings&, bool check_files = false);
+std::wstring zenz_settings_status(const ZenzSettings&);
 // Explicit inputs keep tests independent of the user's saved configuration.
 DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file,
     const std::optional<std::wstring>& dictionary_override, bool missing_is_demo);

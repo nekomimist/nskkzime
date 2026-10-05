@@ -6,9 +6,11 @@
 namespace nskkzime::windows {
 struct InferenceConfig {
     std::wstring token;
-    std::filesystem::path dummy_server; // Empty: connect only. Never run arbitrary commands.
+    std::filesystem::path server; // Empty: connect only. Always an explicit executable path.
     DWORD delay_ms = 150;
     DWORD timeout_ms = 1000;
+    std::filesystem::path model; // Empty: dummy backend, otherwise zenz.
+    unsigned int threads = 4;
 };
 struct InferenceCompletion {
     InferenceStatus status = InferenceStatus::Unavailable;
@@ -37,8 +39,8 @@ private:
     HINSTANCE owner_ = nullptr;
     std::wstring class_name_;
 };
-// Development configuration only. Ordinary activation keeps inference off.
-std::optional<InferenceConfig> dummy_inference_config();
+// Off by default. Saved zenz settings or an explicit development dummy override.
+std::optional<InferenceConfig> current_inference_config();
 void set_inference_status(const void* owner, const wchar_t*) noexcept;
 void clear_inference_status(const void* owner) noexcept;
 std::wstring inference_status();

@@ -260,9 +260,10 @@ public:
                     preserved_[i] = SUCCEEDED(keys_->PreserveKey(client_, mode_key_ids[i], &mode_keys[i], description, ARRAYSIZE(description) - 1));
                 }
                 try {
-                    if (const auto config = dummy_inference_config()) {
+                    if (const auto config = current_inference_config()) {
+                        inference_dummy_ = config->model.empty();
                         inference_ = std::make_unique<InferenceClient>(*config,[this](InferenceCompletion result) { receive_inference(std::move(result)); });
-                        set_inference_status(this,L"推論: ダミーサーバーを使用（辞書候補の枯渇時）");
+                        set_inference_status(this,inference_dummy_ ? L"推論: ダミーサーバーを使用（辞書候補の枯渇時）" : L"推論: zenzを使用（辞書候補の枯渇時）");
                     }
                 } catch (...) { set_inference_status(this,L"推論: 起動できません。辞書入力を続けます"); }
             } catch (...) { Deactivate(); return E_OUTOFMEMORY; }
@@ -498,7 +499,7 @@ private:
                     if (!timed_out && result.status == InferenceStatus::Ok) {
                         std::vector<Candidate> candidates;
                         for (std::size_t i = 0; i < result.response.candidates.size(); ++i)
-                            candidates.push_back({"generated:" + std::to_string(pending.id) + ":" + std::to_string(i),result.response.candidates[i],U"ダミーIPC",CandidateSource::GeneratedFallback,LearningPolicy::DoNotLearn});
+                            candidates.push_back({"generated:" + std::to_string(pending.id) + ":" + std::to_string(i),result.response.candidates[i],self->inference_dummy_ ? U"ダミーIPC" : U"zenz",CandidateSource::GeneratedFallback,LearningPolicy::DoNotLearn});
                         generated = next.append_generated(std::move(candidates));
                     }
                     self->cancel_inference();
@@ -508,7 +509,7 @@ private:
                         return S_OK;
                     }
                     self->engine_ = std::move(next); self->refresh_candidates(cookie);
-                    set_inference_status(self.Get(),generated ? L"推論: ダミー候補を反映（学習しません）" : timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 応答を利用できません。通常のSKK操作へ復帰");
+                    set_inference_status(self.Get(),generated ? L"推論: 生成候補を反映（学習しません）" : timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 応答を利用できません。通常のSKK操作へ復帰");
                     return S_OK;
                 });
             if (FAILED(hr) && matches(pending)) cancel_inference();
@@ -570,7 +571,7 @@ private:
                     InferenceRequest request{id,reading,inference_text->before,inference_text->after,5};
                     const auto deadline = inference_->submit(std::move(request));
                     inference_pending_ = PendingInference{id,engine_.revision(),composition_session_,context_generation_,deadline,composition_context_,composition_,std::move(*inference_text)};
-                    set_inference_status(this,L"推論: ダミー応答待ち（入力は継続できます）");
+                    set_inference_status(this,L"推論: 応答待ち（入力は継続できます）");
                 } catch (...) { set_inference_status(this,L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
             }
         }
@@ -771,6 +772,7 @@ private:
     bool reading_context_ = false;
     bool dictionary_loaded_ = false;
     std::unique_ptr<InferenceClient> inference_;
+    bool inference_dummy_ = false;
     std::optional<PendingInference> inference_pending_;
     std::uint64_t inference_sequence_ = 0, composition_session_ = 0, context_generation_ = 0;
 };

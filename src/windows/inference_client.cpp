@@ -1,5 +1,7 @@
 #include "inference_client.h"
 #include "dictionary_settings.h"
+#include <algorithm>
+#include <bcrypt.h>
 #include <mutex>
 #include <optional>
 
@@ -13,6 +15,19 @@ HMODULE module(bool pin) {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | (pin ? 0 : GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT),
         reinterpret_cast<LPCWSTR>(&anchor), &result)) throw std::runtime_error("cannot locate inference module");
     return result;
+}
+std::wstring zenz_token(const InferenceConfig& config) {
+    // Same settings share one server across activations/processes. A different
+    // model/server/limit set cannot accidentally reuse an incompatible model.
+    const auto key = L"zenz-v1\n" + config.model.lexically_normal().native() + L"\n" + config.server.lexically_normal().native() +
+        L"\n" + std::to_wstring(config.threads) + L"\n" + std::to_wstring(config.timeout_ms);
+    unsigned char digest[32]{};
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(key.data())),
+        static_cast<ULONG>(key.size()*sizeof(wchar_t)),digest,sizeof(digest)) < 0) throw std::runtime_error("cannot name inference server");
+    constexpr wchar_t hex[] = L"0123456789abcdef";
+    std::wstring token;
+    for (const auto byte : digest) { token += hex[byte >> 4]; token += hex[byte & 15]; }
+    return token;
 }
 }
 struct InferenceClient::State {
@@ -40,9 +55,13 @@ struct InferenceClient::State {
                         result.response = inference_exchange(config.token, job->request, job->deadline, job->cancel.get());
                         result.status = InferenceStatus::Ok; break;
                     } catch (const InferenceFailure& failure) {
-                        if (failure.status != InferenceStatus::Unavailable || config.dummy_server.empty()) throw;
+                        if (failure.status != InferenceStatus::Unavailable || config.server.empty()) throw;
                         if (GetTickCount64() >= job->deadline) throw InferenceFailure(InferenceStatus::Timeout);
-                        if (!launched) { const auto process = launch_dummy_server(config.dummy_server, config.token, config.delay_ms); launched = true; }
+                        if (!launched) {
+                            const auto process = config.model.empty() ? launch_dummy_server(config.server,config.token,config.delay_ms) :
+                                launch_zenz_server(config.server,config.model,config.token,config.threads,config.timeout_ms);
+                            launched = true;
+                        }
                         if (WaitForSingleObject(job->cancel.get(), 10) == WAIT_OBJECT_0) throw InferenceFailure(InferenceStatus::Cancelled);
                     }
                 }
@@ -106,16 +125,31 @@ LRESULT CALLBACK InferenceClient::window_proc(HWND window, UINT message, WPARAM 
     if (message == WM_TIMER && wparam == 1 && self) { try { self->poll(); } catch (...) {} return 0; }
     return DefWindowProcW(window,message,wparam,lparam);
 }
-std::optional<InferenceConfig> dummy_inference_config() {
-    if (environment_value(L"NSKKZIME_INFERENCE_DUMMY") != std::optional<std::wstring>(L"1")) return {};
+std::optional<InferenceConfig> current_inference_config() {
     InferenceConfig config;
-    if (const auto token = environment_value(L"NSKKZIME_INFERENCE_TOKEN")) config.token = *token;
-    else { const auto id = learning_client_id(); config.token.assign(id.begin(),id.end()); }
-    wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module(false),path,ARRAYSIZE(path));
-    if (!size || size == ARRAYSIZE(path)) return {};
-    config.dummy_server = std::filesystem::path(path).parent_path() / L"nkkz-ime-server.exe";
+    if (const auto dummy = environment_value(L"NSKKZIME_INFERENCE_DUMMY")) {
+        if (*dummy == L"0") return {};
+        if (*dummy != L"1") throw std::invalid_argument("invalid inference override");
+        wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module(false),path,ARRAYSIZE(path));
+        if (!size || size == ARRAYSIZE(path)) throw std::runtime_error("cannot locate inference server");
+        config.server = std::filesystem::path(path).parent_path() / L"nkkz-ime-server.exe";
+    } else {
+        const auto settings = current_dictionary_configuration().settings.zenz;
+        if (!settings.enabled) return {};
+        validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
+        config.server = settings.server; config.model = settings.model;
+        config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
+    }
     for (const auto item : {std::pair{L"NSKKZIME_INFERENCE_DELAY_MS",&config.delay_ms},std::pair{L"NSKKZIME_INFERENCE_TIMEOUT_MS",&config.timeout_ms}})
-        if (const auto value = environment_value(item.first)) { std::size_t end = 0; const auto parsed = std::stoul(*value,&end); if (end != value->size() || parsed > 10000) return {}; *item.second = parsed; }
+        if (const auto value = environment_value(item.first)) {
+            if (value->empty() || !std::all_of(value->begin(),value->end(),[](auto ch) { return ch >= L'0' && ch <= L'9'; })) throw std::invalid_argument("invalid inference limit");
+            const auto parsed = std::stoul(*value); if (parsed > 10000) throw std::invalid_argument("inference limit exceeds 10000 ms"); *item.second = parsed;
+        }
+    if (!config.timeout_ms) throw std::invalid_argument("inference timeout must be positive");
+    if (const auto token = environment_value(L"NSKKZIME_INFERENCE_TOKEN")) config.token = *token;
+    else if (!config.model.empty()) config.token = zenz_token(config);
+    else { const auto id = learning_client_id(); config.token.assign(id.begin(),id.end()); }
+    (void)inference_pipe_name(config.token);
     return config;
 }
 void set_inference_status(const void* owner, const wchar_t* text) noexcept { status_owner = owner; status_text = text; }

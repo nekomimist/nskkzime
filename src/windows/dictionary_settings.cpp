@@ -3,7 +3,9 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <charconv>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 
 namespace nskkzime::windows {
@@ -27,6 +29,13 @@ std::string serialize(const DictionarySettings& settings) {
         validate_path(settings.romaji_rules);
         bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
     }
+    validate_zenz_settings(settings.zenz);
+    if (settings.zenz.enabled || !settings.zenz.model.empty() || !settings.zenz.server.empty() || settings.zenz.threads != 4 || settings.zenz.timeout_ms != 1000) {
+        bytes += settings.zenz.enabled ? "inference=zenz\n" : "inference=off\n";
+        if (!settings.zenz.model.empty()) bytes += "zenz-model=" + utf8_message(settings.zenz.model.native()) + "\n";
+        if (!settings.zenz.server.empty()) bytes += "zenz-server=" + utf8_message(settings.zenz.server.native()) + "\n";
+        bytes += "inference-threads=" + std::to_string(settings.zenz.threads) + "\ninference-timeout-ms=" + std::to_string(settings.zenz.timeout_ms) + "\n";
+    }
     for (const auto& path : settings.dictionaries) {
         validate_path(path);
         bytes += "dictionary=" + utf8_message(path.native()) + "\n";
@@ -43,6 +52,21 @@ struct TemporaryFile {
         if (created) DeleteFileW(path.c_str()); // Only the file created by this save.
     }
 };
+}
+void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
+    if (settings.threads < 1 || settings.threads > 64 || settings.timeout_ms < 1 || settings.timeout_ms > 10000)
+        throw std::invalid_argument("inference threads must be 1..64; timeout must be 1..10000 ms");
+    for (const auto& path : {settings.model,settings.server}) {
+        if (path.empty() && !settings.enabled) continue;
+        validate_path(path);
+        if (path.native().find(L'\"') != std::wstring::npos || path.filename().empty()) throw std::invalid_argument("invalid inference file path");
+        if (check_files && settings.enabled && !std::filesystem::is_regular_file(path)) throw std::invalid_argument("inference model/server file is missing");
+    }
+}
+std::wstring zenz_settings_status(const ZenzSettings& settings) {
+    if (!settings.enabled) return L"推論設定: オフ";
+    return L"推論設定: zenz / モデル: " + settings.model.native() + L"\r\nサーバー: " + settings.server.native() +
+        L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms";
 }
 std::wstring wide_message(std::string_view text) {
     if (text.empty()) return {};
@@ -88,6 +112,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
     DictionarySettings settings; bool version = false, learning = false, romaji = false;
+    std::set<std::string_view> inference_keys;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -105,6 +130,20 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else if (key == "romaji") {
             if (romaji) throw std::invalid_argument("romaji must appear at most once");
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
+        } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms") {
+            if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
+            if (key == "inference") {
+                if (value != "zenz" && value != "off") throw std::invalid_argument("inference must equal zenz or off");
+                settings.zenz.enabled = value == "zenz";
+            } else if (key == "zenz-model" || key == "zenz-server") {
+                auto& path = key == "zenz-model" ? settings.zenz.model : settings.zenz.server;
+                path = std::filesystem::path(wide_message(value)); validate_path(path);
+            } else {
+                unsigned int number = 0;
+                const auto parsed = std::from_chars(value.data(),value.data()+value.size(),number);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data()+value.size()) throw std::invalid_argument("invalid inference number");
+                (key == "inference-threads" ? settings.zenz.threads : settings.zenz.timeout_ms) = number;
+            }
         } else if (key == "dictionary") {
             auto path = std::filesystem::path(wide_message(value)); validate_path(path);
             settings.dictionaries.push_back(std::move(path));
@@ -112,6 +151,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else throw std::invalid_argument("unknown settings key");
     }
     if (!version) throw std::invalid_argument("settings version is missing");
+    validate_zenz_settings(settings.zenz);
     return settings;
 }
 DictionarySettings read_dictionary_settings(const std::filesystem::path& path) {

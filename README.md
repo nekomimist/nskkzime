@@ -1,7 +1,7 @@
 # nskkzime
 
-SKK風の操作に、将来 [skk-zenz](https://github.com/nekomimist/skk-zenz) と同様の
-zenzによる変換・候補採点を追加する日本語IME。最初の対象はWindows / x64です。
+SKK風の操作に、[skk-zenz](https://github.com/nekomimist/skk-zenz) の
+zenzによる変換・候補採点を組み合わせる日本語IME。最初の対象はWindows / x64です。
 
 現在は **最初の開発用プロトタイプ** です。OS非依存の入力コア、キー列を再生するCLI、
 SKK辞書の読み込み、TSF DLLとテスト用ホストがあります。日常利用できるIMEの完成版ではありません。
@@ -9,7 +9,7 @@ SKK辞書の読み込み、TSF DLLとテスト用ホストがあります。日�
 ## ビルド
 
 PowerShell 7、Visual Studio 2022 Build ToolsのC++ツールセット、Windows SDK、
-「C++ CMake tools for Windows」を使用します。外部ライブラリのダウンロードはありません。
+「C++ CMake tools for Windows」を使用します。通常ビルドは外部ライブラリのダウンロード不要です。
 
 ```powershell
 .\scripts\build.ps1
@@ -22,6 +22,9 @@ Developer Command Promptや、CMakeをPATHに追加する操作は不要です�
 MSBuildを実行できます。ユーザーの永続的な環境変数は変更しません。
 
 出力先は `out/build/windows-x64/Debug/` または `Release/` です。
+実モデル入りのCPUサーバーは `.\scripts\prepare-zenz.ps1` で固定版の依存とモデルを取得し、
+`.\scripts\build.ps1 -Configuration Release -Zenz` で別ディレクトリーへビルドします。
+準備・変換CLI・IMEの接続設定は [zenz CPUサーバー](docs/ZENZ.md) を参照してください。
 
 | ファイル | 用途 |
 |---|---|
@@ -30,7 +33,7 @@ MSBuildを実行できます。ユーザーの永続的な環境変数は変更�
 | `dictionary_tests.exe` | 辞書形式・文字コード・候補の統合の回帰テスト |
 | `nskkzime_config.exe` | ユーザーごとの辞書設定を保存・表示・検査 |
 | `nskkzime_dictionary_server.exe` | 候補学習の保存とプロセス間同期。IMEが必要時に自動起動 |
-| `nkkz-ime-server.exe` | 非同期変換IPCの検証用ダミーサーバー。モデル未搭載 |
+| `nkkz-ime-server.exe` | 通常版はダミー、`-Zenz` 版は実モデルの変換・採点。パイプ／標準入出力 |
 | `nskkzime_user_dictionary.exe` | 登録・学習語の一覧、削除、SKKファイルの書き出し・一括取り込み |
 | `nskkzime_tsf.dll` | 開発用のTSF Text Input Processor |
 | `tsf_smoke.exe` | DLLのCOMインターフェースとTSFアダプターの契約テスト |
@@ -83,6 +86,7 @@ UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの�
 - TSFの「あ／ア／A」入力モード項目、Windows開閉状態との同期、半角／全角・Ctrl+Space・IMEオン／オフキー。
 - TSFの周辺テキスト取得（前後各40文字・入力属性の確認）と、検証アプリでの任意の文脈表示。
 - ダミー変換サーバーとの非同期IPC。辞書候補のない読み・候補枯渇からの候補追加、期限・取消・古い応答の破棄。
+- llama.cpp / zenz CPUサーバーの変換・採点と、設定CLIからのIME接続。モデルを別プロセスで共有し、失敗時はSKK入力を継続。
 - `/` からのabbrev入力。英字の綴り・大小文字を保った辞書検索と、確定・取消後のかな入力への復帰。
 - Windows APIに依存しないコアと辞書インターフェース。
 - SKK辞書のUTF-8／EUC-JP取り込み、注釈、送り仮名別候補、複数辞書の優先順と重複排除。
@@ -104,12 +108,13 @@ UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの�
 
 2026-10-05、MSVC 19.44 / Windows SDK 10.0.26100.0で検証しています。
 Debug／ReleaseのCTest各26件がすべて成功しています。
+実モデル入りRelease版は31件。移植元のprompt/modelテストと、実モデルの並行IPC・取消・CLI・DLL経由の自動起動と変換も確認しています。
 `core` は62ケース（固定シードによる10,000イベントの状態検査を含む）です。
 `romaji` は14ケースで、外来音・記号・独自ルール・持ち越し・不正設定・登録欄・送り仮名・Shiftと10,000キーの入力を検証します。
 `romaji_trace` はルールファイルを指定したCLI入力、`tsf_romaji` は保存設定のDLL接続・カタカナ・編集失敗・ルールの保持と読み込み失敗時の復帰を検証します。
 `registration` は15ケース（別の10,000イベントの状態検査を含む）で、登録の再帰・制限・取消・即時再利用を検証します。
 `dictionary` は31ケースで、形式・文字コード・送り仮名・辞書間の候補統合を検証します。
-`settings` は17ケースで、設定形式・学習／ローマ字設定・保存失敗時の保全・複数辞書の部分的な読み込み失敗を検証します。
+`settings` は19ケースで、設定形式・学習／ローマ字／推論設定・保存失敗時の保全・複数辞書の部分的な読み込み失敗を検証します。
 `learning` は10ケースで、永続化・送り別の順位・再送の重複排除・複数プロセス・保存失敗・強制終了後の復旧・削除の同期・一括取り込みと並行学習を検証します。
 `user_dictionary` は12ケースで、削除範囲・削除後の再登録・SKK書き出し／取り込みの順位・文字・送り範囲の保持・容量超過時の保全を検証します。
 `user_dictionary_cli` は管理CLIの一連の操作、Unicode、UTF-8／EUC-JP取り込み、事前検査、既存ファイルの保全を隔離した保存先で確認します。
@@ -154,8 +159,10 @@ abbrevの英字入力・確定後のかなへの復帰も標準EDIT／RichEdit�
 入力属性を提供しないアプリでは学習を見送ります。検証アプリは通常のテキスト欄であることを明示しています。
 ブラウザ等の互換性は引き続き検証します。
 
-非同期IPCは明示的に有効にした検証用ダミーのみです。利用方法と制約は [推論IPCの検証](docs/INFERENCE.md) を参照してください。
-IME内の登録語削除、llama.cpp連携・実モデルでの変換と採点は今後実装します。
+推論は既定で無効です。実モデルへの接続は保存設定から、隔離したプローブは `.\scripts\probe-zenz.ps1` から利用できます。
+実モデルのDLL接続は自動テストで確認済みですが、実アプリでの画面操作は未確認です。
+利用方法と制約は [推論IPCの検証](docs/INFERENCE.md) と [zenz CPUサーバー](docs/ZENZ.md) を参照してください。
+IME内の登録語削除、長い読みの生成優先、採点による辞書候補の並べ替えは今後実装します。
 
 詳細は [実装計画](docs/PLAN.md)、[現在の入力仕様](docs/INPUT_SPEC.md)、
 [ローマ字ルールの設定](docs/ROMAJI.md)、

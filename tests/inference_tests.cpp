@@ -16,6 +16,15 @@ void protocol_tests() {
     const InferenceResponse response{42,{U"仮名",U"かな😀"}};
     check(decode_response(encode_response(response),42,5).candidates == response.candidates,"response roundtrip");
     validate_inference_hello(inference_hello());
+    auto scoring = request; scoring.operation = InferenceOperation::Score; scoring.candidates = {U"仮名",U""};
+    check(decode_request(encode_request(scoring)).candidates == scoring.candidates,"score request order");
+    const InferenceResponse scored{42,{}, {-1.25f,-9.5f}, InferenceOperation::Score};
+    check(decode_response(encode_response(scored),scoring).scores == scored.scores,"score response order");
+    rejected([&] { auto bad=scoring; bad.candidates.resize(65,U"語"); encode_request(bad); });
+    rejected([&] { decode_response(R"({"id":42,"scores":[0]})",scoring); });
+    rejected([&] { decode_response(R"({"id":42,"scores":[null,0]})",scoring); });
+    rejected([&] { decode_response(R"({"id":42,"scores":[1e300,0]})",scoring); });
+    rejected([&] { decode_response(R"({"id":42,"candidates":["語"],"scores":[]})",42,5); });
     rejected([] { validate_inference_hello(R"({"hello":"nkkz-ime-server","protocol":99})"); });
     rejected([&] { decode_response(encode_response(response),43,5); });
     rejected([&] { decode_response(encode_response(response),42,1); });

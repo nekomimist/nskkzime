@@ -54,6 +54,28 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/zenz-roundtrip-and-files", [&] {
+            const auto model = files.write(L"モデル 検証.gguf","test"), server = files.write(L"サーバー.exe","test");
+            DictionarySettings settings{{first},false,{}, {true,model,server,2,800}};
+            const auto file = files.path(L"zenz.ini"); save_dictionary_settings(file,settings);
+            const auto loaded = read_dictionary_settings(file);
+            require(loaded.zenz.enabled && loaded.zenz.model==model && loaded.zenz.server==server && loaded.zenz.threads==2 &&
+                loaded.zenz.timeout_ms==800 && !loaded.learning && loaded.dictionaries==settings.dictionaries,"zenz settings roundtrip");
+            validate_zenz_settings(loaded.zenz,true);
+            settings.zenz.model=missing; rejects([&]{validate_zenz_settings(settings.zenz,true);});
+            require(!parse_dictionary_settings("version=1").zenz.enabled,"old config enabled inference");
+        }},
+        {"settings/zenz-invalid-preserves-file", [&] {
+            const auto file = files.path(L"zenz-preserve.ini"); save_dictionary_settings(file,{{first}});
+            DictionarySettings invalid{{second}}; invalid.zenz.enabled=true;
+            rejects([&]{save_dictionary_settings(file,invalid);});
+            require(read_dictionary_settings(file).dictionaries==std::vector<std::filesystem::path>{first},"invalid zenz update changed settings");
+            for (const auto text : {"inference=unknown", "inference=zenz", "inference=off\ninference=off",
+                "zenz-model=relative.gguf", "zenz-server=", "zenz-server=C:\\a.exe\nzenz-server=C:\\b.exe",
+                "inference-threads=0", "inference-threads=65", "inference-threads=-1", "inference-threads=+4",
+                "inference-timeout-ms=0", "inference-timeout-ms=10001", "inference-timeout-ms=10x", "zenz-model=C:\\a\"b.gguf"})
+                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+text);});
+        }},
         {"settings/romaji-roundtrip-invalid-and-fallback", [&] {
             const auto rules = files.write(L"ローマ字.tsv","version=1\nwi\tゐ\n");
             const auto file = files.path(L"romaji.ini"); DictionarySettings proposed{{first},false,rules};
