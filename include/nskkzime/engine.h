@@ -89,6 +89,10 @@ public:
     // bounded, private cache makes a new word usable before asynchronous saving.
     void remember_registration(const LearningEvent&) noexcept;
     void abandon_registration(); // Host cannot present the editor: restore the outer reading, without a learning event.
+    std::u32string inference_reading() const; // Only outer, non-abbrev, okuri-nasi input.
+    void defer_registration(); // Preserve the source reading/candidates while awaiting generation.
+    bool append_generated(std::vector<Candidate>);
+    bool resume_registration(); // Empty/failed response falls back to the ordinary registration flow.
     std::uint64_t revision() const { return revision_; }
     std::u32string preedit() const;
     std::u32string composition_text() const; // Native composition, without diagnostic SKK markers.

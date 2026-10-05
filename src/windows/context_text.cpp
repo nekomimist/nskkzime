@@ -114,7 +114,7 @@ void clear_context_preview(const void* owner) {
     if (preview.owner == owner) { preview.owner = nullptr; preview.text = {}; }
 }
 std::wstring context_preview_status() {
-    if (!preview.enabled) return L"文脈確認: オフ（本文を取得しません）";
+    if (!preview.enabled) return L"文脈確認: オフ（本文を表示しません）";
     if (!preview.owner) return L"文脈確認: オン。入力欄でSpace変換すると前後の文脈を表示します。";
     const auto& text = preview.text;
     if (text.permission == InputPermission::Restricted) return L"文脈確認: 保護された入力欄のため取得しません。";

@@ -10,7 +10,9 @@
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104, preview_id = 105;
-#ifdef NSKKZIME_PROBE_DICTIONARY
+#ifdef NSKKZIME_PROBE_DUMMY
+constexpr auto window_title = L"nskkzime 入力検証 (ダミーIPC・隔離データ)";
+#elif defined(NSKKZIME_PROBE_DICTIONARY)
 constexpr auto window_title = L"nskkzime 入力検証 (隔離データ)";
 #elif defined(NSKKZIME_LOCAL_PROBE)
 constexpr auto window_title = L"nskkzime 入力検証 (ビルド版)";
@@ -40,11 +42,15 @@ struct Probe {
 #pragma warning(push)
 #pragma warning(disable: 4191)
         const auto function = reinterpret_cast<GetPreview>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeGetContextPreview"));
+        const auto inference = reinterpret_cast<GetPreview>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeGetInferenceStatus"));
 #pragma warning(pop)
         EnableWindow(preview_check, function != nullptr);
         BSTR value = nullptr;
         std::wstring text = L"文脈確認: このDLLでは利用できません。";
         if (function && SUCCEEDED(function(&value)) && value) text = value;
+        SysFreeString(value);
+        value = nullptr;
+        if (inference && SUCCEEDED(inference(&value)) && value) text = std::wstring(value) + L"\r\n" + text;
         SysFreeString(value);
         if (text != last_preview) { SetWindowTextW(preview_text, text.c_str()); last_preview = std::move(text); }
     }
@@ -202,7 +208,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     wchar_t executable[32768]{};
     const auto length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
     if (!length || length == ARRAYSIZE(executable)) return 2;
+#ifdef NSKKZIME_PROBE_DUMMY
+    const auto file = std::filesystem::path(executable).parent_path() / L"probe-async-user-dictionary.nskkdb";
+    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"1");
+    // Leave enough time to inspect and cancel a pending request manually.
+    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DELAY_MS",L"8000");
+    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TIMEOUT_MS",L"10000");
+#else
     const auto file = std::filesystem::path(executable).parent_path() / L"probe-user-dictionary.nskkdb";
+#endif
     if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", NSKKZIME_PROBE_DICTIONARY) ||
         !SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1") || !SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str())) return 2;
 #endif

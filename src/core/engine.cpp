@@ -36,6 +36,33 @@ void Engine::reset() {
     clear_composition(); ++revision_;
 }
 void Engine::set_mode(Mode mode) { reset(); input_.mode = mode; }
+std::u32string Engine::inference_reading() const {
+    if (registrations_.size() > 1) return {};
+    const auto& input = registering() ? registrations_.front().original : input_;
+    if (input.abbrev || input.okuri_letter || !input.romaji.pending().empty() ||
+        (input.stage != Stage::Reading && input.stage != Stage::Selecting)) return {};
+    return input.reading;
+}
+void Engine::defer_registration() {
+    if (registrations_.size() != 1 || !registrations_.front().draft.empty() || !input_literal().empty()) return;
+    input_ = std::move(registrations_.front().original); registrations_.clear(); ++revision_;
+}
+bool Engine::append_generated(std::vector<Candidate> candidates) {
+    if (registering() || inference_reading().empty() || candidates.size() > 8) return false;
+    auto next = input_.candidates; const auto first = next.size();
+    for (auto& candidate : candidates) {
+        if (candidate.source == CandidateSource::Dictionary || candidate.text.empty() || candidate.text.size() > 1024) return false;
+        for (const auto ch : candidate.text) if (ch < 0x20 || ch == 0x7f || ch > 0x10ffff || (ch >= 0xd800 && ch <= 0xdfff) || ch == 0xfffc) return false;
+        if (std::none_of(next.begin(),next.end(),[&](const Candidate& old) { return old.text == candidate.text; })) next.push_back(std::move(candidate));
+    }
+    if (next.size() == first) return false;
+    input_.candidates = std::move(next); input_.candidate_index = first; input_.stage = Stage::Selecting; ++revision_; return true;
+}
+bool Engine::resume_registration() {
+    if (registering() || inference_reading().empty()) return false;
+    Result result; begin_registration(result); if (!registering()) return false;
+    ++revision_; return true;
+}
 std::u32string Engine::display(std::u32string_view text) const {
     return input_.mode == Mode::Katakana ? katakana(text) : std::u32string(text);
 }

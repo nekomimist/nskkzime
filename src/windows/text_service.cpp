@@ -8,7 +8,9 @@
 #include "candidate_ui.h"
 #include "input_mode.h"
 #include "context_text.h"
+#include "inference_client.h"
 #include <wrl/client.h>
+#include <algorithm>
 #include <atomic>
 #include <bitset>
 #include <functional>
@@ -256,6 +258,12 @@ public:
                     constexpr wchar_t description[] = L"nskkzime オン／オフ";
                     preserved_[i] = SUCCEEDED(keys_->PreserveKey(client_, mode_key_ids[i], &mode_keys[i], description, ARRAYSIZE(description) - 1));
                 }
+                try {
+                    if (const auto config = dummy_inference_config()) {
+                        inference_ = std::make_unique<InferenceClient>(*config,[this](InferenceCompletion result) { receive_inference(std::move(result)); });
+                        set_inference_status(this,L"推論: ダミーサーバーを使用（辞書候補の枯渇時）");
+                    }
+                } catch (...) { set_inference_status(this,L"推論: 起動できません。辞書入力を続けます"); }
             } catch (...) { Deactivate(); return E_OUTOFMEMORY; }
         }
         return hr;
@@ -269,6 +277,7 @@ public:
         }
         candidate_actions_.reset();
         finish_composition();
+        inference_.reset(); clear_inference_status(this);
         if (keys_) keys_->UnadviseKeyEventSink(client_);
         if (manager_ && sink_cookie_ != TF_INVALID_COOKIE) {
             ComPtr<ITfSource> source;
@@ -377,19 +386,23 @@ public:
         const ComPtr<TextService> self(this);
         try {
             if (!composition_valid(cookie)) finish_composition();
-            else if (context_preview_enabled() && !reading_context_ && (engine_.stage() == Stage::Selecting || engine_.registering())) {
+            else if (!reading_context_) {
                 reading_context_ = true;
-                clear_context_preview(this);
                 const auto current = composition_; const auto revision = engine_.revision();
                 ComPtr<ITfRange> range;
-                if (SUCCEEDED(current->GetRange(&range)) && range) {
+                const auto pending = inference_pending_;
+                const bool preview = context_preview_enabled() && (engine_.stage() == Stage::Selecting || engine_.registering());
+                clear_context_preview(this);
+                if ((pending || preview) && SUCCEEDED(current->GetRange(&range)) && range) {
                     auto text = surrounding_text(context, range.Get(), cookie);
                     // Property callbacks may deactivate or replace the composition.
-                    if (composition_.Get() == current.Get() && composition_context_.Get() == context && engine_.revision() == revision)
-                        publish_context_preview(this, std::move(text));
-                }
+                    if (composition_.Get() == current.Get() && composition_context_.Get() == context && engine_.revision() == revision) {
+                        if (pending && inference_pending_ && pending->id == inference_pending_->id && text != pending->text) cancel_inference();
+                        if (preview) publish_context_preview(this, std::move(text));
+                    }
+                } else if (pending) cancel_inference();
                 reading_context_ = false;
-            } else if (!reading_context_) clear_context_preview(this);
+            }
         }
         catch (...) { reading_context_ = false; clear_context_preview(this); finish_composition(); }
         return S_OK;
@@ -397,6 +410,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnLayoutChange(ITfContext* context, TfLayoutCode code, ITfContextView*) override {
         if (context != composition_context_.Get() || !composition_) return S_OK;
         if (code == TF_LC_DESTROY) {
+            cancel_inference();
             ++layout_generation_; layout_pending_ = false;
             ++selection_request_; selection_pending_ = false;
             candidates_.hide(); return S_OK;
@@ -447,6 +461,58 @@ public:
         return S_OK;
     }
 private:
+    struct PendingInference {
+        std::uint64_t id, revision, session, generation;
+        ULONGLONG deadline;
+        ComPtr<ITfContext> context;
+        ComPtr<ITfComposition> composition;
+        SurroundingText text;
+    };
+    void cancel_inference() noexcept {
+        ++context_generation_;
+        if (inference_pending_) set_inference_status(this,L"推論: 入力状態が変わったため応答を破棄");
+        inference_pending_.reset(); if (inference_) inference_->cancel();
+    }
+    bool matches(const PendingInference& pending) const {
+        return manager_ && inference_pending_ && inference_pending_->id == pending.id && engine_.revision() == pending.revision &&
+            composition_session_ == pending.session && context_generation_ == pending.generation &&
+            composition_context_.Get() == pending.context.Get() && composition_.Get() == pending.composition.Get();
+    }
+    void receive_inference(InferenceCompletion result) noexcept {
+        if (!inference_pending_ || result.id != inference_pending_->id) return;
+        const auto id = result.id;
+        try {
+            const ComPtr<TextService> self(this); const auto pending = *inference_pending_;
+            const auto hr = request_edit(pending.context.Get(),client_,TF_ES_ASYNC | TF_ES_READWRITE,
+                [self,pending,result=std::move(result)](TfEditCookie cookie) {
+                    if (!self->matches(pending)) return S_OK;
+                    if (!editable(pending.context.Get()) || !self->composition_valid(cookie)) { self->cancel_inference(); return S_OK; }
+                    ComPtr<ITfRange> range;
+                    if (FAILED(pending.composition->GetRange(&range)) || !range) { self->cancel_inference(); return S_OK; }
+                    const auto text = surrounding_text(pending.context.Get(),range.Get(),cookie);
+                    if (!self->matches(pending)) return S_OK;
+                    if (text != pending.text || text.permission != InputPermission::Allowed) { self->cancel_inference(); return S_OK; }
+                    auto next = self->engine_; bool generated = false;
+                    const bool timed_out = GetTickCount64() >= pending.deadline || result.status == InferenceStatus::Timeout;
+                    if (!timed_out && result.status == InferenceStatus::Ok) {
+                        std::vector<Candidate> candidates;
+                        for (std::size_t i = 0; i < result.response.candidates.size(); ++i)
+                            candidates.push_back({"generated:" + std::to_string(pending.id) + ":" + std::to_string(i),result.response.candidates[i],U"ダミーIPC",CandidateSource::GeneratedFallback,LearningPolicy::DoNotLearn});
+                        generated = next.append_generated(std::move(candidates));
+                    }
+                    self->cancel_inference();
+                    const bool changed = generated || next.resume_registration();
+                    if (!changed || FAILED(self->apply(pending.context.Get(),cookie,U"",next))) {
+                        set_inference_status(self.Get(),L"推論: 応答を反映できません。現在の入力を維持します");
+                        return S_OK;
+                    }
+                    self->engine_ = std::move(next); self->refresh_candidates(cookie);
+                    set_inference_status(self.Get(),generated ? L"推論: ダミー候補を反映（学習しません）" : timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 応答を利用できません。通常のSKK操作へ復帰");
+                    return S_OK;
+                });
+            if (FAILED(hr) && matches(pending)) cancel_inference();
+        } catch (...) { if (inference_pending_ && inference_pending_->id == id) cancel_inference(); }
+    }
     void change_mode(Mode mode) noexcept {
         const ComPtr<TextService> self(this);
         if (!manager_) return;
@@ -461,6 +527,7 @@ private:
         if (!result.consumed) return S_OK;
         const auto revision = engine_.revision();
         const auto current = composition_;
+        const bool was_pending = inference_pending_.has_value();
         std::wstring learning_reason;
         const bool starting_registration = next.registration_depth() > engine_.registration_depth();
         const bool persistence_allowed = (result.learning || starting_registration) &&
@@ -468,8 +535,22 @@ private:
         // Property callbacks can end or replace the composition while answering.
         if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
         if (starting_registration && !persistence_allowed) next.abandon_registration();
+        std::optional<SurroundingText> inference_text;
+        const auto reading = next.inference_reading();
+        const bool has_generated = std::any_of(engine_.candidates().begin(),engine_.candidates().end(),
+            [](const Candidate& candidate) { return candidate.source == CandidateSource::GeneratedFallback; });
+        if (inference_ && !was_pending && !has_generated && !engine_.registering() && (result.dictionary_miss || result.candidates_exhausted) && !reading.empty()) {
+            ComPtr<ITfRange> range;
+            if (current && SUCCEEDED(current->GetRange(&range)) && range) {
+                auto text = surrounding_text(target,range.Get(),cookie);
+                if (text.permission == InputPermission::Allowed) { inference_text = std::move(text); next.defer_registration(); }
+                else set_inference_status(this,L"推論: 保護された、または属性不明の入力欄のため送信しません");
+            }
+            if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
+        }
         const auto status = apply(target, cookie, result.committed, next);
         if (SUCCEEDED(status)) {
+            cancel_inference();
             engine_ = std::move(next); applied = true;
             if (result.learning && persistence_allowed) {
                 publish_learning(dictionary_, *result.learning);
@@ -482,12 +563,22 @@ private:
             // until the outer editor is completed or explicitly abandoned.
             const auto binding = input_mode_;
             if (binding && !engine_.registering()) binding->publish(engine_.mode());
+            if (inference_text && inference_ && composition_ && !engine_.registering()) {
+                try {
+                    const auto id = ++inference_sequence_;
+                    InferenceRequest request{id,reading,inference_text->before,inference_text->after,5};
+                    const auto deadline = inference_->submit(std::move(request));
+                    inference_pending_ = PendingInference{id,engine_.revision(),composition_session_,context_generation_,deadline,composition_context_,composition_,std::move(*inference_text)};
+                    set_inference_status(this,L"推論: ダミー応答待ち（入力は継続できます）");
+                } catch (...) { set_inference_status(this,L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
+            }
         }
         return status;
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
         if (selection_pending_ || !manager_ || !composition_ || !composition_context_ ||
             engine_.revision() != revision || engine_.input_stage() != Stage::Selecting || index >= engine_.candidates().size()) return;
+        cancel_inference();
         const auto request = ++selection_request_;
         selection_pending_ = true;
         try {
@@ -523,6 +614,7 @@ private:
             range_matches(range.Get(), cookie, expected_text_) && selection_at_end(composition_context_.Get(), cookie, range.Get());
     }
     void detach_composition() noexcept {
+        ++composition_session_; cancel_inference();
         clear_context_preview(this);
         ++layout_generation_; layout_pending_ = false;
         ++selection_request_; selection_pending_ = false;
@@ -677,6 +769,9 @@ private:
     bool ending_ = false;
     bool reading_context_ = false;
     bool dictionary_loaded_ = false;
+    std::unique_ptr<InferenceClient> inference_;
+    std::optional<PendingInference> inference_pending_;
+    std::uint64_t inference_sequence_ = 0, composition_session_ = 0, context_generation_ = 0;
 };
 }
 HRESULT create_text_service(REFIID iid, void** output) noexcept {

@@ -7,3 +7,4 @@ EXPORTS
     NskkzimeGetDictionaryStatus PRIVATE
     NskkzimeEnableContextPreview PRIVATE
     NskkzimeGetContextPreview PRIVATE
+    NskkzimeGetInferenceStatus PRIVATE

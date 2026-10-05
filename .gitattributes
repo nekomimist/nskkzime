@@ -1,0 +1,2 @@
+# Preserve the upstream header bytes and published checksum on Windows.
+third_party/nlohmann/json.hpp -text

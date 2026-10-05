@@ -1,0 +1,90 @@
+#include "inference_client.h"
+#include "nskkzime/engine.h"
+#include <future>
+#include <iostream>
+#include <stdexcept>
+using namespace nskkzime;
+using namespace nskkzime::windows;
+namespace {
+void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+template<class F> void rejected(F fn) { bool failed = false; try { fn(); } catch (...) { failed = true; } check(failed,"invalid input accepted"); }
+std::wstring token() { const auto id = learning_client_id(); return {id.begin(),id.end()}; }
+void protocol_tests() {
+    const InferenceRequest request{42,U"かな",U"前\n\"\\😀",U"後",5};
+    const auto decoded = decode_request(encode_request(request));
+    check(decoded.id == request.id && decoded.reading == request.reading && decoded.left == request.left && decoded.right == request.right,"request roundtrip");
+    const InferenceResponse response{42,{U"仮名",U"かな😀"}};
+    check(decode_response(encode_response(response),42,5).candidates == response.candidates,"response roundtrip");
+    validate_inference_hello(inference_hello());
+    rejected([] { validate_inference_hello(R"({"hello":"nkkz-ime-server","protocol":99})"); });
+    rejected([&] { decode_response(encode_response(response),43,5); });
+    rejected([&] { decode_response(encode_response(response),42,1); });
+    for (auto bad : {R"({"id":1,"id":2})",R"({"id":-1})",R"({"id":1,"error":"failure"})",R"({"id":1,"candidates":["\ud800"]})",R"({"id":1,"candidates":[""]})",R"({"id":1,"candidates":["a\n"]})",R"({"id":1,"candidates":[4]})"})
+        rejected([&] { decode_response(bad,1,5); });
+    rejected([] { decode_request(std::string(inference_max_line+1,'x')); });
+    rejected([] { decode_request(R"({"id":1,"op":"convert","kana":"a","left":"","right":"","n":4294967297})"); });
+    rejected([] { decode_request(R"({"id":1,"op":"convert","kana":"a","left":"","right":"","n":1.0})"); });
+    rejected([] { decode_request(R"({"id":1,"op":"convert","kana":"a","left":"","right":"","n":1,"extra":[[[[[[[[[0]]]]]]]]]})"); });
+    auto long_context = request; long_context.left.assign(41,U'a'); rejected([&] { encode_request(long_context); });
+    rejected([] { inference_pipe_name(L"remote\\pipe"); });
+    rejected([] { inference_pipe_name(L"../other"); });
+}
+void core_tests() {
+    const Candidate generated{"test",U"蜜柑",U"",CandidateSource::GeneratedFallback,LearningPolicy::DoNotLearn};
+    auto type = [](Engine& e, std::string_view text) { for (const auto ch : text) e.handle({KeyCode::Character,ch}); };
+    Engine engine(demo_dictionary()); type(engine,"Mikan");
+    check(engine.handle({KeyCode::Space}).dictionary_miss && engine.registering(),"missing dictionary contract");
+    check(engine.inference_reading() == U"みかん","registration lost query"); engine.defer_registration();
+    check(!engine.registering() && engine.composition_text() == U"みかん","defer lost reading");
+    check(engine.append_generated({generated}) && engine.composition_text() == U"蜜柑","generation not selectable");
+    const auto confirmed = engine.handle({KeyCode::Enter}); check(confirmed.committed == U"蜜柑" && !confirmed.learning,"dummy candidate learned");
+    type(engine,"Kanji"); engine.handle({KeyCode::Space}); engine.handle({KeyCode::Space});
+    check(engine.handle({KeyCode::Space}).candidates_exhausted,"exhaustion contract"); engine.defer_registration();
+    check(engine.candidates().size() == 2 && engine.candidate_index() == 1,"defer lost dictionary candidates");
+    check(engine.append_generated({generated,generated}) && engine.candidates().size() == 3 && engine.candidate_index() == 2,"append/dedup/order");
+    engine.handle({KeyCode::Cancel}); check(engine.inference_reading() == U"かんじ","cancel lost reading");
+    check(engine.resume_registration() && engine.registering(),"fallback registration");
+    check(!engine.append_generated({generated}),"generation interrupted registration");
+    engine.reset(); type(engine,"/abc"); check(engine.inference_reading().empty(),"abbrev submitted for generation");
+    engine.reset(); type(engine,"KaKu"); check(engine.inference_reading().empty(),"okuri submitted for generation");
+}
+void ipc_tests(const std::filesystem::path& server) {
+    const auto name = token(); const auto process = launch_dummy_server(server,name,250,1000);
+    NativeHandle cancel(CreateEventW(nullptr,TRUE,FALSE,nullptr));
+    InferenceResponse first;
+    const auto ready = GetTickCount64()+5000;
+    for (;;) {
+        try { first = inference_exchange(name,{1,U"みかん",U"前",U"後",5},GetTickCount64()+1500,cancel.get()); break; }
+        catch (const InferenceFailure& f) { if (f.status != InferenceStatus::Unavailable || GetTickCount64() >= ready) throw; Sleep(10); }
+    }
+    check(first.candidates.front() == U"試験〈みかん〉","real pipe response");
+    std::vector<std::future<InferenceResponse>> peers;
+    for (std::uint64_t i=2;i<8;++i) peers.push_back(std::async(std::launch::async,[&,i] { return inference_exchange(name,{i,U"同時",U"",U"",1},GetTickCount64()+3000,cancel.get()); }));
+    for (std::size_t i=0;i<peers.size();++i) check(peers[i].get().id == i+2,"concurrent response mixed");
+    const auto start = GetTickCount64();
+    auto cancelled = std::async(std::launch::async,[&] { try { inference_exchange(name,{9,U"取消",U"",U"",1},GetTickCount64()+1500,cancel.get()); } catch (const InferenceFailure& f) { return f.status; } return InferenceStatus::Ok; });
+    Sleep(30); SetEvent(cancel.get()); check(cancelled.get() == InferenceStatus::Cancelled && GetTickCount64()-start < 800,"I/O cancellation stalled");
+    ResetEvent(cancel.get());
+    try { inference_exchange(name,{10,U"期限",U"",U"",1},GetTickCount64()+30,cancel.get()); check(false,"timeout accepted"); }
+    catch (const InferenceFailure& f) { check(f.status == InferenceStatus::Timeout,"wrong timeout status"); }
+    {
+        std::vector<InferenceCompletion> delivered; InferenceClient client({name,{},250,1500},[&](auto value) { delivered.push_back(std::move(value)); });
+        const auto now = GetTickCount64(); client.submit({11,U"古い",U"",U"",1}); client.submit({12,U"新しい",U"",U"",1});
+        check(GetTickCount64()-now < 100,"UI submission waited for server");
+        const auto end = GetTickCount64()+3000;
+        while (delivered.empty() && GetTickCount64()<end) { client.poll(); Sleep(5); }
+        check(delivered.size()==1 && delivered[0].id==12 && delivered[0].status==InferenceStatus::Ok,"latest request did not win");
+        client.submit({13,U"破棄",U"",U"",1}); client.cancel(); Sleep(300); client.poll(); check(delivered.size()==1,"cancelled callback delivered");
+    }
+    check(WaitForSingleObject(process.get(),5000)==WAIT_OBJECT_0,"dummy server failed to idle out");
+    DWORD exit = 1; GetExitCodeProcess(process.get(),&exit); check(exit==0,"dummy server failed");
+    const auto restarted = launch_dummy_server(server,name,0,300); Sleep(100);
+    check(inference_exchange(name,{14,U"再開",U"",U"",1},GetTickCount64()+1500,cancel.get()).id==14,"restart failed");
+    check(WaitForSingleObject(restarted.get(),3000)==WAIT_OBJECT_0,"restarted helper did not exit");
+}
+}
+int wmain(int argc,wchar_t** argv) {
+    if (argc!=2) return 2;
+    try { protocol_tests(); core_tests(); ipc_tests(argv[1]); std::cout<<"PASS protocol, core fallback, real pipes, concurrency, cancellation, deadlines and restart\n"; return 0; }
+    catch (const std::exception& e) { std::cerr<<"FAIL "<<e.what()<<'\n'; return 1; }
+}

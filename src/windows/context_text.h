@@ -11,6 +11,7 @@ struct SurroundingText {
     InputPermission permission = InputPermission::Unknown;
     bool available = false;
     std::u32string before, after;
+    bool operator==(const SurroundingText&) const = default;
 };
 // Excludes the target range. At most 40 Unicode scalar values on either side.
 // No GetText call before checking the target and both surrounding ranges.
