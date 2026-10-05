@@ -55,7 +55,7 @@ $model = (Resolve-Path '.\out\models\zenz-v3.2-small\ggml-model-Q5_K_M.gguf').Pa
 
 ## 検証と計測
 
-2026-10-06に、モデル入りRelease版のCTest 38件をスキップなしで通過した。
+2026-10-06に、モデル入りRelease版のCTest 39件をスキップなしで通過した。
 移植元のprompt/modelテストに加え、実パイプの並行採点、切断後の復帰、取消可能なモデル待ち、
 CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空白を含むモデルパスを確認した。
 `tsf_zenz` は保存設定からビルドしたDLLを実際に読み込み、自動起動・文脈付き変換・確定後の入力・
@@ -64,7 +64,7 @@ CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空�
 `inference_policy` は11ケースで候補統合・採点・学習の規則を、`tsf_inference_policy` は遅延する実パイプで
 キー／クリック操作・期限切れ・編集拒否後の候補保持・送り仮名と文脈・短い生成語の永続化を検査する。
 これはテスト用TSFホストによる検証で、実アプリのキー配送や表示をすべて再現するものではない。
-通常版Debug／Releaseの33件も成功している。
+通常版Debug／Releaseの34件も成功している。
 
 ```powershell
 .\scripts\bench-zenz.ps1 -Rounds 30 -Output out/zenz-benchmark.json
@@ -109,6 +109,11 @@ $model = (Resolve-Path '.\out\models\zenz-v3.2-small\ggml-model-Q5_K_M.gguf').Pa
 `--set-zenz` はファイルの存在・パスを検査して保存する。モデル形式やサーバーの実行可否を検査する操作ではない。
 通常の辞書設定と同じ `settings.ini` を使い、辞書・学習・ローマ字の既存設定を保持する。
 設定変更後は対象アプリを起動し直す。必要なら `--config 絶対パス` で別設定へ保存できる。
+
+`nskkzime_settings.exe` の「推論」「詳細」タブからも同じ項目を編集できる。
+モデルとサーバーは絶対パスを入力するか「参照」で選ぶ。推論をオフにして保存してもパスと方針は保持する。
+GUIの検査もファイルの存在確認までで、モデル読み込みやサーバー実行は行わない。
+起動方法と保存時の動作は [設定GUI](DICTIONARIES.md#設定gui) を参照。
 
 ```ini
 inference=zenz

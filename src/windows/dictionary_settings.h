@@ -30,6 +30,7 @@ std::optional<std::wstring> environment_value(const wchar_t* name);
 std::filesystem::path dictionary_settings_path();
 DictionarySettings parse_dictionary_settings(std::string_view bytes);
 DictionarySettings read_dictionary_settings(const std::filesystem::path&);
+std::string serialize_dictionary_settings(const DictionarySettings&);
 void save_dictionary_settings(const std::filesystem::path&, const DictionarySettings&);
 void validate_zenz_settings(const ZenzSettings&, bool check_files = false);
 std::wstring zenz_settings_status(const ZenzSettings&);

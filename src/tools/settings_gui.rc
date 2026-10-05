@@ -1,0 +1,80 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include <commctrl.h>
+#include "settings_gui_ids.h"
+
+IDD_SETTINGS DIALOGEX 0, 0, 420, 356
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "nskkzime 設定"
+FONT 9, "Yu Gothic UI"
+BEGIN
+    LTEXT "", IDC_FILE, 8, 8, 404, 25, SS_NOPREFIX
+    CONTROL "", IDC_TABS, WC_TABCONTROL, WS_TABSTOP, 8, 37, 404, 216
+    LTEXT "検査結果・保存状態", -1, 8, 255, 404, 10
+    EDITTEXT IDC_REPORT, 8, 267, 404, 53, ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
+    PUSHBUTTON "検査する(&V)", IDC_CHECK, 8, 333, 78, 15
+    PUSHBUTTON "再読込(&O)", IDC_RELOAD, 92, 333, 78, 15
+    DEFPUSHBUTTON "保存(&S)", IDOK, 246, 333, 78, 15
+    PUSHBUTTON "閉じる", IDCANCEL, 330, 333, 82, 15
+END
+
+IDD_DICTIONARIES DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    LTEXT "読み取り専用のSKK辞書。上にある辞書を優先します（最大32個）。", -1, 5, 5, 378, 13
+    LISTBOX IDC_DICTIONARIES, 5, 23, 303, 107, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP
+    PUSHBUTTON "追加(&A)…", IDC_ADD, 316, 23, 66, 16
+    PUSHBUTTON "外す(&D)", IDC_REMOVE, 316, 46, 66, 16
+    PUSHBUTTON "上へ(&U)", IDC_UP, 316, 69, 66, 16
+    PUSHBUTTON "下へ(&N)", IDC_DOWN, 316, 92, 66, 16
+    AUTOCHECKBOX "確定した候補・登録した語を学習する(&L)", IDC_LEARNING, 5, 140, 378, 15
+    LTEXT "辞書ファイル自体は変更しません。学習した語は別のユーザー辞書に保存します。\n辞書が0個で推論もオフの場合は、かな入力のみになります。", -1, 5, 161, 378, 24
+END
+
+IDD_ROMAJI DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    AUTOCHECKBOX "独自のローマ字ルールを使う(&C)", IDC_CUSTOM_ROMAJI, 5, 5, 378, 15
+    LTEXT "ルールファイル（UTF-8）(&F)", -1, 5, 32, 378, 12
+    EDITTEXT IDC_ROMAJI_PATH, 5, 49, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照(&B)…", IDC_ROMAJI_BROWSE, 316, 49, 66, 16
+    LTEXT "オフの場合は内蔵ルールを使用します。\n独自ルールは内蔵ルールへの追加・上書きとして読み込みます。\n\n読み込めないルールは保存しません。下の「検査する」で確認できます。", -1, 5, 84, 378, 67
+END
+
+IDD_INFERENCE DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    AUTOCHECKBOX "zenzによる変換を使う(&Z)", IDC_ZENZ, 5, 5, 378, 15
+    LTEXT "モデル（GGUF）(&M)", -1, 5, 29, 303, 12
+    EDITTEXT IDC_MODEL, 5, 44, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照…", IDC_MODEL_BROWSE, 316, 44, 66, 16
+    LTEXT "nkkz-ime-server.exe(&E)", -1, 5, 67, 303, 12
+    EDITTEXT IDC_SERVER, 5, 82, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照…", IDC_SERVER_BROWSE, 316, 82, 66, 16
+    AUTOCHECKBOX "辞書候補を採点し、確かな候補を先頭へ移す(&R)", IDC_RERANK, 5, 111, 378, 15
+    AUTOCHECKBOX "短い読みの追加生成候補を学習する(&L)", IDC_LEARN_GENERATED, 5, 134, 378, 15
+    LTEXT "長い読みの生成候補は学習しません。推論が使えなくても辞書入力は継続できます。\nモデルの取得・IMEの登録はこの画面では行いません。", -1, 5, 162, 378, 24
+END
+
+IDD_ADVANCED DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    LTEXT "推論スレッド数（1～64）(&T)", -1, 5, 8, 232, 12
+    EDITTEXT IDC_THREADS, 258, 5, 120, 15, ES_AUTOHSCROLL
+    LTEXT "生成の期限 ms（1～10000）(&G)", -1, 5, 33, 232, 12
+    EDITTEXT IDC_TIMEOUT, 258, 30, 120, 15, ES_AUTOHSCROLL
+    LTEXT "長い読みの生成を優先する文字数（0～1024、0は無効）(&N)", -1, 5, 58, 247, 12
+    EDITTEXT IDC_MIN_LENGTH, 258, 55, 120, 15, ES_AUTOHSCROLL
+    LTEXT "採点する候補の上限（2～64）(&C)", -1, 5, 83, 232, 12
+    EDITTEXT IDC_RERANK_LIMIT, 258, 80, 120, 15, ES_AUTOHSCROLL
+    LTEXT "採点の期限 ms（1～10000）(&Q)", -1, 5, 108, 232, 12
+    EDITTEXT IDC_SCORE_TIMEOUT, 258, 105, 120, 15, ES_AUTOHSCROLL
+    LTEXT "先頭へ移すために必要なスコア差（0～100）(&P)", -1, 5, 133, 247, 12
+    EDITTEXT IDC_PROMOTE_THRESHOLD, 258, 130, 120, 15, ES_AUTOHSCROLL
+    LTEXT "採点に採用するスコア差の上限（0～100）(&D)", -1, 5, 158, 247, 12
+    EDITTEXT IDC_MAX_GAP, 258, 155, 120, 15, ES_AUTOHSCROLL
+END

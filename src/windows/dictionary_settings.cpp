@@ -190,6 +190,7 @@ DictionarySettings read_dictionary_settings(const std::filesystem::path& path) {
 void save_dictionary_settings(const std::filesystem::path& path, const DictionarySettings& settings) {
     write_file_atomic(path, serialize(settings));
 }
+std::string serialize_dictionary_settings(const DictionarySettings& settings) { return serialize(settings); }
 void write_file_atomic(const std::filesystem::path& path, std::string_view bytes, bool replace_existing) {
     validate_path(path);
     if (bytes.size() > 64 * 1024 * 1024) throw std::invalid_argument("file exceeds 64 MiB");
