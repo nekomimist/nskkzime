@@ -1,5 +1,6 @@
 #pragma once
 #include "nskkzime/dictionary.h"
+#include "nskkzime/inference_policy.h"
 #include <optional>
 
 namespace nskkzime::windows {
@@ -7,6 +8,7 @@ struct ZenzSettings {
     bool enabled = false;
     std::filesystem::path model, server;
     unsigned int threads = 4, timeout_ms = 1000;
+    InferencePolicy policy;
 };
 struct DictionarySettings {
     std::vector<std::filesystem::path> dictionaries; // Highest priority first.

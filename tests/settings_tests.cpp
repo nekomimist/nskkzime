@@ -54,6 +54,16 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/zenz-policy-roundtrip-and-bounds", [&] {
+            const auto text = "version=1\nzenz-min-length=12\nzenz-rerank=on\nzenz-learn-fallback=on\nzenz-rerank-limit=8\nzenz-score-timeout-ms=250\nzenz-promote-threshold=1.5\nzenz-max-score-gap=7.5\n";
+            const auto settings=parse_dictionary_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_dictionary_settings(file,settings);
+            const auto policy=read_dictionary_settings(file).zenz.policy;
+            require(policy.long_min_length==12&&policy.rerank&&policy.learn_fallback&&policy.rerank_limit==8&&policy.score_timeout_ms==250&&policy.promote_threshold==1.5f&&policy.max_score_gap==7.5f,"policy roundtrip");
+            for(const auto invalid:{"zenz-min-length=1025","zenz-rerank=yes","zenz-learn-fallback=yes","zenz-rerank-limit=1","zenz-rerank-limit=65",
+                "zenz-score-timeout-ms=0","zenz-score-timeout-ms=10001","zenz-promote-threshold=nan","zenz-promote-threshold=-1",
+                "zenz-max-score-gap=inf","zenz-max-score-gap=101","zenz-min-length=0\nzenz-min-length=10"})
+                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
+        }},
         {"settings/zenz-roundtrip-and-files", [&] {
             const auto model = files.write(L"モデル 検証.gguf","test"), server = files.write(L"サーバー.exe","test");
             DictionarySettings settings{{first},false,{}, {true,model,server,2,800}};

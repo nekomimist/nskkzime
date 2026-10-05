@@ -30,6 +30,7 @@ void Engine::clear_composition() {
     input_.abbrev = false;
     input_.romaji.clear(); input_.reading.clear(); input_.okuri.clear(); input_.okuri_letter = 0;
     input_.candidates.clear(); input_.candidate_index = 0;
+    input_.candidates_touched = input_.generation_attempted = false;
 }
 void Engine::reset() {
     if (registering()) input_.mode = registrations_.front().original.mode;
@@ -37,12 +38,41 @@ void Engine::reset() {
     clear_composition(); ++revision_;
 }
 void Engine::set_mode(Mode mode) { reset(); input_.mode = mode; }
-std::u32string Engine::inference_reading() const {
+std::u32string Engine::inference_reading(bool include_okuri) const {
     if (registrations_.size() > 1) return {};
     const auto& input = registering() ? registrations_.front().original : input_;
-    if (input.abbrev || input.okuri_letter || !input.romaji.pending().empty() ||
+    if (input.abbrev || (input.okuri_letter && !include_okuri) || !input.romaji.pending().empty() ||
         (input.stage != Stage::Reading && input.stage != Stage::Selecting)) return {};
-    return input.reading;
+    return input.reading + (include_okuri ? input.okuri : U"");
+}
+std::u32string Engine::scoring_text(std::size_t index) const {
+    return !registering() && index < input_.candidates.size() ? input_.candidates[index].text + input_.okuri : std::u32string{};
+}
+bool Engine::can_reorder_candidates() const {
+    return !registering() && input_.stage == Stage::Selecting && !input_.candidates_touched && input_.candidate_index == 0;
+}
+bool Engine::generation_attempted() const {
+    return registering() ? registrations_.front().original.generation_attempted : input_.generation_attempted;
+}
+void Engine::note_generation_attempt() {
+    auto& input = registering() ? registrations_.front().original : input_;
+    if (!input.generation_attempted) { input.generation_attempted = true; ++revision_; }
+}
+bool Engine::promote_candidate(std::size_t index) {
+    if (!can_reorder_candidates() || index == 0 || index >= input_.candidates.size()) return false;
+    std::rotate(input_.candidates.begin(),input_.candidates.begin()+static_cast<std::ptrdiff_t>(index),input_.candidates.begin()+static_cast<std::ptrdiff_t>(index+1));
+    ++revision_; return true;
+}
+bool Engine::prepend_generated(std::vector<Candidate> candidates) {
+    if (registering() || inference_reading().empty() || (input_.stage == Stage::Selecting && !can_reorder_candidates()) || candidates.empty()) return false;
+    // Reuse the same validation and stable deduplication as fallback generation,
+    // on a copy so an invalid beam cannot partially change the live list.
+    auto trial = *this; trial.input_.candidates.clear();
+    for (const auto& candidate : candidates) if (candidate.source != CandidateSource::GeneratedLong) return false;
+    if (!trial.append_generated(std::move(candidates))) return false;
+    for (const auto& old : input_.candidates)
+        if (std::none_of(trial.input_.candidates.begin(),trial.input_.candidates.end(),[&](const Candidate& item) { return item.text == old.text; })) trial.input_.candidates.push_back(old);
+    trial.input_.candidate_index = 0; *this = std::move(trial); return true;
 }
 void Engine::defer_registration() {
     if (registrations_.size() != 1 || !registrations_.front().draft.empty() || !input_literal().empty()) return;
@@ -121,6 +151,8 @@ void Engine::append(std::u32string text, Result& result) {
 void Engine::convert(Result& result) {
     append(input_.romaji.flush(), result);
     if (input_.reading.empty()) return;
+    result.conversion_started = true;
+    input_.candidates_touched = input_.generation_attempted = false;
     const LookupKey lookup{input_.reading, input_.okuri_letter};
     auto stored = dictionary_->lookup(lookup, input_.okuri);
     // Once a registered spelling is available in the shared snapshot, defer to
@@ -237,6 +269,7 @@ Result Engine::handle_registration(Key key) {
 }
 Result Engine::handle_input(Key key) {
     Result result; result.consumed = true;
+    if (input_.stage == Stage::Selecting) input_.candidates_touched = true;
     if (key.code == KeyCode::SelectCandidate || (input_.stage == Stage::Selecting &&
         key.code == KeyCode::Character && key.character >= '1' && key.character <= '7')) {
         const auto index = key.code == KeyCode::SelectCandidate ? key.candidate_index :

@@ -60,6 +60,7 @@ struct Result {
     std::u32string committed;
     bool dictionary_miss = false;
     bool candidates_exhausted = false;
+    bool conversion_started = false; // A fresh dictionary lookup, including automatic okuri conversion.
     bool registration = false; // learning is an explicitly registered word (possibly inside another registration).
     bool registration_limit = false;
     // A proposed event, not a dictionary mutation. Hosts may publish it only
@@ -90,9 +91,15 @@ public:
     // bounded, private cache makes a new word usable before asynchronous saving.
     void remember_registration(const LearningEvent&) noexcept;
     void abandon_registration(); // Host cannot present the editor: restore the outer reading, without a learning event.
-    std::u32string inference_reading() const; // Only outer, non-abbrev, okuri-nasi input.
+    std::u32string inference_reading(bool include_okuri = false) const; // Generation excludes okuri; score includes it.
+    std::u32string scoring_text(std::size_t index) const; // Stem + hiragana okuri, no annotation.
     void defer_registration(); // Preserve the source reading/candidates while awaiting generation.
     bool append_generated(std::vector<Candidate>);
+    bool prepend_generated(std::vector<Candidate>); // Long reading: only before candidate interaction.
+    bool promote_candidate(std::size_t index); // Keep all other candidates and metadata in order.
+    bool can_reorder_candidates() const;
+    bool generation_attempted() const;
+    void note_generation_attempt(); // Once per fresh conversion, even after timeout/cancellation.
     bool resume_registration(); // Empty/failed response falls back to the ordinary registration flow.
     std::uint64_t revision() const { return revision_; }
     std::u32string preedit() const;
@@ -111,6 +118,7 @@ private:
         char okuri_letter = 0;
         std::vector<Candidate> candidates;
         std::size_t candidate_index = 0;
+        bool candidates_touched = false, generation_attempted = false;
     };
     struct Registration { Input original; std::u32string draft, anchor; };
     Result handle_input(Key);

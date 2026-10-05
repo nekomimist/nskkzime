@@ -20,7 +20,7 @@ std::wstring zenz_token(const InferenceConfig& config) {
     // Same settings share one server across activations/processes. A different
     // model/server/limit set cannot accidentally reuse an incompatible model.
     const auto key = L"zenz-v1\n" + config.model.lexically_normal().native() + L"\n" + config.server.lexically_normal().native() +
-        L"\n" + std::to_wstring(config.threads) + L"\n" + std::to_wstring(config.timeout_ms);
+        L"\n" + std::to_wstring(config.threads) + L"\n" + std::to_wstring((std::max)(config.timeout_ms,static_cast<DWORD>(config.policy.score_timeout_ms)));
     unsigned char digest[32]{};
     if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(key.data())),
         static_cast<ULONG>(key.size()*sizeof(wchar_t)),digest,sizeof(digest)) < 0) throw std::runtime_error("cannot name inference server");
@@ -59,7 +59,7 @@ struct InferenceClient::State {
                         if (GetTickCount64() >= job->deadline) throw InferenceFailure(InferenceStatus::Timeout);
                         if (!launched) {
                             const auto process = config.model.empty() ? launch_dummy_server(config.server,config.token,config.delay_ms) :
-                                launch_zenz_server(config.server,config.model,config.token,config.threads,config.timeout_ms);
+                                launch_zenz_server(config.server,config.model,config.token,config.threads,(std::max)(config.timeout_ms,static_cast<DWORD>(config.policy.score_timeout_ms)));
                             launched = true;
                         }
                         if (WaitForSingleObject(job->cancel.get(), 10) == WAIT_OBJECT_0) throw InferenceFailure(InferenceStatus::Cancelled);
@@ -97,9 +97,10 @@ InferenceClient::~InferenceClient() {
     { const std::lock_guard lock(state_->mutex); state_->stop = true; if (state_->pending) SetEvent(state_->pending->cancel.get()); state_->completion.reset(); }
     SetEvent(state_->wake.get()); // No join/pipe wait in a TSF callback.
 }
-ULONGLONG InferenceClient::submit(InferenceRequest request) {
+ULONGLONG InferenceClient::submit(InferenceRequest request, DWORD timeout_ms) {
+    if (timeout_ms > 10000) throw std::invalid_argument("invalid request timeout");
     auto job = std::make_shared<State::Job>(); if (!job->cancel.valid()) throw std::runtime_error("cannot create cancellation event");
-    job->request = std::move(request); job->deadline = GetTickCount64() + state_->config.timeout_ms;
+    job->request = std::move(request); job->deadline = GetTickCount64() + (timeout_ms ? timeout_ms : state_->config.timeout_ms);
     { const std::lock_guard lock(state_->mutex);
         if (state_->pending) SetEvent(state_->pending->cancel.get());
         state_->pending = job; state_->completion.reset();
@@ -133,12 +134,14 @@ std::optional<InferenceConfig> current_inference_config() {
         wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module(false),path,ARRAYSIZE(path));
         if (!size || size == ARRAYSIZE(path)) throw std::runtime_error("cannot locate inference server");
         config.server = std::filesystem::path(path).parent_path() / L"nkkz-ime-server.exe";
+        config.policy.long_min_length = 0; // Existing dummy fixtures exercise fallback only.
     } else {
         const auto settings = current_dictionary_configuration().settings.zenz;
         if (!settings.enabled) return {};
         validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
         config.server = settings.server; config.model = settings.model;
         config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
+        config.policy = settings.policy;
     }
     for (const auto item : {std::pair{L"NSKKZIME_INFERENCE_DELAY_MS",&config.delay_ms},std::pair{L"NSKKZIME_INFERENCE_TIMEOUT_MS",&config.timeout_ms}})
         if (const auto value = environment_value(item.first)) {

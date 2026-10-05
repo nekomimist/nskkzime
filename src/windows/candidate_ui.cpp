@@ -119,6 +119,12 @@ void CandidateList::request_selection(std::size_t index) noexcept {
         try { actions->select(index, revision_); } catch (...) { /* Preserve the existing selection on failure. */ }
     }
 }
+void CandidateList::begin_interaction() noexcept {
+    if (closed_) return;
+    if (const auto actions = actions_.lock(); actions && actions->interact) {
+        try { actions->interact(revision_); } catch (...) {}
+    }
+}
 std::optional<std::size_t> CandidateList::hit_test(POINT point) const noexcept {
     RECT area{};
     if (closed_ || !located_ || !requested_visible_ || !window_ || !IsWindowVisible(window_) || !GetClientRect(window_, &area)) return {};
@@ -296,7 +302,7 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
         const ComPtr<CandidateList> keep(self);
         self->cancel_pointer();
         self->pointer_.down(self->hit_test({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}));
-        if (self->pointer_.pressed) SetCapture(window);
+        if (self->pointer_.pressed) { self->begin_interaction(); SetCapture(window); }
         return 0;
     }
     if (message == WM_LBUTTONUP && self) {

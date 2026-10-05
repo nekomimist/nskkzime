@@ -1,5 +1,6 @@
 #include "dictionary_settings.h"
 #include "romaji_settings.h"
+#include <algorithm>
 #include <iostream>
 
 using namespace nskkzime::windows;
@@ -20,6 +21,9 @@ void help() {
         "  --reset-romaji            Use built-in romaji rules\n"
         "  --set-zenz MODEL SERVER    Enable zenz using absolute model and server file paths\n"
         "  --disable-inference       Disable zenz and clear its saved paths\n"
+        "  --set-zenz-min-length N   Prefer generation for N or more kana (0 disables)\n"
+        "  --set-zenz-rerank on|off  Promote the best dictionary candidate when confident\n"
+        "  --set-zenz-learning on|off Learn short fallback generations after successful commit\n"
         "  --help                    Show this help\n"
         "Default: %LOCALAPPDATA%\\nskkzime\\settings.ini (UTF-8)\n"
         "NSKKZIME_CONFIG overrides that file; NSKKZIME_DICTIONARY selects isolated dictionary settings.\n"
@@ -38,14 +42,15 @@ int wmain(int argc, wchar_t** argv) {
             if (!explicit_file->is_absolute()) throw std::invalid_argument("--config requires an absolute path");
         }
         const std::wstring_view action(argv[index++]);
-        if (action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
+        const bool policy = action == L"--set-zenz-min-length" || action == L"--set-zenz-rerank" || action == L"--set-zenz-learning";
+        if (!policy && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
             help(); return 2;
         }
         const bool set = action == L"--set-dictionaries", disable = action == L"--disable-dictionaries";
         const bool learning = action == L"--set-learning";
         const bool romaji = action == L"--set-romaji", reset_romaji = action == L"--reset-romaji";
         const bool zenz = action == L"--set-zenz", disable_inference = action == L"--disable-inference";
-        if ((!set && !learning && !romaji && !zenz && index != argc) || (set && index == argc) || ((learning || romaji) && index + 1 != argc) || (zenz && index + 2 != argc)) { help(); return 2; }
+        if ((!set && !learning && !romaji && !zenz && !policy && index != argc) || (set && index == argc) || ((learning || romaji || policy) && index + 1 != argc) || (zenz && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
@@ -56,11 +61,21 @@ int wmain(int argc, wchar_t** argv) {
         }
         const auto file = explicit_file ? *explicit_file : dictionary_settings_path();
         const auto dictionary_override = environment_value(L"NSKKZIME_DICTIONARY");
-        if (zenz || disable_inference) {
+        if (zenz || disable_inference || policy) {
             auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
-            if (zenz) settings.zenz = {true,std::filesystem::path(argv[index]),std::filesystem::path(argv[index+1])};
-            else settings.zenz = {};
-            validate_zenz_settings(settings.zenz,true); save_dictionary_settings(file,settings);
+            if (zenz) { settings.zenz.enabled = true; settings.zenz.model = argv[index]; settings.zenz.server = argv[index+1]; }
+            else if (disable_inference) settings.zenz = {};
+            else {
+                const std::wstring value(argv[index]);
+                if (action == L"--set-zenz-min-length") {
+                    if (value.empty() || !std::all_of(value.begin(),value.end(),[](auto ch) { return ch >= L'0' && ch <= L'9'; })) throw std::invalid_argument("minimum length must be 0..1024");
+                    const auto parsed = std::stoul(value); if (parsed > 1024) throw std::invalid_argument("minimum length must be 0..1024"); settings.zenz.policy.long_min_length = parsed;
+                } else {
+                    if (value != L"on" && value != L"off") throw std::invalid_argument("zenz toggle must equal on or off");
+                    (action == L"--set-zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == L"on";
+                }
+            }
+            validate_zenz_settings(settings.zenz,zenz); save_dictionary_settings(file,settings);
             show(zenz_settings_status(settings.zenz));
             show(L"保存しました。利用するアプリを起動し直すと反映されます。モデルの実行確認にはサーバーの --convert を使ってください。"); return 0;
         }
@@ -112,7 +127,7 @@ int wmain(int argc, wchar_t** argv) {
                 show(zenz_settings_status(configuration.settings.zenz));
                 std::size_t number = 0;
                 for (const auto& path : configuration.settings.dictionaries) show(std::to_wstring(++number) + L". " + path.native());
-                if (!number) show(L"辞書は無効です（かな入力のみ）。");
+                if (!number) show(configuration.settings.zenz.enabled ? L"辞書は未設定です。zenzによる変換を利用します。" : L"辞書は無効です（かな入力のみ）。");
             }
             return 0;
         }

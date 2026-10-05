@@ -12,7 +12,10 @@ namespace nskkzime::windows {
 inline constexpr GUID candidate_ui_guid = {0x680bc7bf, 0xbe19, 0x42e9, {0xa4, 0x38, 0x0d, 0x8d, 0xf2, 0x99, 0xf5, 0x0b}};
 
 // UI snapshots hold only weak references to this service-owned endpoint.
-struct CandidateActions { std::function<void(std::size_t, std::uint64_t)> select; };
+struct CandidateActions {
+    std::function<void(std::size_t, std::uint64_t)> select;
+    std::function<void(std::uint64_t)> interact; // Freeze asynchronous reordering on pointer down.
+};
 struct CandidatePointer {
     std::optional<std::size_t> pressed;
     void down(std::optional<std::size_t> row) { pressed = row; }
@@ -50,6 +53,7 @@ public:
     void close() noexcept;
     std::size_t shortcut_index(std::size_t slot) const noexcept;
     void request_selection(std::size_t index) noexcept;
+    void begin_interaction() noexcept;
     bool registration() const { return registration_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:

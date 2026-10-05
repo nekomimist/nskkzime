@@ -238,6 +238,9 @@ public:
         try {
             candidate_actions_ = std::make_shared<CandidateActions>();
             candidate_actions_->select = [this](std::size_t index, std::uint64_t revision) { select_candidate(index, revision); };
+            candidate_actions_->interact = [this](std::uint64_t revision) {
+                if (engine_.revision() == revision && inference_pending_) cancel_inference();
+            };
         } catch (...) { candidate_actions_.reset(); return E_OUTOFMEMORY; }
         manager_ = manager; client_ = client;
         auto hr = manager_.As(&keys_);
@@ -262,8 +265,9 @@ public:
                 try {
                     if (const auto config = current_inference_config()) {
                         inference_dummy_ = config->model.empty();
+                        inference_policy_ = config->policy;
                         inference_ = std::make_unique<InferenceClient>(*config,[this](InferenceCompletion result) { receive_inference(std::move(result)); });
-                        set_inference_status(this,inference_dummy_ ? L"推論: ダミーサーバーを使用（辞書候補の枯渇時）" : L"推論: zenzを使用（辞書候補の枯渇時）");
+                        set_inference_status(this,inference_dummy_ ? L"推論: ダミーサーバーを使用（辞書候補の枯渇時）" : L"推論: zenzを使用");
                     }
                 } catch (...) { set_inference_status(this,L"推論: 起動できません。辞書入力を続けます"); }
             } catch (...) { Deactivate(); return E_OUTOFMEMORY; }
@@ -469,6 +473,7 @@ private:
         ComPtr<ITfContext> context;
         ComPtr<ITfComposition> composition;
         SurroundingText text;
+        PlannedInference plan;
     };
     void cancel_inference() noexcept {
         ++context_generation_;
@@ -494,22 +499,22 @@ private:
                     const auto text = surrounding_text(pending.context.Get(),range.Get(),cookie);
                     if (!self->matches(pending)) return S_OK;
                     if (text != pending.text || text.permission != InputPermission::Allowed) { self->cancel_inference(); return S_OK; }
-                    auto next = self->engine_; bool generated = false;
+                    auto next = self->engine_; bool adjusted = false;
                     const bool timed_out = GetTickCount64() >= pending.deadline || result.status == InferenceStatus::Timeout;
                     if (!timed_out && result.status == InferenceStatus::Ok) {
-                        std::vector<Candidate> candidates;
-                        for (std::size_t i = 0; i < result.response.candidates.size(); ++i)
-                            candidates.push_back({"generated:" + std::to_string(pending.id) + ":" + std::to_string(i),result.response.candidates[i],self->inference_dummy_ ? U"ダミーIPC" : U"zenz",CandidateSource::GeneratedFallback,LearningPolicy::DoNotLearn});
-                        generated = next.append_generated(std::move(candidates));
+                        adjusted = apply_inference_result(next,pending.plan,result.response,self->inference_policy_,self->inference_dummy_);
                     }
                     self->cancel_inference();
-                    const bool changed = generated || next.resume_registration();
-                    if (!changed || FAILED(self->apply(pending.context.Get(),cookie,U"",next))) {
+                    const bool fallback = pending.plan.purpose == InferencePurpose::Fallback ||
+                        (pending.plan.purpose == InferencePurpose::LongReading && next.candidates().empty());
+                    const bool changed = adjusted || (fallback && next.resume_registration());
+                    if (changed && FAILED(self->apply(pending.context.Get(),cookie,U"",next))) {
                         set_inference_status(self.Get(),L"推論: 応答を反映できません。現在の入力を維持します");
                         return S_OK;
                     }
-                    self->engine_ = std::move(next); self->refresh_candidates(cookie);
-                    set_inference_status(self.Get(),generated ? L"推論: 生成候補を反映（学習しません）" : timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 応答を利用できません。通常のSKK操作へ復帰");
+                    if (changed) { self->engine_ = std::move(next); self->refresh_candidates(cookie); }
+                    set_inference_status(self.Get(),adjusted ? (pending.plan.purpose == InferencePurpose::Rerank ? L"推論: 最良の辞書候補を先頭へ移動" : L"推論: 生成候補を反映") :
+                        timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 現在の辞書候補または読みで継続");
                     return S_OK;
                 });
             if (FAILED(hr) && matches(pending)) cancel_inference();
@@ -538,14 +543,15 @@ private:
         if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
         if (starting_registration && !persistence_allowed) next.abandon_registration();
         std::optional<SurroundingText> inference_text;
-        const auto reading = next.inference_reading();
-        const bool has_generated = std::any_of(engine_.candidates().begin(),engine_.candidates().end(),
-            [](const Candidate& candidate) { return candidate.source == CandidateSource::GeneratedFallback; });
-        if (inference_ && !was_pending && !has_generated && !engine_.registering() && (result.dictionary_miss || result.candidates_exhausted) && !reading.empty()) {
+        auto plan = inference_ && !was_pending ? plan_inference(engine_,next,result,inference_policy_) : std::nullopt;
+        if (plan) {
             ComPtr<ITfRange> range;
             if (current && SUCCEEDED(current->GetRange(&range)) && range) {
                 auto text = surrounding_text(target,range.Get(),cookie);
-                if (text.permission == InputPermission::Allowed) { inference_text = std::move(text); next.defer_registration(); }
+                if (text.permission == InputPermission::Allowed) {
+                    inference_text = std::move(text); next.defer_registration();
+                    if (plan->purpose != InferencePurpose::Rerank) next.note_generation_attempt();
+                }
                 else set_inference_status(this,L"推論: 保護された、または属性不明の入力欄のため送信しません");
             }
             if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
@@ -568,9 +574,9 @@ private:
             if (inference_text && inference_ && composition_ && !engine_.registering()) {
                 try {
                     const auto id = ++inference_sequence_;
-                    InferenceRequest request{id,reading,inference_text->before,inference_text->after,5};
-                    const auto deadline = inference_->submit(std::move(request));
-                    inference_pending_ = PendingInference{id,engine_.revision(),composition_session_,context_generation_,deadline,composition_context_,composition_,std::move(*inference_text)};
+                    plan->request.id = id; plan->request.left = inference_text->before; plan->request.right = inference_text->after;
+                    const auto deadline = inference_->submit(plan->request,plan->purpose == InferencePurpose::Rerank ? inference_policy_.score_timeout_ms : 0);
+                    inference_pending_ = PendingInference{id,engine_.revision(),composition_session_,context_generation_,deadline,composition_context_,composition_,std::move(*inference_text),std::move(*plan)};
                     set_inference_status(this,L"推論: 応答待ち（入力は継続できます）");
                 } catch (...) { set_inference_status(this,L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
             }
@@ -773,6 +779,7 @@ private:
     bool dictionary_loaded_ = false;
     std::unique_ptr<InferenceClient> inference_;
     bool inference_dummy_ = false;
+    InferencePolicy inference_policy_;
     std::optional<PendingInference> inference_pending_;
     std::uint64_t inference_sequence_ = 0, composition_session_ = 0, context_generation_ = 0;
 };

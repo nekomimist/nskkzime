@@ -1,5 +1,6 @@
 #pragma once
 #include "inference_ipc.h"
+#include "nskkzime/inference_policy.h"
 #include <functional>
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@ struct InferenceConfig {
     DWORD timeout_ms = 1000;
     std::filesystem::path model; // Empty: dummy backend, otherwise zenz.
     unsigned int threads = 4;
+    InferencePolicy policy;
 };
 struct InferenceCompletion {
     InferenceStatus status = InferenceStatus::Unavailable;
@@ -27,7 +29,7 @@ public:
     ~InferenceClient();
     InferenceClient(const InferenceClient&) = delete;
     InferenceClient& operator=(const InferenceClient&) = delete;
-    ULONGLONG submit(InferenceRequest);
+    ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0); // Zero uses the generation timeout.
     void cancel() noexcept;
     void poll();
 private:
