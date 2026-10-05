@@ -165,12 +165,16 @@ int serve_dictionary(const std::filesystem::path& path, DWORD idle_ms) {
             }
         }
         try {
-            const auto request = receive_frame(pipe.get(), GetTickCount64() + 1500, 20000);
+            const auto request = receive_frame(pipe.get(), GetTickCount64() + 15000, learning_max_bytes);
             std::string response;
             try {
                 if (request.starts_with("NKL1") || request.starts_with("NKF1")) {
                     const auto update = decode_learning(request); auto next = dictionary;
                     if (next.apply(update)) { write_file_atomic(file, next.serialize()); dictionary = std::move(next); }
+                    response = "OKAY";
+                } else if (request.starts_with("NKI1")) {
+                    const auto update = decode_import(request); auto next = dictionary;
+                    if (next.apply(update)) { write_file_atomic(file,next.serialize()); dictionary = std::move(next); }
                     response = "OKAY";
                 } else if (request.size() == 12 && request.starts_with("GET1")) {
                     if (request == snapshot_request(dictionary.revision())) response = "SAME";

@@ -11,10 +11,10 @@ void text_check(std::u32string_view text, bool empty = false) {
     check((empty || !text.empty()) && text.size() <= 1024);
     for (const auto ch : text) check(ch >= 32 && ch != 127 && ch <= 0x10ffff && !(ch >= 0xd800 && ch <= 0xdfff));
 }
-void event_check(const LearningEvent& event) {
+void event_check(const LearningEvent& event, bool generic_okuri = false) {
     text_check(event.key.reading); text_check(event.okuri, true);
     text_check(event.candidate.text); text_check(event.candidate.annotation, true);
-    check((event.key.okuri == 0 && event.okuri.empty()) || (event.key.okuri >= 'a' && event.key.okuri <= 'z' && !event.okuri.empty()));
+    check((event.key.okuri == 0 && event.okuri.empty()) || (event.key.okuri >= 'a' && event.key.okuri <= 'z' && (generic_okuri || !event.okuri.empty())));
     check(event.candidate.learning == LearningPolicy::Learn &&
         (event.candidate.source == CandidateSource::Dictionary || event.candidate.source == CandidateSource::GeneratedFallback));
 }
@@ -42,13 +42,13 @@ struct Reader {
         const auto size = number(); check(size <= limit && size <= bytes.size());
         std::string result(bytes.substr(0, static_cast<std::size_t>(size))); bytes.remove_prefix(static_cast<std::size_t>(size)); return result;
     }
-    LearningEvent event() {
+    LearningEvent event(bool generic_okuri = false) {
         LearningEvent e; e.key.reading = from_utf8(string()); const auto letter = number(); check(letter <= 127);
         e.key.okuri = static_cast<char>(letter); e.okuri = from_utf8(string());
         e.candidate.text = from_utf8(string()); e.candidate.annotation = from_utf8(string());
         const auto source = number(); check(source <= 2); e.candidate.source = static_cast<CandidateSource>(source);
         e.candidate.id = "user:" + utf8(e.key.reading) + ":" + std::to_string(letter) + ":" + utf8(e.candidate.text);
-        event_check(e); return e;
+        event_check(e,generic_okuri); return e;
     }
 };
 std::uint32_t checksum(std::string_view bytes) {
@@ -61,7 +61,7 @@ std::uint32_t checksum(std::string_view bytes) {
 }
 }
 void validate_learning(const LearningRequest& request) {
-    client_check(request.client); check(request.sequence != 0); event_check(request.event);
+    client_check(request.client); check(request.sequence != 0); event_check(request.event,request.action == DictionaryAction::Forget);
     check(request.action == DictionaryAction::Learn || request.action == DictionaryAction::Forget);
 }
 std::string encode_learning(const LearningRequest& request) {
@@ -70,9 +70,47 @@ std::string encode_learning(const LearningRequest& request) {
 }
 LearningRequest decode_learning(std::string_view bytes) {
     check(bytes.size() <= 20000 && (bytes.starts_with("NKL1") || bytes.starts_with("NKF1"))); Reader r{bytes.substr(4)};
-    LearningRequest request; request.client = r.string(32); request.sequence = r.number(); request.event = r.event();
+    LearningRequest request; request.client = r.string(32); request.sequence = r.number(); request.event = r.event(bytes.starts_with("NKF1"));
     request.action = bytes.starts_with("NKF1") ? DictionaryAction::Forget : DictionaryAction::Learn;
     check(r.bytes.empty()); validate_learning(request); return request;
+}
+void validate_import(const ImportRequest& request) {
+    client_check(request.client); check(request.sequence != 0);
+    check(!request.entries.empty() && request.entries.size() <= import_max_candidates);
+    for (const auto& entry : request.entries) {
+        event_check(entry,true); check(entry.candidate.source == CandidateSource::Dictionary);
+    }
+}
+std::string encode_import(const ImportRequest& request) {
+    validate_import(request); Writer w; w.bytes = "NKI1";
+    w.string(request.client); w.number(request.sequence); w.number(request.entries.size());
+    for (const auto& entry : request.entries) w.event(entry);
+    check(w.bytes.size() <= learning_max_bytes); return w.bytes;
+}
+ImportRequest decode_import(std::string_view bytes) {
+    check(bytes.size() <= learning_max_bytes && bytes.starts_with("NKI1")); Reader r{bytes.substr(4)};
+    ImportRequest request; request.client = r.string(32); request.sequence = r.number();
+    const auto count = r.number(); check(count > 0 && count <= import_max_candidates);
+    for (std::uint64_t i = 0; i < count; ++i) request.entries.push_back(r.event(true));
+    check(r.bytes.empty()); validate_import(request); return request;
+}
+bool UserDictionary::apply(const ImportRequest& request) {
+    validate_import(request);
+    const auto previous = clients_.find(request.client);
+    if (previous != clients_.end() && previous->second >= request.sequence) return false;
+    check(previous != clients_.end() || clients_.size() < max_clients);
+    check(revision_ != std::numeric_limits<std::uint64_t>::max());
+    auto next = *this;
+    for (const auto& entry : request.entries) {
+        Key key{entry.key,entry.okuri};
+        check(next.entries_.contains(key) || next.entries_.size() < max_entries);
+        auto& candidates = next.entries_[std::move(key)];
+        if (std::any_of(candidates.begin(),candidates.end(),[&](const Candidate& old) { return old.text == entry.candidate.text; })) continue;
+        check(candidates.size() < max_candidates); candidates.push_back(entry.candidate);
+    }
+    next.clients_[request.client] = request.sequence; ++next.revision_;
+    (void)next.serialize(); // Validate the complete transaction before changing this instance.
+    *this = std::move(next); return true;
 }
 bool UserDictionary::apply(const LearningRequest& request) {
     validate_learning(request);
@@ -97,7 +135,13 @@ bool UserDictionary::apply(const LearningRequest& request) {
 }
 std::vector<Candidate> UserDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find({key, std::u32string(okuri)});
-    return found == entries_.end() ? std::vector<Candidate>{} : found->second;
+    auto result = found == entries_.end() ? std::vector<Candidate>{} : found->second;
+    if (key.okuri && !okuri.empty()) {
+        if (const auto generic = entries_.find({key,{}}); generic != entries_.end())
+            for (const auto& candidate : generic->second)
+                if (std::none_of(result.begin(),result.end(),[&](const Candidate& old) { return old.text == candidate.text; })) result.push_back(candidate);
+    }
+    return result;
 }
 std::vector<LearningEvent> UserDictionary::entries() const {
     std::vector<LearningEvent> result;
@@ -106,7 +150,10 @@ std::vector<LearningEvent> UserDictionary::entries() const {
     return result;
 }
 std::string UserDictionary::serialize() const {
-    Writer w; w.bytes = "NKUD1"; w.number(revision_); w.number(clients_.size());
+    // Old readers must reject scopes they cannot interpret, rather than erase
+    // or silently broaden them. Exact-only dictionaries remain version 1.
+    const auto generic = std::any_of(entries_.begin(),entries_.end(),[](const auto& entry) { return entry.first.lookup.okuri && entry.first.okuri.empty(); });
+    Writer w; w.bytes = generic ? "NKUD2" : "NKUD1"; w.number(revision_); w.number(clients_.size());
     for (const auto& [client, sequence] : clients_) { w.string(client); w.number(sequence); }
     w.number(entries_.size());
     for (const auto& [key, candidates] : entries_) {
@@ -116,7 +163,8 @@ std::string UserDictionary::serialize() const {
     w.number(checksum(w.bytes)); check(w.bytes.size() <= learning_max_bytes); return w.bytes;
 }
 UserDictionary UserDictionary::parse(std::string_view bytes) {
-    check(bytes.size() >= 37 && bytes.size() <= learning_max_bytes && bytes.starts_with("NKUD1"));
+    check(bytes.size() >= 37 && bytes.size() <= learning_max_bytes && (bytes.starts_with("NKUD1") || bytes.starts_with("NKUD2")));
+    const bool generic_okuri = bytes.starts_with("NKUD2");
     Reader trailer{bytes.substr(bytes.size() - 8)}; check(trailer.number() == checksum(bytes.substr(0, bytes.size() - 8)));
     Reader r{bytes.substr(5, bytes.size() - 13)}; UserDictionary result; result.revision_ = r.number();
     const auto clients = r.number(); check(clients <= max_clients);
@@ -127,10 +175,10 @@ UserDictionary UserDictionary::parse(std::string_view bytes) {
     const auto entries = r.number(); check(entries <= max_entries);
     for (std::uint64_t i = 0; i < entries; ++i) {
         const auto count = r.number(); check(count > 0 && count <= max_candidates);
-        auto e = r.event(); Key key{e.key, e.okuri}; check(!result.entries_.contains(key));
+        auto e = r.event(generic_okuri); Key key{e.key, e.okuri}; check(!result.entries_.contains(key));
         auto& candidates = result.entries_[key]; candidates.push_back(std::move(e.candidate));
         for (std::uint64_t j = 1; j < count; ++j) {
-            e = r.event(); check(e.key == key.lookup && e.okuri == key.okuri);
+            e = r.event(generic_okuri); check(e.key == key.lookup && e.okuri == key.okuri);
             check(std::none_of(candidates.begin(), candidates.end(), [&](const Candidate& c) { return c.text == e.candidate.text; }));
             candidates.push_back(std::move(e.candidate));
         }

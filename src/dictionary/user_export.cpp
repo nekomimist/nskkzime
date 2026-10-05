@@ -38,17 +38,17 @@ std::string UserDictionary::export_skk() const {
         if (line.empty()) line = headword + U" /";
         // Block-only entries preserve the exact okuri scope of learned ranks;
         // never promote these candidates to every inflection of the headword.
-        if (key.lookup.okuri) line += U"[" + key.okuri + U"/";
+        if (!key.okuri.empty()) line += U"[" + key.okuri + U"/";
         for (const auto& candidate : candidates) {
             line += literal(candidate.text);
             if (!candidate.annotation.empty()) line += U";" + literal(candidate.annotation);
             line += U'/';
             representable(line.size() <= 65536);
         }
-        if (key.lookup.okuri) line += U"]/";
+        if (!key.okuri.empty()) line += U"]/";
         representable(line.size() <= 65536);
     }
-    std::string result = ";; -*- coding: utf-8 -*-\n;; nskkzime user dictionary; exact okuri blocks\n;; okuri-ari entries.\n";
+    std::string result = ";; -*- coding: utf-8 -*-\n;; nskkzime user dictionary; preserved okuri scopes\n;; okuri-ari entries.\n";
     auto append = [&](const std::u32string& line) {
         result += utf8(line); result += '\n';
         representable(result.size() <= 64 * 1024 * 1024);

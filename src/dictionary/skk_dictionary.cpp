@@ -245,6 +245,16 @@ std::shared_ptr<SkkDictionary> SkkDictionary::parse_impl(std::u32string_view tex
     report.entries = dictionary->entries_.size();
     return dictionary;
 }
+std::vector<LearningEvent> SkkDictionary::entries() const {
+    std::vector<LearningEvent> result;
+    result.reserve(report_.candidates);
+    for (const auto& [key, entry] : entries_) {
+        for (const auto& value : entry.candidates) result.push_back({key,{},value});
+        for (const auto& [okuri, values] : entry.okuri)
+            for (const auto& value : values) result.push_back({key,okuri,value});
+    }
+    return result;
+}
 std::vector<Candidate> SkkDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find(key);
     if (found == entries_.end()) return {};

@@ -23,6 +23,8 @@ public:
         DictionaryEncoding encoding = DictionaryEncoding::Auto);
     static std::shared_ptr<const SkkDictionary> parse(std::u32string_view text);
     std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const override;
+    // Unmerged scopes: generic candidates have empty okuri, blocks retain theirs.
+    std::vector<LearningEvent> entries() const;
     const DictionaryReport& report() const { return report_; }
 private:
     struct Entry {

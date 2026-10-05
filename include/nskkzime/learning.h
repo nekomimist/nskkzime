@@ -4,6 +4,7 @@
 
 namespace nskkzime {
 inline constexpr std::size_t learning_max_bytes = 16 * 1024 * 1024;
+inline constexpr std::size_t import_max_candidates = 50000;
 enum class DictionaryAction { Learn, Forget };
 // Binary envelope with length-prefixed UTF-8 strings; shared by disk and IPC.
 struct LearningRequest {
@@ -15,9 +16,18 @@ struct LearningRequest {
 void validate_learning(const LearningRequest&);
 std::string encode_learning(const LearningRequest&);
 LearningRequest decode_learning(std::string_view);
+struct ImportRequest {
+    std::string client;
+    std::uint64_t sequence = 0;
+    std::vector<LearningEvent> entries; // Source priority within each exact scope.
+};
+void validate_import(const ImportRequest&);
+std::string encode_import(const ImportRequest&);
+ImportRequest decode_import(std::string_view);
 class UserDictionary final : public Dictionary {
 public:
     bool apply(const LearningRequest&); // false for an already acknowledged sequence
+    bool apply(const ImportRequest&); // Atomic append; never evicts or reranks existing entries.
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
     std::string serialize() const;
     std::vector<LearningEvent> entries() const; // Key order, then candidate priority.

@@ -166,6 +166,35 @@ int wmain(int argc, wchar_t** argv) {
             check(learning_exchange(isolated, encode_learning(removed)) == "OKAY" && snapshot(isolated).revision() == 3 &&
                 snapshot(isolated).lookup({U"かんじ"}).size() == 1, "old delete retry removed a newer registration");
         }},
+        {"ipc/atomic-import-save-failure-concurrent-learning-retry-and-refresh", [&] {
+            Child helper{launch_dictionary_server(server,file,1000)}; wait_ready(file);
+            auto observer=std::make_shared<LearningDictionary>(demo_dictionary(),file,server);
+            ImportRequest batch{std::string(32,'1'),1,{}};
+            for(unsigned i=0;i<200;++i) batch.entries.push_back({{U"とりこみ"+ascii(std::to_string(i))},{},{"",U"語"+ascii(std::to_string(i)),std::u32string(100,U'注')}});
+            batch.entries.push_back({{U"わ",'k'},{},{"",U"湧",U"共通"}});
+            const auto bytes=encode_import(batch); check(bytes.size()>20000,"batch did not exercise expanded IPC limit");
+            const auto before=snapshot(file).serialize();
+            {
+                NativeHandle lock(CreateFileW(file.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr)); check(lock.valid(),"cannot lock import fixture");
+                check(learning_exchange(file,bytes,5000)=="FAIL","failed import save acknowledged");
+                check(snapshot(file).serialize()==before && read_user_dictionary(file).serialize()==before,"failed import changed memory or disk");
+            }
+            wchar_t exe[32768]{}; GetModuleFileNameW(nullptr,exe,ARRAYSIZE(exe));
+            Child concurrent{client_process(exe,file,L'2')};
+            check(learning_exchange(file,bytes,5000)=="OKAY","import retry failed");
+            check(WaitForSingleObject(concurrent.process.get(),5000)==WAIT_OBJECT_0,"concurrent import learner hung");
+            DWORD exit=1; GetExitCodeProcess(concurrent.process.get(),&exit); check(exit==0,"concurrent import learner failed");
+            auto saved=snapshot(file);
+            check(saved.revision()==UserDictionary::parse(before).revision()+13 && saved.lookup({U"とりこみ199"}).size()==1,"import overwrote concurrent learning or lost entries");
+            until([&]{return observer->lookup({U"わ",'k'},U"く").size()==1;});
+            check(observer->lookup({U"わ",'k'},U"け")[0].text==U"湧","snapshot lost generic okuri");
+            auto removal=update(std::string(32,'3')); removal.action=DictionaryAction::Forget; removal.event=batch.entries.front();
+            check(learning_exchange(file,encode_learning(removal))=="OKAY","cannot remove imported entry");
+            observer.reset();
+            check(WaitForSingleObject(helper.process.get(),5000)==WAIT_OBJECT_0,"import helper did not stop");
+            Child restarted{launch_dictionary_server(server,file,1000)}; wait_ready(file);
+            check(learning_exchange(file,bytes,5000)=="OKAY" && snapshot(file).lookup(batch.entries.front().key).empty(),"retry after restart resurrected a deleted import");
+        }},
         {"client/unavailable-server-keeps-base-conversion", [&] {
             LearningDictionary client(demo_dictionary(), files.root / L"absent" / L"dictionary.nskkdb", files.root / L"not-installed.exe");
             const auto start = GetTickCount64(); client.learn(update().event);

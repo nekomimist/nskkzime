@@ -32,6 +32,11 @@ void roundtrip(const UserDictionary& data) {
             check(actual[i].text == expected[i].text && actual[i].annotation == expected[i].annotation, "export changed rank or spelling");
     }
 }
+ImportRequest imported(std::u32string_view text, std::string client = std::string(32,'b')) {
+    const auto source = SkkDictionary::parse(text);
+    check(!source->report().malformed_lines && !source->report().unsupported_candidates,"bad import fixture");
+    return {std::move(client),1,source->entries()};
+}
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && std::wstring_view(argv[1]) == L"--seed") {
@@ -75,6 +80,64 @@ int wmain(int argc, wchar_t** argv) {
             for (const auto value : {U"]", U"[く", U"(shell-command)", U"(株)", U"white space", U" leading ", U";", U"/", U"\\", U"\""})
                 data.apply(update(++sequence, {U"え", 'k'}, value, U"く"));
             roundtrip(data); roundtrip(UserDictionary{});
+        }},
+        {"import/generic-and-exact-scopes-rank-annotations-and-export", [] {
+            auto request = imported(U";; okuri-ari entries.\nかk /書;一般/描/[く/描;個別/掻/]/[け/書;可能/]/\n;; okuri-nasi entries.\nかな /仮名/かな/\n");
+            UserDictionary data; check(data.apply(decode_import(encode_import(request))),"import not applied");
+            const auto exact = data.lookup({U"か",'k'},U"く"), other = data.lookup({U"か",'k'},U"こ");
+            check(exact.size()==3 && exact[0].text==U"描" && exact[0].annotation==U"個別" && exact[1].text==U"掻" && exact[2].text==U"書","exact scopes changed");
+            check(other.size()==2 && other[0].text==U"書" && other[1].text==U"描","generic candidates lost");
+            check(data.serialize().starts_with("NKUD2"),"generic scopes exposed to old readers");
+            data = UserDictionary::parse(data.serialize()); roundtrip(data);
+            const auto restore = imported(from_utf8(data.export_skk())); UserDictionary copy; copy.apply(restore); roundtrip(copy);
+            check(copy.entries().size()==data.entries().size() && copy.lookup({U"か",'k'},U"く")[0].annotation==U"個別","export/import lost a scope");
+        }},
+        {"import/existing-priority-annotation-and-durable-retry", [] {
+            auto data = fixture(); const auto source = imported(U"かんじ /漢字;新注釈/新語/感じ/\n");
+            check(data.apply(source),"merge rejected"); const auto values=data.lookup({U"かんじ"});
+            check(values.size()==3 && values[0].text==U"感じ" && values[0].annotation==U"先頭" && values[1].text==U"漢字" && values[1].annotation.empty() && values[2].text==U"新語","import replaced old order or annotation");
+            data=UserDictionary::parse(data.serialize()); check(data.serialize().starts_with("NKUD1") && !data.apply(source),"exact-only format or retry changed");
+            auto remove=update(6,{U"かんじ"},U"新語"); remove.action=DictionaryAction::Forget; data.apply(remove);
+            check(!data.apply(source) && data.lookup({U"かんじ"}).size()==2,"old import retry resurrected deletion");
+            auto fresh=source; fresh.client=std::string(32,'c'); check(data.apply(fresh) && data.lookup({U"かんじ"})[2].text==U"新語","explicit new import failed");
+        }},
+        {"import/atomic-capacity-and-invalid-entry-rejection", [] {
+            UserDictionary data;
+            for(std::uint64_t i=1;i<=32;++i) data.apply(update(i,{U"いっぱい"},ascii(std::to_string(i))));
+            const auto before=data.serialize(); auto request=imported(U"あ /新規/\nいっぱい /追加/\n");
+            rejects([&]{data.apply(request);}); check(data.serialize()==before,"capacity failure partly imported or evicted entries");
+            request=imported(U"あ /新規/\n"); request.entries.push_back({{U"不正"},{},{"",U"bad\ntext"}});
+            rejects([&]{data.apply(request);}); check(data.serialize()==before,"invalid entry partly imported");
+            request=imported(U"いっぱい /1/\n"); check(data.apply(request) && data.lookup({U"いっぱい"}).front().text==U"32","full group duplicate reranked or rejected");
+        }},
+        {"import/codec-limits-and-corruption", [] {
+            const auto request=imported(U";; okuri-ari entries.\nかk /書/\n"); const auto bytes=encode_import(request);
+            for(std::size_t size=0;size<bytes.size();++size) rejects([&]{decode_import(bytes.substr(0,size));});
+            rejects([&]{decode_import(bytes+"extra");}); rejects([&]{decode_learning(bytes);});
+            auto bad=request; bad.sequence=0; rejects([&]{encode_import(bad);});
+            bad=request; bad.entries.clear(); rejects([&]{encode_import(bad);});
+            bad=request; bad.entries.resize(import_max_candidates+1,request.entries.front()); rejects([&]{encode_import(bad);});
+            bad=request; bad.entries.front().candidate.learning=LearningPolicy::DoNotLearn; rejects([&]{encode_import(bad);});
+            bad=request; bad.entries.front().candidate.source=CandidateSource::GeneratedLong; rejects([&]{encode_import(bad);});
+            LearningRequest learning{request.client,1,request.entries.front()}; rejects([&]{encode_learning(learning);});
+        }},
+        {"import/generic-delete-is-distinct-from-learned-okuri", [] {
+            UserDictionary data; data.apply(imported(U";; okuri-ari entries.\nかk /書/描/[く/書/]/\n"));
+            auto removal=update(1,{U"か",'k'},U"書"); removal.action=DictionaryAction::Forget;
+            data.apply(decode_learning(encode_learning(removal)));
+            check(data.lookup({U"か",'k'},U"く")[0].text==U"書" && data.lookup({U"か",'k'},U"け")[0].text==U"描","generic delete crossed exact scope");
+            removal.sequence=2; removal.event.candidate.text=U"描"; data.apply(removal);
+            check(data.serialize().starts_with("NKUD1") && data.lookup({U"か",'k'},U"け").empty(),"generic deletion failed to restore exact-only format");
+            roundtrip(data);
+        }},
+        {"import/export-special-characters-and-abbrev-roundtrip", [] {
+            const auto original=fixture(); UserDictionary restored; restored.apply(imported(from_utf8(original.export_skk())));
+            check(restored.entries().size()==original.entries().size(),"export/import dropped entries");
+            for(const auto& entry:original.entries()) {
+                const auto expected=original.lookup(entry.key,entry.okuri), actual=restored.lookup(entry.key,entry.okuri);
+                check(expected.size()==actual.size(),"export/import changed count");
+                for(std::size_t i=0;i<expected.size();++i) check(expected[i].text==actual[i].text && expected[i].annotation==actual[i].annotation,"export/import lost characters");
+            }
         }},
         {"export/rejects-unrepresentable-keys-without-dropping-entries", [] {
             for (const auto reading : {U"white space", U";comment", U"\ufffd"}) {
