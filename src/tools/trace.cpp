@@ -35,6 +35,7 @@ nskkzime::Key token(std::string_view name) {
 int run(const std::vector<std::string>& arguments) {
     try {
         std::vector<std::filesystem::path> paths;
+        std::filesystem::path romaji_path;
         nskkzime::DictionaryEncoding encoding = nskkzime::DictionaryEncoding::Auto;
         std::string sequence;
         bool has_sequence = false;
@@ -42,9 +43,13 @@ int run(const std::vector<std::string>& arguments) {
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const auto& argument = arguments[i];
             if (!positional && argument == "--") { positional = true; continue; }
-            if (!positional && (argument == "--dict" || argument == "--encoding")) {
+            if (!positional && (argument == "--dict" || argument == "--encoding" || argument == "--romaji")) {
                 if (++i == arguments.size()) throw std::invalid_argument("missing value for " + argument);
-                if (argument == "--dict") {
+                if (argument == "--romaji") {
+                    if (!romaji_path.empty()) throw std::invalid_argument("--romaji may appear only once");
+                    if (arguments[i].empty()) throw std::invalid_argument("--romaji requires a path");
+                    romaji_path = std::filesystem::path(std::u8string(arguments[i].begin(),arguments[i].end()));
+                } else if (argument == "--dict") {
                     paths.emplace_back(std::u8string(arguments[i].begin(), arguments[i].end()));
                 }
                 else if (arguments[i] == "auto") encoding = nskkzime::DictionaryEncoding::Auto;
@@ -57,7 +62,7 @@ int run(const std::vector<std::string>& arguments) {
                 sequence = argument; has_sequence = true;
             }
         }
-        if (!has_sequence) throw std::invalid_argument("usage: skk_trace [--dict PATH]... [--encoding auto|utf-8|euc-jp] [--] \"Kanji<Space><Enter>\"");
+        if (!has_sequence) throw std::invalid_argument("usage: skk_trace [--dict PATH]... [--romaji PATH] [--encoding auto|utf-8|euc-jp] [--] \"Kanji<Space><Enter>\"");
         std::shared_ptr<const nskkzime::Dictionary> dictionary;
         if (paths.empty()) dictionary = nskkzime::demo_dictionary();
         else {
@@ -77,7 +82,7 @@ int run(const std::vector<std::string>& arguments) {
             }
             dictionary = std::make_shared<nskkzime::DictionarySet>(std::move(dictionaries));
         }
-        nskkzime::Engine engine(std::move(dictionary));
+        nskkzime::Engine engine(std::move(dictionary),true,romaji_path.empty() ? nskkzime::RomajiRules::defaults() : nskkzime::RomajiRules::load(romaji_path));
         std::u32string document;
         const std::string_view keys(sequence);
         for (std::size_t i = 0; i < keys.size(); ++i) {

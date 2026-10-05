@@ -1,5 +1,6 @@
 #include "dictionary_settings.h"
 #include "runtime_dictionary.h"
+#include "romaji_settings.h"
 #include <windows.h>
 #include <chrono>
 #include <fstream>
@@ -53,6 +54,31 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/romaji-roundtrip-invalid-and-fallback", [&] {
+            const auto rules = files.write(L"ローマ字.tsv","version=1\nwi\tゐ\n");
+            const auto file = files.path(L"romaji.ini"); DictionarySettings proposed{{first},false,rules};
+            save_dictionary_settings(file,proposed); const auto loaded = read_dictionary_settings(file);
+            require(loaded.romaji_rules==rules&&!loaded.learning&&loaded.dictionaries==proposed.dictionaries,"romaji roundtrip damaged settings");
+            auto config=resolve_dictionary_configuration(file,{},false);
+            const auto custom=load_romaji_rules(config,{}); require(!custom.failed&&custom.rules->find("wi")->output==U"ゐ","romaji file not loaded");
+            require(load_romaji_rules(config,L"builtin").rules->find("wi")->output==U"うぃ","builtin override ignored");
+            const auto broken=files.write(L"broken-romaji.tsv","version=1\nwi\t私的な出力\nwi\t別の値");
+            const auto failed=load_romaji_rules(config,broken.native());
+            require(failed.failed&&failed.rules->find("wi")->output==U"うぃ","invalid rules did not fall back");
+            require(failed.status.find(L"私的な出力")==std::wstring::npos,"diagnostic leaked output");
+            for(const auto text:{"version=1\nromaji=relative.tsv","version=1\nromaji=","version=1\nromaji=C:\\a\nromaji=C:\\b"})
+                rejects([&]{parse_dictionary_settings(text);});
+        }},
+        {"runtime/romaji-independent-snapshots-and-override", [&] {
+            const auto rules = files.write(L"snapshot.tsv","version=1\nwi\tゐ\n");
+            const auto file = files.path(L"snapshot.ini"); save_dictionary_settings(file,{{first},false,rules});
+            Environment no_override(L"NSKKZIME_DICTIONARY",nullptr), config_env(L"NSKKZIME_CONFIG",file.c_str()), rules_env(L"NSKKZIME_ROMAJI",nullptr);
+            const auto old=runtime_romaji_rules(); require(old->find("wi")->output==U"ゐ","saved romaji ignored");
+            {std::ofstream output(rules,std::ios::binary|std::ios::trunc); output<<"version=1\nwi\tうぃー\n";}
+            require(runtime_romaji_rules()->find("wi")->output==U"うぃー"&&old->find("wi")->output==U"ゐ","existing romaji snapshot changed");
+            Environment invalid_config(L"NSKKZIME_CONFIG",L"relative.ini"), explicit_rules(L"NSKKZIME_ROMAJI",rules.c_str());
+            require(runtime_romaji_rules()->find("wi")->output==U"うぃー","explicit rules blocked by invalid config");
+        }},
         {"settings/utf8-bom-priority-and-literal-path", [&] {
             const auto config = parse_dictionary_settings("\xef\xbb\xbf# comment\r\n; another\r\n version = 1\r\n dictionary = " +
                 utf8_message(first.native()) + "\r\ndictionary=" + utf8_message(second.native()));

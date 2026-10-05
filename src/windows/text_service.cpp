@@ -9,6 +9,7 @@
 #include "input_mode.h"
 #include "context_text.h"
 #include "inference_client.h"
+#include "romaji_settings.h"
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
@@ -228,7 +229,7 @@ public:
             // Display-attribute-only COM instances never load a dictionary.
             try {
                 dictionary_ = runtime_dictionary();
-                engine_ = Engine(dictionary_, dynamic_cast<const LearningDictionary*>(dictionary_.get()) != nullptr);
+                engine_ = Engine(dictionary_, dynamic_cast<const LearningDictionary*>(dictionary_.get()) != nullptr, runtime_romaji_rules());
                 dictionary_loaded_ = true;
             }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }

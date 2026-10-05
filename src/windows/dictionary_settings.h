@@ -6,6 +6,7 @@ namespace nskkzime::windows {
 struct DictionarySettings {
     std::vector<std::filesystem::path> dictionaries; // Highest priority first.
     bool learning = true;
+    std::filesystem::path romaji_rules; // Empty selects the built-in rules.
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;

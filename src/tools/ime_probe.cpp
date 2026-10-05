@@ -10,7 +10,9 @@
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104, preview_id = 105;
-#ifdef NSKKZIME_PROBE_DUMMY
+#ifdef NSKKZIME_PROBE_ROMAJI
+constexpr auto window_title = L"nskkzime 入力検証 (ローマ字ルール・学習なし)";
+#elif defined(NSKKZIME_PROBE_DUMMY)
 constexpr auto window_title = L"nskkzime 入力検証 (ダミーIPC・隔離データ)";
 #elif defined(NSKKZIME_PROBE_DICTIONARY)
 constexpr auto window_title = L"nskkzime 入力検証 (隔離データ)";
@@ -219,6 +221,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
 #endif
     if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", NSKKZIME_PROBE_DICTIONARY) ||
         !SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1") || !SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str())) return 2;
+#ifdef NSKKZIME_PROBE_ROMAJI
+    if (!SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",NSKKZIME_PROBE_ROMAJI) || !SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0") ||
+        !SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"0")) return 2;
+#else
+    if (!SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",L"builtin")) return 2;
+#endif
 #endif
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 1;

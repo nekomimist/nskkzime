@@ -70,7 +70,8 @@ struct Result {
 
 class Engine {
 public:
-    explicit Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled = true);
+    explicit Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled = true,
+        std::shared_ptr<const RomajiRules> rules = RomajiRules::defaults());
     bool would_handle(Key key) const;
     Result handle(Key key);
     void reset(); // Clear composition, retain input mode.
@@ -124,6 +125,7 @@ private:
     void confirm(Result& result);
     std::u32string display(std::u32string_view text) const;
     std::shared_ptr<const Dictionary> dictionary_;
+    std::shared_ptr<const RomajiRules> rules_;
     Input input_;
     std::vector<Registration> registrations_;
     std::vector<LearningEvent> registered_;

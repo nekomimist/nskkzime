@@ -20,9 +20,10 @@ std::shared_ptr<const Dictionary> demo_dictionary() {
     dictionary->add({U"た", 'b'}, {{"taberu-1", U"食", U""}});
     return dictionary;
 }
-Engine::Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled)
-    : dictionary_(std::move(dictionary)), registration_enabled_(registration_enabled) {
+Engine::Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled, std::shared_ptr<const RomajiRules> rules)
+    : dictionary_(std::move(dictionary)), rules_(std::move(rules)), registration_enabled_(registration_enabled) {
     if (!dictionary_) throw std::invalid_argument("dictionary must not be null");
+    input_.romaji = Romaji(rules_);
 }
 void Engine::clear_composition() {
     input_.stage = Stage::Direct;
@@ -179,6 +180,7 @@ void Engine::begin_registration(Result& result) {
     auto anchor = display(input_.reading + input_.okuri);
     registrations_.push_back({input_, {}, std::move(anchor)});
     input_ = {}; // Registration always starts with normal hiragana input.
+    input_.romaji = Romaji(rules_);
 }
 void Engine::cancel_registration() {
     input_ = std::move(registrations_.back().original); registrations_.pop_back();
@@ -276,6 +278,11 @@ Result Engine::handle_input(Key key) {
         return result;
     }
     if (key.code == KeyCode::Space) {
+        if (!input_.abbrev && input_.stage != Stage::Selecting && !input_.romaji.pending().empty() && input_.romaji.accepts(' ')) {
+            append(input_.romaji.push(' '),result);
+            if (input_.stage == Stage::Okuri && !input_.okuri.empty() && input_.romaji.pending().empty()) convert(result);
+            return result;
+        }
         if (input_.stage == Stage::Selecting) {
             if (input_.candidate_index + 1 < input_.candidates.size()) ++input_.candidate_index;
             else { result.candidates_exhausted = true; begin_registration(result); }

@@ -23,6 +23,10 @@ std::string serialize(const DictionarySettings& settings) {
     if (settings.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
     bytes += settings.learning ? "learning=on\n" : "learning=off\n";
+    if (!settings.romaji_rules.empty()) {
+        validate_path(settings.romaji_rules);
+        bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
+    }
     for (const auto& path : settings.dictionaries) {
         validate_path(path);
         bytes += "dictionary=" + utf8_message(path.native()) + "\n";
@@ -83,7 +87,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     from_utf8(bytes); // Validate before interpreting keys or paths.
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    DictionarySettings settings; bool version = false, learning = false;
+    DictionarySettings settings; bool version = false, learning = false, romaji = false;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -98,6 +102,9 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else if (key == "learning") {
             if (learning || (value != "on" && value != "off")) throw std::invalid_argument("learning must appear at most once and equal on or off");
             learning = true; settings.learning = value == "on";
+        } else if (key == "romaji") {
+            if (romaji) throw std::invalid_argument("romaji must appear at most once");
+            romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
         } else if (key == "dictionary") {
             auto path = std::filesystem::path(wide_message(value)); validate_path(path);
             settings.dictionaries.push_back(std::move(path));

@@ -36,7 +36,7 @@ int main() {
         {"romaji/n-before-y", [] { equal(roman("nyanko"), U"にゃんこ"); }},
         {"romaji/punctuation", [] { equal(roman("[a-i]."), U"「あーい」。"); }},
         {"romaji/incomplete", [] { equal(roman("k"), U"k"); equal(roman("n"), U"ん"); }},
-        {"romaji/unsupported-preserved", [] { equal(roman("zka"), U"zか"); }},
+        {"romaji/unsupported-preserved", [] { equal(roman("fka"), U"fか"); }},
         {"input/direct-commit", [] { Session s; s.type("kana"); equal(s.committed, U"かな"); equal(s.engine.preedit(), U""); }},
         {"input/pending-backspace", [] { Session s; s.type("ky"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"k"); s.type("a"); equal(s.committed, U"か"); }},
         {"input/idle-special-keys-pass-through", [] {
