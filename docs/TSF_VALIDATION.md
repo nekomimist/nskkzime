@@ -28,6 +28,9 @@
   閉じたままカタカナを指定してから開く通知順序、Ctrl+Space・半角／全角・専用オン／オフキー、修飾キーの除外。
 - モード切替時の未確定文字列保持、旧終了処理・候補クリックの無効化、登録中の英数入力と外側のモードの分離。
   モード切替では候補や未登録語を学習せず、IME解除後は項目・監視・予約キーが残らないこと。
+- `context_text`: 変換範囲を除いた前後40 Unicodeスカラー値、文書境界、サロゲートペア、取得失敗・部分読み取り。
+  対象・周辺が保護された属性や不明な属性なら周辺本文を読まない。外部編集後の更新、取消・確定・オフ時の破棄、
+  属性問い合わせ中にIMEが解除されても古い結果を公開しないことを実際のアダプターでも検証する。
 - `candidate_ui`: クリックする行の判定、登録欄の見出し・本文・操作案内の除外、行の外へのドラッグと捕捉解除時の取消。
 - `tsf_candidate_click`: 非同期のクリックを一度だけ処理し、追加入力・取消・別欄への移動・外部編集・レイアウト破棄・
   IME無効化後の古い要求を破棄すること。編集拒否後の再試行、保護された入力欄の学習除外、登録欄内の選択と候補の保存。
@@ -93,6 +96,8 @@ IME切替前のプロファイルを記録し、復帰ボタンと終了時に�
 画面下部に読み込んだDLLのパスと、そのDLLの辞書読み込み結果を表示する。
 右上のモードボタンは、同じプロセスの `GUID_LBI_INPUTMODE` 項目から文字を取得し、クリック時にオン／オフを呼び出す。
 システムトレイ自体の検証とは区別する。別IME使用中や項目がない旧版DLLでは無効になる。
+「文脈確認（本文を表示）」は初期状態でオフ。オンにして入力欄の途中でSpace変換すると、
+同じスレッドのIMEが取得した前後の文字列を表示する。周辺本文はファイルへ保存しない。
 辞書の永続設定・診断には [設定CLI](DICTIONARIES.md) を使う。
 まず `Kanji`→Space→Enter、`KaKu`→Enter、変換取消を両方で確認し、続いて
 変換中の矢印・マウス移動・範囲選択・貼り付けと、入力欄の切り替えを確認する。
@@ -263,6 +268,19 @@ Windowsへの登録版は今回も更新していない。予約キー通知・�
 入力モード追加後のDebug／ReleaseのCTest各20件はすべて成功した。
 同じ開閉状態の重複通知で登録欄が閉じないことも回帰テストで確認した。
 
+同日の周辺テキスト取得追加後、Releaseの隔離版で以下を確認した。
+
+- 文脈確認は初期状態でオフ。チェックを入れてから、RichEditへテスト文「前の文😀後の文🍣」を配置した。
+- 絵文字の直後で `Kanji` → Space。本文は「前の文😀漢字後の文🍣」になり、文脈は前「前の文😀」4文字・後「後の文🍣」4文字。
+  読みと候補は含まれず、絵文字は1文字として数えられた。
+- Escapeで読みへ戻ると文脈表示も破棄された。標準EDITへ移った後もRichEditの本文を保持した。
+- 標準EDITでは「前後」の間で同じ変換を実行。TSFから取得できた周辺文脈は前後とも0文字だった。
+  Ctrl+SpaceでIMEを閉じると本文は「前漢字後」となり、文脈表示は破棄された。
+- 保存済み・同期済み世代12、未保存0件・受付不可0件のままであることを確認し、元のIMEに復帰してアプリを終了した。
+
+前後40文字の上限と取得禁止・失敗ケースは自動ホストで検証した。Debug／ReleaseのCTest各21件が成功した。
+Windowsへの登録版は更新していない。
+
 ### 既知の制限
 
 標準EDITの互換入力経路では `Ka` → Left が確定だけになり、直後の `a` は「かあ」になる。
@@ -279,6 +297,7 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 | 通常のかな入力 | 確認済み | 確認済み | 未確認 |
 | 英数切替 | 確認済み | 確認済み | 未確認 |
 | TSFモード表示・オン／オフ | Ctrl+Space・C-j・登録欄の破棄を確認済み | q・l・C-j・Ctrl+Space・モード項目を確認済み | システムトレイを含め未確認 |
+| 周辺テキスト | 互換経路は前後とも空。文脈なしで扱う | 日本語・絵文字の取得と変換範囲の除外を確認済み | 未確認 |
 | 漢字変換・候補送り・確定 | 確認済み | 確認済み | 未確認 |
 | 候補学習・保存順位の利用 | 再起動後の利用と保存を確認済み | 学習保存を確認済み | 属性の提供状況を含め未確認 |
 | 候補一覧・注釈 | ビルド版で確認済み | ビルド版で確認済み | 未確認 |
@@ -313,3 +332,6 @@ TSFキー判定の終了処理は [Microsoft SampleIMEのキー通知](https://g
 入力モードは [TF_LANGBARITEMINFO](https://learn.microsoft.com/en-us/windows/win32/api/ctfutb/ns-ctfutb-tf_langbariteminfo)、
 [PreserveKey](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeystrokemgr-preservekey)、
 [Predefined Category Values](https://learn.microsoft.com/en-us/windows/win32/tsf/predefined-category-values) を参照。
+周辺テキストは [ShiftStart](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-shiftstart)、
+[ShiftEnd](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-shiftend)、
+[GetText](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-gettext) の範囲と読み取りロックに従う。

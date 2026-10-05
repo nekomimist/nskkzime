@@ -7,6 +7,7 @@
 #include <inputscope.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -89,6 +90,8 @@ struct Document {
     bool reject_write = false;
     bool reject_shift = false;
     bool reject_read = false;
+    unsigned reads = 0;
+    ULONG read_limit = MAXDWORD;
     std::vector<Range*> ranges;
     void replace(LONG begin, LONG finish, std::wstring_view value);
 };
@@ -123,8 +126,9 @@ public:
         *shifted = next - start; start = next; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetText(TfEditCookie, DWORD flags, WCHAR* text, ULONG maximum, ULONG* fetched) override {
+        ++doc->reads;
         if (doc->reject_read) return E_FAIL;
-        *fetched = (std::min)(maximum, static_cast<ULONG>(end - start));
+        *fetched = (std::min)({maximum, static_cast<ULONG>(end - start), doc->read_limit});
         std::copy_n(doc->text.data() + start, *fetched, text);
         if (flags & TF_TF_MOVESTART) start += static_cast<LONG>(*fetched);
         return S_OK;
@@ -132,7 +136,11 @@ public:
     UNUSED_METHOD(GetFormattedText, TfEditCookie, IDataObject**)
     UNUSED_METHOD(GetEmbedded, TfEditCookie, REFGUID, REFIID, IUnknown**)
     UNUSED_METHOD(InsertEmbedded, TfEditCookie, DWORD, IDataObject*)
-    UNUSED_METHOD(ShiftEnd, TfEditCookie, LONG, LONG*, const TF_HALTCOND*)
+    HRESULT STDMETHODCALLTYPE ShiftEnd(TfEditCookie, LONG count, LONG* shifted, const TF_HALTCOND*) override {
+        if (doc->reject_shift) return E_FAIL;
+        const auto next = std::clamp(end + count, start, static_cast<LONG>(doc->text.size()));
+        *shifted = next - end; end = next; return S_OK;
+    }
     UNUSED_METHOD(ShiftStartToRange, TfEditCookie, ITfRange*, TfAnchor)
     UNUSED_METHOD(ShiftEndToRange, TfEditCookie, ITfRange*, TfAnchor)
     UNUSED_METHOD(ShiftStartRegion, TfEditCookie, TfShiftDir, BOOL*)
@@ -230,6 +238,7 @@ public:
     InputScope scope = IS_DEFAULT;
     HRESULT value_status = S_OK;
     bool require_text_range = false;
+    std::function<HRESULT(ITfRange*, InputScope&)> query;
     TEST_REFS(ScopeProperty);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         *out = nullptr; if (iid != IID_IUnknown && iid != IID_ITfReadOnlyProperty) return E_NOINTERFACE;
@@ -241,7 +250,9 @@ public:
         if (value_status != S_OK) return value_status;
         BOOL empty = TRUE;
         if (require_text_range && (FAILED(range->IsEmpty(cookie, &empty)) || empty)) return E_FAIL;
-        auto* value = new InputScopeValue; value->value = scope;
+        auto selected_scope = scope;
+        if (query) { const auto hr = query(range, selected_scope); if (hr != S_OK) return hr; }
+        auto* value = new InputScopeValue; value->value = selected_scope;
         VariantInit(out); out->vt = VT_UNKNOWN; out->punkVal = value; return S_OK;
     }
     UNUSED_METHOD(EnumRanges, TfEditCookie, IEnumTfRanges**, ITfRange*)
@@ -259,6 +270,7 @@ public:
     HRESULT scope_value_status = S_OK;
     bool scope_requires_text_range = false;
     InputScope input_scope = IS_DEFAULT;
+    std::function<HRESULT(ITfRange*, InputScope&)> scope_query;
     bool reject_edit_sink = false;
     ComPtr<ITfTextEditSink> edits;
     ComPtr<ITfTextLayoutSink> layout;
@@ -342,6 +354,7 @@ public:
         *out = nullptr; if (unknown_scope || guid != GUID_PROP_INPUTSCOPE) return E_NOTIMPL;
         auto* property = new ScopeProperty; property->scope = input_scope;
         property->value_status = scope_value_status; property->require_text_range = scope_requires_text_range;
+        property->query = scope_query;
         *out = property; return S_OK;
     }
     UNUSED_METHOD(TrackProperties, const GUID**, ULONG, const GUID**, ULONG, ITfReadOnlyProperty**)

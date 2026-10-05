@@ -1,5 +1,6 @@
 #include "module.h"
 #include "runtime_dictionary.h"
+#include "context_text.h"
 #include <new>
 
 namespace nskkzime::windows {
@@ -59,6 +60,18 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID clsid, REFIID iid, void*
 }
 extern "C" HRESULT __stdcall DllRegisterServer() { return nskkzime::windows::register_server(); }
 extern "C" HRESULT __stdcall DllUnregisterServer() { return nskkzime::windows::unregister_server(); }
+extern "C" HRESULT __stdcall NskkzimeEnableContextPreview(BOOL enable) {
+    nskkzime::windows::enable_context_preview(enable != FALSE); return S_OK;
+}
+extern "C" HRESULT __stdcall NskkzimeGetContextPreview(BSTR* output) {
+    if (!output) return E_POINTER;
+    *output = nullptr;
+    try {
+        const auto text = nskkzime::windows::context_preview_status();
+        *output = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
+        return *output ? S_OK : E_OUTOFMEMORY;
+    } catch (...) { return E_OUTOFMEMORY; }
+}
 extern "C" HRESULT __stdcall NskkzimeGetDictionaryStatus(BSTR* output) {
     if (!output) return E_POINTER;
     *output = nullptr;

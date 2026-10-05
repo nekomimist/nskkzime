@@ -55,7 +55,7 @@ if(WIN32)
   target_link_libraries(ime_probe PRIVATE project_options ole32 oleaut32 uuid user32 gdi32)
   add_library(nskkzime_tsf SHARED src/windows/text_service.cpp src/windows/module.cpp
     src/windows/registration.cpp src/windows/display_attributes.cpp
-    src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/nskkzime.def)
+    src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/nskkzime.def)
   target_include_directories(nskkzime_tsf PRIVATE src/windows)
   target_link_libraries(nskkzime_tsf PRIVATE nskkzime_runtime ole32 oleaut32 advapi32 uuid user32 gdi32)
   add_dependencies(nskkzime_tsf nskkzime_dictionary_server)
@@ -105,18 +105,22 @@ if(WIN32)
     # Link the same adapter sources to exercise deferred click requests without
     # injecting native input or relying on a registered IME/interactive desktop.
     add_executable(tsf_candidate_click tests/tsf_candidate_click.cpp src/windows/text_service.cpp
-      src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/display_attributes.cpp)
+      src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/display_attributes.cpp)
     target_include_directories(tsf_candidate_click PRIVATE src/windows)
     target_link_libraries(tsf_candidate_click PRIVATE nskkzime_runtime ole32 oleaut32 uuid user32 gdi32)
     add_dependencies(tsf_candidate_click nskkzime_dictionary_server)
     add_test(NAME tsf_candidate_click COMMAND tsf_candidate_click ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk)
     set_tests_properties(tsf_candidate_click PROPERTIES TIMEOUT 40)
     add_executable(input_mode_tests tests/input_mode_tests.cpp src/windows/text_service.cpp
-      src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/display_attributes.cpp)
+      src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/display_attributes.cpp)
     target_link_libraries(input_mode_tests PRIVATE nskkzime_runtime ole32 oleaut32 uuid user32 gdi32)
     add_dependencies(input_mode_tests nskkzime_dictionary_server)
     add_test(NAME input_mode COMMAND input_mode_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk)
     set_tests_properties(input_mode PROPERTIES TIMEOUT 40)
+    add_executable(context_text_tests tests/context_text_tests.cpp src/windows/text_service.cpp
+      src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/display_attributes.cpp)
+    target_link_libraries(context_text_tests PRIVATE nskkzime_runtime ole32 oleaut32 uuid user32 gdi32)
+    add_test(NAME context_text COMMAND context_text_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk)
     add_executable(tsf_local_activation tests/tsf_local_activation.cpp src/tools/ime_probe_local.manifest)
     target_include_directories(tsf_local_activation PRIVATE src/windows)
     target_link_libraries(tsf_local_activation PRIVATE project_options ole32 uuid)

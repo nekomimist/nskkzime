@@ -9,7 +9,7 @@
 
 using Microsoft::WRL::ComPtr;
 namespace {
-constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104;
+constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104, preview_id = 105;
 #ifdef NSKKZIME_PROBE_DICTIONARY
 constexpr auto window_title = L"nskkzime 入力検証 (隔離データ)";
 #elif defined(NSKKZIME_LOCAL_PROBE)
@@ -24,7 +24,30 @@ struct Probe {
     bool previous_valid = false;
     bool switched = false;
     HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr, mode = nullptr;
+    HWND preview_check = nullptr, preview_text = nullptr;
+    std::wstring last_preview;
     HFONT font = nullptr, status_font = nullptr;
+    void enable_preview(bool enable) {
+        using Enable = HRESULT (__stdcall*)(BOOL);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+        const auto function = reinterpret_cast<Enable>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeEnableContextPreview"));
+#pragma warning(pop)
+        if (function) function(enable);
+    }
+    void update_preview() {
+        using GetPreview = HRESULT (__stdcall*)(BSTR*);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+        const auto function = reinterpret_cast<GetPreview>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeGetContextPreview"));
+#pragma warning(pop)
+        EnableWindow(preview_check, function != nullptr);
+        BSTR value = nullptr;
+        std::wstring text = L"文脈確認: このDLLでは利用できません。";
+        if (function && SUCCEEDED(function(&value)) && value) text = value;
+        SysFreeString(value);
+        if (text != last_preview) { SetWindowTextW(preview_text, text.c_str()); last_preview = std::move(text); }
+    }
     ComPtr<ITfLangBarItemButton> mode_button() {
         ComPtr<ITfLangBarItemMgr> bar; ComPtr<ITfLangBarItem> item; ComPtr<ITfLangBarItemButton> button;
         TF_INPUTPROCESSORPROFILE active{};
@@ -113,14 +136,17 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         control(window, L"BUTTON", L"元のIMEに戻す", WS_TABSTOP, 218, 48, 180, 36, restore_id, probe->font);
         control(window, L"BUTTON", L"状態を更新", WS_TABSTOP, 410, 48, 150, 36, refresh_id, probe->font);
         probe->mode = control(window, L"BUTTON", L"モード", WS_TABSTOP, 570, 48, 106, 36, mode_id, probe->font);
-        control(window, L"STATIC", L"標準 EDIT", 0, 16, 100, 600, 26, 0, probe->font);
+        control(window, L"STATIC", L"標準 EDIT", 0, 16, 100, 300, 26, 0, probe->font);
+        probe->preview_check = control(window, L"BUTTON", L"文脈確認（本文を表示）", WS_TABSTOP | BS_AUTOCHECKBOX,
+            425, 100, 260, 26, preview_id, probe->font);
         probe->plain = control(window, L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 132, 660, 105, 201, probe->font);
         control(window, L"STATIC", L"RichEdit (TSF)", 0, 16, 250, 600, 26, 0, probe->font);
         probe->rich = control(window, MSFTEDIT_CLASS, L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 282, 660, 105, 202, probe->font);
+        probe->preview_text = control(window, L"STATIC", L"", 0, 16, 400, 660, 78, 0, probe->status_font);
         probe->status = control(window, L"EDIT", L"", WS_TABSTOP | ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-            16, 405, 660, 230, 203, probe->status_font);
+            16, 485, 660, 210, 203, probe->status_font);
         if (!probe->plain || !probe->rich || !probe->status) return -1;
         // RichEdit defaults to IMM compatibility input. Explicitly enable its
         // native TSF text store so the two controls exercise different hosts.
@@ -128,11 +154,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (FAILED(probe->set_input_scopes(IS_TEXT))) return -1;
         probe->last_edit = probe->plain;
         probe->report(L"起動", S_OK);
-        probe->update_mode(); SetTimer(window, mode_id, 300, nullptr);
+        probe->update_mode(); probe->update_preview(); SetTimer(window, mode_id, 300, nullptr);
         return 0;
     }
     case WM_TIMER:
-        if (wparam == mode_id) { probe->update_mode(); return 0; } break;
+        if (wparam == mode_id) { probe->update_mode(); probe->update_preview(); return 0; } break;
     case WM_COMMAND:
         if (HIWORD(wparam) == EN_SETFOCUS && (LOWORD(wparam) == 201 || LOWORD(wparam) == 202)) {
             probe->last_edit = reinterpret_cast<HWND>(lparam); return 0;
@@ -151,11 +177,16 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             if (const auto button = probe->mode_button()) button->OnClick(TF_LBI_CLK_LEFT, {}, nullptr);
             probe->update_mode(); SetFocus(probe->last_edit); return 0;
         }
+        if (LOWORD(wparam) == preview_id) {
+            probe->enable_preview(SendMessageW(probe->preview_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            probe->update_preview(); SetFocus(probe->last_edit); return 0;
+        }
         break;
     case WM_CLOSE:
         probe->restore();
         DestroyWindow(window); return 0;
     case WM_DESTROY:
+        probe->enable_preview(false);
         probe->restore();
         probe->set_input_scopes(IS_DEFAULT); // Remove associations before the child HWNDs are destroyed.
         if (probe->font) DeleteObject(probe->font);
@@ -192,7 +223,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             klass.lpszClassName = L"nskkzime-input-probe";
             if (RegisterClassW(&klass)) {
                 const auto window = CreateWindowExW(0, klass.lpszClassName, window_title, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 690, nullptr, nullptr, instance, &probe);
+                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 750, nullptr, nullptr, instance, &probe);
                 if (window) {
                     ShowWindow(window, show); UpdateWindow(window); SetFocus(probe.plain);
                     ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);

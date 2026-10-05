@@ -7,6 +7,7 @@
 #include "display_attributes.h"
 #include "candidate_ui.h"
 #include "input_mode.h"
+#include "context_text.h"
 #include <wrl/client.h>
 #include <atomic>
 #include <bitset>
@@ -133,30 +134,10 @@ bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCo
     reason = L"変換範囲を取得できません";
     ComPtr<ITfRange> range;
     if (!composition || FAILED(composition->GetRange(&range)) || !range) return false;
-    ComPtr<ITfReadOnlyProperty> property;
-    const auto property_hr = context->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
-    reason = L"入力属性を取得できない入力欄";
-    if (FAILED(property_hr) || !property) return false;
-    VARIANT value; VariantInit(&value);
-    const auto hr = property->GetValue(cookie, range.Get(), &value);
+    const auto permission = input_permission(context, range.Get(), cookie);
     reason = L"入力属性が不明または範囲内で異なる入力欄";
-    bool allowed = false;
-    if (hr == S_OK && value.vt == VT_UNKNOWN && value.punkVal) {
-        ComPtr<ITfInputScope> scope;
-        if (SUCCEEDED(value.punkVal->QueryInterface(IID_PPV_ARGS(&scope)))) {
-            InputScope* values = nullptr; UINT count = 0;
-            if (scope->GetInputScopes(&values, &count) == S_OK && count > 0 && values) {
-                allowed = true;
-                for (UINT i = 0; i < count; ++i) {
-                    if (values[i] == IS_PASSWORD || values[i] == IS_PRIVATE || values[i] == IS_NUMERIC_PASSWORD ||
-                        values[i] == IS_NUMERIC_PIN || values[i] == IS_ALPHANUMERIC_PIN || values[i] == IS_ALPHANUMERIC_PIN_SET)
-                        { allowed = false; reason = L"パスワードまたはプライベート入力欄"; }
-                }
-            }
-            CoTaskMemFree(values);
-        }
-    }
-    VariantClear(&value); return allowed;
+    if (permission == InputPermission::Restricted) reason = L"パスワードまたはプライベート入力欄";
+    return permission == InputPermission::Allowed;
 }
 
 HRESULT select_end(ITfContext* context, TfEditCookie cookie, ITfRange* range) {
@@ -393,8 +374,24 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnEndEdit(ITfContext* context, TfEditCookie cookie, ITfEditRecord*) override {
         if (ending_ || context != composition_context_.Get() || !composition_) return S_OK;
-        try { if (!composition_valid(cookie)) finish_composition(); }
-        catch (...) { finish_composition(); }
+        const ComPtr<TextService> self(this);
+        try {
+            if (!composition_valid(cookie)) finish_composition();
+            else if (context_preview_enabled() && !reading_context_ && (engine_.stage() == Stage::Selecting || engine_.registering())) {
+                reading_context_ = true;
+                clear_context_preview(this);
+                const auto current = composition_; const auto revision = engine_.revision();
+                ComPtr<ITfRange> range;
+                if (SUCCEEDED(current->GetRange(&range)) && range) {
+                    auto text = surrounding_text(context, range.Get(), cookie);
+                    // Property callbacks may deactivate or replace the composition.
+                    if (composition_.Get() == current.Get() && composition_context_.Get() == context && engine_.revision() == revision)
+                        publish_context_preview(this, std::move(text));
+                }
+                reading_context_ = false;
+            } else if (!reading_context_) clear_context_preview(this);
+        }
+        catch (...) { reading_context_ = false; clear_context_preview(this); finish_composition(); }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnLayoutChange(ITfContext* context, TfLayoutCode code, ITfContextView*) override {
@@ -526,6 +523,7 @@ private:
             range_matches(range.Get(), cookie, expected_text_) && selection_at_end(composition_context_.Get(), cookie, range.Get());
     }
     void detach_composition() noexcept {
+        clear_context_preview(this);
         ++layout_generation_; layout_pending_ = false;
         ++selection_request_; selection_pending_ = false;
         candidates_.close();
@@ -677,6 +675,7 @@ private:
     TfGuidAtom converted_atom_ = TF_INVALID_GUIDATOM;
     std::bitset<256> eaten_keys_;
     bool ending_ = false;
+    bool reading_context_ = false;
     bool dictionary_loaded_ = false;
 };
 }
