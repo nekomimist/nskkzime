@@ -83,8 +83,7 @@ bool candidate(std::u32string_view raw, const LookupKey& key, Candidate& out) {
         out.annotation = raw.substr(separator + 1);
         if (!printable(out.annotation)) return false;
     }
-    const auto reading = utf8(key.reading);
-    out.id = "skk:" + std::to_string(reading.size()) + ":" + reading + ":" + std::to_string(static_cast<unsigned char>(key.okuri)) + ":" + utf8(out.text);
+    out.id = skk_candidate_id(key,out.text);
     return true;
 }
 std::size_t merge_unique(std::vector<Candidate>& destination, const std::vector<Candidate>& source) {
@@ -173,6 +172,10 @@ const char* encoding_name(DictionaryEncoding encoding) {
     }
     return "unknown";
 }
+std::string skk_candidate_id(const LookupKey& key, std::u32string_view text) {
+    const auto reading = utf8(key.reading);
+    return "skk:" + std::to_string(reading.size()) + ":" + reading + ":" + std::to_string(static_cast<unsigned char>(key.okuri)) + ":" + utf8(text);
+}
 std::shared_ptr<const SkkDictionary> SkkDictionary::load(const std::filesystem::path& path, DictionaryEncoding encoding) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) throw std::runtime_error("cannot open dictionary file");
@@ -181,9 +184,13 @@ std::shared_ptr<const SkkDictionary> SkkDictionary::load(const std::filesystem::
     std::string bytes(static_cast<std::size_t>(size), '\0');
     input.seekg(0);
     if (!input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) throw std::runtime_error("cannot read dictionary file");
+    return parse_bytes(bytes,encoding);
+}
+std::shared_ptr<const SkkDictionary> SkkDictionary::parse_bytes(std::string_view bytes, DictionaryEncoding encoding) {
+    if (bytes.size() > max_file_bytes) throw std::runtime_error("dictionary exceeds 128 MiB");
     if (bytes.starts_with("\xef\xbb\xbf")) {
         if (encoding == DictionaryEncoding::EucJp) throw std::invalid_argument("UTF-8 BOM conflicts with EUC-JP encoding");
-        encoding = DictionaryEncoding::Utf8; bytes.erase(0, 3);
+        encoding = DictionaryEncoding::Utf8; bytes.remove_prefix(3);
     }
     if (encoding == DictionaryEncoding::Auto) {
         const auto header = std::string_view(bytes).substr(0, bytes.find('\n'));
@@ -283,6 +290,12 @@ std::vector<LearningEvent> SkkDictionary::entries() const {
             for (const auto& value : values) result.push_back({key,okuri,value});
     }
     return result;
+}
+void SkkDictionary::visit_scopes(const std::function<void(const LookupKey&, std::u32string_view, const std::vector<Candidate>&)>& visitor) const {
+    for (const auto& [key,entry] : entries_) {
+        if (!entry.candidates.empty()) visitor(key,{},entry.candidates);
+        for (const auto& [okuri,values] : entry.okuri) if (!values.empty()) visitor(key,okuri,values);
+    }
 }
 std::vector<Candidate> SkkDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find(key);

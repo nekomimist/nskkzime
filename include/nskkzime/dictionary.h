@@ -1,6 +1,7 @@
 #pragma once
 #include "engine.h"
 #include <filesystem>
+#include <functional>
 #include <string_view>
 
 namespace nskkzime {
@@ -22,9 +23,12 @@ public:
     static std::shared_ptr<const SkkDictionary> load(const std::filesystem::path& path,
         DictionaryEncoding encoding = DictionaryEncoding::Auto);
     static std::shared_ptr<const SkkDictionary> parse(std::u32string_view text);
+    static std::shared_ptr<const SkkDictionary> parse_bytes(std::string_view bytes,
+        DictionaryEncoding encoding = DictionaryEncoding::Auto);
     std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const override;
     // Unmerged scopes: generic candidates have empty okuri, blocks retain theirs.
     std::vector<LearningEvent> entries() const;
+    void visit_scopes(const std::function<void(const LookupKey&, std::u32string_view, const std::vector<Candidate>&)>&) const;
     const DictionaryReport& report() const { return report_; }
 private:
     struct Entry {
@@ -35,6 +39,7 @@ private:
     std::map<LookupKey, Entry> entries_;
     DictionaryReport report_;
 };
+std::string skk_candidate_id(const LookupKey&, std::u32string_view text);
 
 // Dictionary order is priority order; the first spelling (and annotation) wins.
 class DictionarySet final : public Dictionary {

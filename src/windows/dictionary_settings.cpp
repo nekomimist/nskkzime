@@ -1,5 +1,6 @@
 #include "dictionary_settings.h"
 #include "local_storage.h"
+#include "dictionary_cache.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
@@ -226,7 +227,15 @@ DictionaryConfiguration current_dictionary_configuration() {
     if (dictionary) return resolve_dictionary_configuration({}, dictionary, false);
     return resolve_dictionary_configuration(dictionary_settings_path(), {}, !environment_value(L"NSKKZIME_CONFIG").has_value());
 }
-LoadedDictionaries load_dictionaries(const DictionaryConfiguration& configuration) {
+std::optional<std::filesystem::path> dictionary_cache_path(const DictionaryConfiguration& configuration) {
+    if (const auto value = environment_value(L"NSKKZIME_DICTIONARY_CACHE")) {
+        if (*value == L"off") return {};
+        return std::filesystem::path(*value);
+    }
+    if (configuration.demo || configuration.environment || configuration.file.empty()) return {};
+    return configuration.file.parent_path() / L"dictionary-cache-v1";
+}
+LoadedDictionaries load_dictionaries(const DictionaryConfiguration& configuration, const std::optional<std::filesystem::path>& cache_root) {
     LoadedDictionaries loaded;
     if (configuration.demo) {
         loaded.dictionary = demo_dictionary();
@@ -239,10 +248,18 @@ LoadedDictionaries load_dictionaries(const DictionaryConfiguration& configuratio
     for (const auto& path : configuration.settings.dictionaries) {
         loaded.status += L"\r\n" + std::to_wstring(++index) + L". " + path.native();
         try {
-            auto dictionary = SkkDictionary::load(path);
-            const auto& report = dictionary->report();
+            std::shared_ptr<const Dictionary> dictionary; DictionaryReport report; std::wstring cache_status;
+            if (cache_root) {
+                auto cached = load_cached_dictionary(path,*cache_root); dictionary=std::move(cached.dictionary); report=std::move(cached.report);
+                switch (cached.use) {
+                case DictionaryCacheUse::Shared: cache_status=L" / 共有キャッシュ"; break;
+                case DictionaryCacheUse::Disk: cache_status=L" / 永続キャッシュ"; break;
+                case DictionaryCacheUse::Created: cache_status=L" / キャッシュ作成"; break;
+                case DictionaryCacheUse::Fallback: cache_status=L" / キャッシュ利用不可・通常読み込み"; break;
+                }
+            } else { auto parsed=SkkDictionary::load(path); report=parsed->report(); dictionary=std::move(parsed); }
             loaded.status += L"\r\n   読み込み済み: " + std::to_wstring(report.entries) + L"見出し / " +
-                std::to_wstring(report.candidates) + L"候補（" + wide_message(encoding_name(report.encoding)) + L"）";
+                std::to_wstring(report.candidates) + L"候補（" + wide_message(encoding_name(report.encoding)) + L"）" + cache_status;
             if (report.malformed_lines || report.unsupported_candidates)
                 loaded.status += L" / 不正行 " + std::to_wstring(report.malformed_lines) + L" / 未対応候補 " + std::to_wstring(report.unsupported_candidates);
             for (const auto& diagnostic : report.diagnostics) loaded.status += L"\r\n   " + wide_message(diagnostic);

@@ -89,6 +89,7 @@ std::shared_ptr<const Dictionary> runtime_dictionary() {
     std::shared_ptr<const RuntimeDictionary> result;
     try {
         const auto configuration = current_dictionary_configuration();
+        const auto cache_root = dictionary_cache_path(configuration);
         const auto override_learning = environment_value(L"NSKKZIME_LEARNING");
         const bool learning = !configuration.demo && !configuration.settings.dictionaries.empty() &&
             (override_learning ? *override_learning == L"1" : configuration.settings.learning);
@@ -101,12 +102,13 @@ std::shared_ptr<const Dictionary> runtime_dictionary() {
         append_key(key,learning ? L"learn" : L"no-learn");
         append_key(key,user_file.native()); append_key(key,helper.native());
         append_key(key,learning_paths_failed ? L"invalid" : L"valid");
+        append_key(key,cache_root ? cache_root->native() : L"cache-off");
         const std::lock_guard lock(cache_mutex);
         std::erase_if(cache,[](const auto& entry) { return entry.second.expired(); });
         if (const auto found = cache.find(key); found != cache.end()) result = found->second.lock();
         if (!result) {
-            auto load = [configuration,learning,user_file,helper,learning_paths_failed] {
-                auto loaded = load_dictionaries(configuration);
+            auto load = [configuration,learning,user_file,helper,learning_paths_failed,cache_root] {
+                auto loaded = load_dictionaries(configuration,cache_root);
                 if (loaded.failed) { OutputDebugStringW(loaded.status.c_str()); OutputDebugStringW(L"\n"); }
                 bool registration = false;
                 if (learning && !loaded.failed) {

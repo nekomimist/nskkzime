@@ -1,6 +1,7 @@
 #include "dictionary_wait.h"
 #include "module.h"
 #include "learning_ipc.h"
+#include "local_storage.h"
 #include "tsf_test_host.h"
 #include <iostream>
 #include <stdexcept>
@@ -34,7 +35,13 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 3) return 2;
     const auto root = std::filesystem::current_path() / ("tsf-learning-" + learning_client_id());
     std::filesystem::create_directory(root); const auto file = root / L"user.nskkdb";
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", argv[2]);
+    // Exercise the default persistent cache through a saved, isolated config.
+    const auto config = root / L"settings.ini", cache = root / L"dictionary-cache-v1";
+    const auto dictionary_path = std::filesystem::path(argv[2]).u8string();
+    write_file_atomic(config, "version=1\ndictionary=" + std::string(dictionary_path.begin(), dictionary_path.end()) + "\n");
+    SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
+    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", nullptr);
+    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY_CACHE", nullptr);
     SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1"); SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str());
     BYTE previous[256]{}; GetKeyboardState(previous);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -42,15 +49,21 @@ int wmain(int argc, wchar_t** argv) {
     try {
         check(library != nullptr, "DLL load failed");
         using Factory = HRESULT(WINAPI*)(REFCLSID, REFIID, void**);
+        using Status = HRESULT(WINAPI*)(BSTR*);
 #pragma warning(push)
 #pragma warning(disable: 4191)
         const auto factory_export = reinterpret_cast<Factory>(GetProcAddress(library, "DllGetClassObject"));
+        const auto status_export = reinterpret_cast<Status>(GetProcAddress(library, "NskkzimeGetDictionaryStatus"));
 #pragma warning(pop)
         ComPtr<IClassFactory> factory; check(factory_export && SUCCEEDED(factory_export(service_clsid, IID_PPV_ARGS(&factory))), "factory failed");
         ComPtr<ITfTextInputProcessorEx> service; check(SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&service))), "service failed");
         ComPtr<ITfKeyEventSink> keys; service.As(&keys);
         ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
         check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activation failed"); wait_for_dictionary();
+        BSTR dictionary_status = nullptr;
+        check(status_export && SUCCEEDED(status_export(&dictionary_status)), "dictionary status unavailable");
+        const bool cached = dictionary_status && std::wstring_view(dictionary_status).find(L"キャッシュ作成") != std::wstring_view::npos;
+        SysFreeString(dictionary_status); check(cached, "saved configuration did not use the default dictionary cache");
         ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
         context->scope_requires_text_range = true; // Inspect the whole conversion, not a caret outside it.
         type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
@@ -143,13 +156,18 @@ int wmain(int argc, wchar_t** argv) {
         check(context->doc->text == L"no-uiあ", "invisible registration consumed more input");
         host->reject_ui = false;
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
-        std::cout << "PASS TSF learning, transactional registration, immediate reuse, recursive cancel, private scopes, focus/UI failure\n";
+        std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private scopes, focus/UI failure\n";
         result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     if (library && !result) FreeLibrary(library); // Worker owns a separate reference until its callback returns.
     SetKeyboardState(previous); CoUninitialize();
     Sleep(12000); // Allow worker drain and helper idle exit before removing owned test files.
     for (const auto& path : {file, std::filesystem::path(file.native() + L".lock")}) { std::error_code ignored; std::filesystem::remove(path, ignored); }
-    std::error_code ignored; std::filesystem::remove(root, ignored);
+    std::error_code ignored;
+    for (std::filesystem::directory_iterator it(cache, ignored), end; !ignored && it != end; it.increment(ignored)) {
+        const auto name = it->path().filename().native();
+        if (name == L"build.lock" || (name.size() == 73 && name.ends_with(L"-v1.bin"))) std::filesystem::remove(it->path(), ignored);
+    }
+    std::filesystem::remove(config, ignored); std::filesystem::remove(cache, ignored); std::filesystem::remove(root, ignored);
     return result;
 }

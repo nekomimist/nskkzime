@@ -37,7 +37,8 @@ std::wstring zenz_settings_status(const ZenzSettings&);
 DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file,
     const std::optional<std::wstring>& dictionary_override, bool missing_is_demo);
 DictionaryConfiguration current_dictionary_configuration();
-LoadedDictionaries load_dictionaries(const DictionaryConfiguration&);
+LoadedDictionaries load_dictionaries(const DictionaryConfiguration&, const std::optional<std::filesystem::path>& cache_root = {});
+std::optional<std::filesystem::path> dictionary_cache_path(const DictionaryConfiguration&);
 std::wstring wide_message(std::string_view utf8_text);
 std::string utf8_message(std::wstring_view wide_text);
 } // namespace nskkzime::windows
