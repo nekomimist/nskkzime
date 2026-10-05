@@ -3,6 +3,7 @@
 #include <fstream>
 #include <set>
 #include <stdexcept>
+#include "jis0212_table.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -94,20 +95,44 @@ std::size_t merge_unique(std::vector<Candidate>& destination, const std::vector<
     return added;
 }
 std::u32string decode_euc_jp(std::string_view bytes) {
-    // Validate EUC-JP byte structure before invoking the platform converter.
-    for (std::size_t i = 0; i < bytes.size();) {
+    // CP20932 handles ordinary EUC-JP but not the SS3 three-byte form.
+    // Replace SS3 cells with one-byte placeholders before a single platform
+    // conversion, then restore their Unicode values by character offset.
+    // Files without SS3 keep the original buffer and round-trip validation.
+    std::string compatible;
+    std::vector<std::pair<std::size_t, char32_t>> supplementary;
+    std::size_t copied = 0;
+    for (std::size_t i = 0, character = 0; i < bytes.size(); ++character) {
+        const auto start = i;
         const auto ch = static_cast<unsigned char>(bytes[i++]);
         if (ch < 0x80) continue;
-        // Windows CP20932 does not reliably decode the standard three-byte SS3 form.
-        if (ch == 0x8f) throw std::invalid_argument("EUC-JP SS3 (JIS X 0212) is unsupported; convert the dictionary to UTF-8");
+        if (ch == 0x8f) {
+            if (bytes.size() - i < 2) throw std::invalid_argument("truncated EUC-JP SS3 sequence");
+            const auto row = static_cast<unsigned char>(bytes[i++]);
+            const auto column = static_cast<unsigned char>(bytes[i++]);
+            if (row < 0xa1 || row > 0xfe || column < 0xa1 || column > 0xfe)
+                throw std::invalid_argument("invalid EUC-JP SS3 continuation");
+            const char32_t value = detail::jis0212[(row - 0xa1) * 94 + column - 0xa1];
+            if (!value) throw std::invalid_argument("unassigned EUC-JP SS3 character");
+            if (supplementary.empty()) compatible.reserve(bytes.size());
+            compatible.append(bytes.substr(copied, start - copied));
+            compatible += '?';
+            copied = i;
+            supplementary.emplace_back(character, value);
+            continue;
+        }
         if (ch != 0x8e && (ch < 0xa1 || ch > 0xfe)) throw std::invalid_argument("invalid EUC-JP lead byte");
         if (i == bytes.size()) throw std::invalid_argument("truncated EUC-JP sequence");
         const auto next = static_cast<unsigned char>(bytes[i++]);
         if (next < 0xa1 || next > (ch == 0x8e ? 0xdf : 0xfe)) throw std::invalid_argument("invalid EUC-JP continuation");
     }
+    if (!supplementary.empty()) {
+        compatible.append(bytes.substr(copied));
+        bytes = compatible;
+    }
 #ifdef _WIN32
     if (bytes.empty()) return {};
-    constexpr UINT codepage = 20932; // JIS X 0208 and SS2 halfwidth kana; SS3 rejected above.
+    constexpr UINT codepage = 20932; // JIS X 0208 and SS2 halfwidth kana.
     const auto length = static_cast<int>(bytes.size());
     const int required = MultiByteToWideChar(codepage, 0, bytes.data(), length, nullptr, 0);
     if (!required) throw std::runtime_error("Windows EUC-JP converter unavailable");
@@ -128,6 +153,10 @@ std::u32string decode_euc_jp(std::string_view bytes) {
             ch = 0x10000 + ((ch - 0xd800) << 10) + (wide[++i] - 0xdc00);
         } else if (ch >= 0xdc00 && ch <= 0xdfff) throw std::invalid_argument("invalid decoded surrogate");
         text += ch;
+    }
+    for (const auto& [position, value] : supplementary) {
+        if (position >= text.size() || text[position] != U'?') throw std::runtime_error("EUC-JP character offsets changed");
+        text[position] = value;
     }
     return text;
 #else

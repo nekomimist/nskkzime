@@ -3,6 +3,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 using namespace nskkzime;
@@ -48,7 +49,7 @@ int wmain(int argc, wchar_t** argv) {
 #else
 int main(int argc, char** argv) {
 #endif
-    if (argc != 2) return 2;
+    if (argc != 3) return 2;
     Files files;
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
         {"parser/plain-and-annotations", [] {
@@ -174,11 +175,54 @@ int main(int argc, char** argv) {
             auto path = files.write("halfwidth.skk", "kana /\x8e\xb6/\n");
             texts(SkkDictionary::load(path)->lookup({U"kana"}), {U"ｶ"});
         }},
-        {"file/euc-jp-ss3-rejected-with-utf8-alternative", [&] {
-            auto path = files.write("supplementary.skk", ";; coding:\teuc-jp\nmark /\x8f\xa2\xaf/\n");
-            rejects([&] { SkkDictionary::load(path); });
-            const auto alternative = files.write("supplementary.utf8.skk", ";; coding:\tutf-8\n" + utf8(U"mark /\u02d8/\n"));
-            texts(SkkDictionary::load(alternative)->lookup({U"mark"}), {U"\u02d8"});
+        {"file/euc-jp-ss3-mixed-kana-kanji-annotations", [&] {
+            auto path = files.write("supplementary.skk", ";; coding:\teuc-jp\nmark /?\x8f\xa2\xaf\xa4\xab\x8e\xb6\x8f\xb0\xa1?;\x8f\xed\xe3/\n\x8f\xb0\xa1 /\x8f\xa2\xb7/\n");
+            auto dictionary = SkkDictionary::load(path);
+            auto list = dictionary->lookup({U"mark"});
+            texts(list, {U"?\u02d8かｶ\u4e02?"});
+            require(list.front().annotation == U"\u9fa5", "SS3 annotation lost");
+            texts(dictionary->lookup({U"\u4e02"}), {U"~"});
+            require(dictionary->report().encoding == DictionaryEncoding::EucJp, "SS3 header detection failed");
+            auto no_header = files.write("supplementary-auto.skk", "mark /\x8f\xa2\xaf\x8f\xb0\xa1/\n");
+            texts(SkkDictionary::load(no_header)->lookup({U"mark"}), {U"\u02d8\u4e02"});
+        }},
+        {"file/euc-jp-ss3-all-assigned-cells", [&] {
+            // Check actual file decoding against every row in the external
+            // Unicode reference, independent of the generated C++ table.
+            std::ifstream mapping{std::filesystem::path(argv[2])};
+            require(static_cast<bool>(mapping), "cannot open Unicode reference");
+            std::vector<std::pair<std::u32string, std::u32string>> expected;
+            std::string source = ";; coding: euc-jp\n";
+            for (std::string line; std::getline(mapping, line);) {
+                if (line.empty() || line[0] == '#') continue;
+                unsigned jis = 0, codepoint = 0;
+                std::istringstream columns(line);
+                require(static_cast<bool>(columns >> std::hex >> jis >> codepoint), "invalid Unicode reference row");
+                const auto key = "cell" + std::to_string(jis);
+                source += key + " /";
+                source += static_cast<char>(0x8f);
+                source += static_cast<char>((jis >> 8) + 0x80);
+                source += static_cast<char>((jis & 0xff) + 0x80);
+                source += "/\n";
+                expected.emplace_back(from_utf8(key), std::u32string(1, static_cast<char32_t>(codepoint)));
+            }
+            require(expected.size() == 6067, "Unicode reference is incomplete");
+            auto path = files.write("all-ss3.skk", source);
+            auto dictionary = SkkDictionary::load(path);
+            require(dictionary->report().entries == expected.size() && dictionary->report().malformed_lines == 0, "SS3 entries lost");
+            for (const auto& [reading, text] : expected) texts(dictionary->lookup({reading}), {text});
+        }},
+        {"file/euc-jp-ss3-invalid-and-unassigned", [&] {
+            for (const std::string bytes : {"\x8f", "\x8f\xa2", "\x8f\xa2\x20", "\x8f\x20\xaf", "\x8f\xff\xaf",
+                    "\x8f\xa2\xff", "\x8f\xa1\xa1", "\x8f\xed\xe4", "\x8f\xfe\xfe", "\x8f\x8e\xb6"}) {
+                auto path = files.write("bad-ss3.skk", "mark /" + bytes + "/\n");
+                rejects([&] { SkkDictionary::load(path, DictionaryEncoding::EucJp); });
+            }
+            auto truncated = files.write("truncated-ss3.skk", ";; coding: euc-jp\nmark /\x8f\xa2");
+            rejects([&] { SkkDictionary::load(truncated); });
+            // Restoring a valid SS3 must not hide a bad ordinary sequence.
+            auto mixed = files.write("bad-after-ss3.skk", "mark /\x8f\xb0\xa1\xa4\x20/\n");
+            rejects([&] { SkkDictionary::load(mixed, DictionaryEncoding::EucJp); });
         }},
         {"file/invalid-euc-jp-rejected", [&] {
             for (const std::string bytes : {"\x8e\xff", "\x8f\xa1", "\xa4", "\xa4\x20", "\xff\xa1"}) {

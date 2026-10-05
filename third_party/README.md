@@ -10,6 +10,16 @@
 
 The checksum was verified against the upstream release. Builds do not download dependencies.
 
+## Unicode JIS X 0212 mapping
+
+- Source: [Unicode JIS0212.TXT](https://www.unicode.org/Public/MAPPINGS/OBSOLETE/EASTASIA/JIS/JIS0212.TXT), table v2.0, header dated 2015-12-02.
+- File: `unicode/JIS0212.TXT`, unchanged; SHA-256: `477820bb3055bbcc90880d788cd95607d221dc94457bae249231adecf13c12e6`.
+- License: [Unicode License v3](unicode/LICENSE.txt), retrieved from https://www.unicode.org/license.txt on 2026-10-06. Original mapping copyright: 2015 Unicode, Inc.
+- `python scripts/generate-jis0212.py` verifies this checksum and generates `src/dictionary/jis0212_table.h`. Normal builds use the checked-in table and need neither Python nor network access.
+- The table supplies all 6,067 assigned SS3 cells; unassigned cells are errors. It follows this Unicode mapping, including JIS `0x2237` to `U+007E` (ASCII tilde), rather than the browser-oriented WHATWG variant's `U+FF5E`.
+- The dictionary test reads the separate reference file and checks all assigned cells through the file loader. Existing JIS X 0208 / halfwidth-kana mappings remain Windows CP20932.
+- Include `unicode/LICENSE.txt` with binary distributions containing this table.
+
 ## skk-zenz
 
 - Source: https://github.com/nekomimist/skk-zenz/tree/db1c923223a94c6406fd19e4d75ef3b54bdf9300

@@ -1,2 +1,6 @@
 # Preserve the upstream header bytes and published checksum on Windows.
 third_party/nlohmann/json.hpp -text
+# Keep Unicode's source bytes, including trailing spaces in upstream comments.
+third_party/unicode/JIS0212.TXT -text -whitespace
+third_party/unicode/LICENSE.txt -text
+src/dictionary/jis0212_table.h text eol=lf
