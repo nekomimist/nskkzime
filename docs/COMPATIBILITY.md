@@ -6,7 +6,7 @@ zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末�
 
 | 環境 | 現状 | 根拠・残作業 |
 |---|---|---|
-| Windows 11 x64、標準EDIT／TSF対応RichEdit | 基本入力、辞書変換、実モデル連携を確認済み | 登録DLLの実測範囲は [TSF検証](TSF_VALIDATION.md)。全機能・全入力操作の確認ではない |
+| Windows 11 x64、標準EDIT／TSF対応RichEdit | 基本入力、辞書変換、実モデル連携を確認済み | 標準EDITでは変換中の最初の矢印と同じ欄へのクリックに制限が残る。[TSF検証](TSF_VALIDATION.md) を参照。全機能・全入力操作の確認ではない |
 | Firefox／VS Code／Windows Terminal | 未検証 | 実アプリでのキー配送、文脈、入力属性、遅延候補を個別に確認する |
 | Windows 10 x64 | 未検証 | Windows SDKのターゲット指定だけでは実OSでの動作確認にならない |
 | x86アプリ | 現在の配布対象外 | x86用TSF DLLと32ビット側登録を提供していない |
