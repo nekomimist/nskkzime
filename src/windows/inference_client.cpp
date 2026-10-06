@@ -1,6 +1,8 @@
 #include "inference_client.h"
 #include "dictionary_settings.h"
 #include <algorithm>
+#include <atomic>
+#include <deque>
 #include <bcrypt.h>
 #include <mutex>
 #include <optional>
@@ -10,6 +12,7 @@ namespace {
 int anchor;
 thread_local const void* status_owner = nullptr;
 thread_local const wchar_t* status_text = L"推論: オフ";
+thread_local const InferenceClient* logging_client = nullptr;
 HMODULE module(bool pin) {
     HMODULE result = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | (pin ? 0 : GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT),
@@ -42,11 +45,22 @@ struct InferenceClient::State {
     bool stop = false;
     std::shared_ptr<Job> pending;
     std::optional<InferenceCompletion> completion;
+    std::unique_ptr<InputLog> logger;
+    std::deque<InputLogRecord> records;
+    std::atomic<InputLogStatus> log_status{InputLogStatus::Off};
+    std::atomic<unsigned> log_dropped{0};
     void run() noexcept {
         for (;;) {
             std::shared_ptr<Job> job;
-            { const std::lock_guard lock(mutex); if (stop) return; job = pending; }
-            if (!job) { WaitForSingleObject(wake.get(), INFINITE); continue; }
+            std::optional<InputLogRecord> record;
+            {
+                const std::lock_guard lock(mutex); if (stop) return; job = pending;
+                if (!job && !records.empty()) { record = std::move(records.front()); records.pop_front(); }
+            }
+            if (!job) {
+                if (record) { log_status = logger->write(*record); continue; }
+                WaitForSingleObject(wake.get(), INFINITE); continue;
+            }
             InferenceCompletion result; result.id = job->request.id; result.deadline = job->deadline;
             try {
                 bool launched = false;
@@ -81,6 +95,11 @@ struct InferenceClient::State {
 InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : state_(std::make_shared<State>()), callback_(std::move(callback)) {
     if (!state_->wake.valid() || config.timeout_ms == 0 || config.timeout_ms > 10000) throw std::invalid_argument("invalid inference configuration");
     state_->config = std::move(config); owner_ = module(false);
+    if (state_->config.log_input) {
+        if (state_->config.log_directory.empty()) throw std::invalid_argument("input log directory required");
+        state_->logger = std::make_unique<InputLog>(state_->config.log_directory);
+        state_->log_status = InputLogStatus::Ready;
+    }
     wchar_t name[96]{}; swprintf_s(name,L"nskkzime-inference-%lu-%p",GetCurrentThreadId(),this); class_name_ = name;
     WNDCLASSW cls{}; cls.lpfnWndProc = window_proc; cls.hInstance = owner_; cls.lpszClassName = class_name_.c_str();
     if (!RegisterClassW(&cls)) throw std::runtime_error("cannot create inference dispatcher");
@@ -90,11 +109,13 @@ InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : st
         auto work = std::make_unique<State::Work>(); work->state = state_; work->module = module(true);
         if (!TrySubmitThreadpoolCallback(State::callback,work.get(),nullptr)) { FreeLibrary(work->module); throw std::runtime_error("cannot start inference worker"); }
         work.release();
+        logging_client = this;
     } catch (...) { if (window_) DestroyWindow(window_); UnregisterClassW(class_name_.c_str(),owner_); throw; }
 }
 InferenceClient::~InferenceClient() {
+    if (logging_client == this) logging_client = nullptr;
     if (window_) DestroyWindow(window_); UnregisterClassW(class_name_.c_str(),owner_);
-    { const std::lock_guard lock(state_->mutex); state_->stop = true; if (state_->pending) SetEvent(state_->pending->cancel.get()); state_->completion.reset(); }
+    { const std::lock_guard lock(state_->mutex); state_->stop = true; if (state_->pending) SetEvent(state_->pending->cancel.get()); state_->completion.reset(); state_->records.clear(); }
     SetEvent(state_->wake.get()); // No join/pipe wait in a TSF callback.
 }
 ULONGLONG InferenceClient::submit(InferenceRequest request, DWORD timeout_ms) {
@@ -111,6 +132,23 @@ void InferenceClient::cancel() noexcept {
     const std::lock_guard lock(state_->mutex);
     if (state_->pending) SetEvent(state_->pending->cancel.get());
     state_->pending.reset(); state_->completion.reset();
+}
+void InferenceClient::record_input(const InferenceRequest& request, const InferenceResponse* response, InferenceStatus status) noexcept {
+    if (!state_->logger) return;
+    try {
+        const std::lock_guard lock(state_->mutex);
+        if (state_->stop || state_->log_status == InputLogStatus::Full || state_->log_status == InputLogStatus::Unavailable) return;
+        if (state_->records.size() >= 8) { ++state_->log_dropped; return; }
+        state_->records.push_back({request, response ? std::optional<InferenceResponse>(*response) : std::nullopt, status});
+        SetEvent(state_->wake.get());
+    } catch (...) { ++state_->log_dropped; }
+}
+bool InferenceClient::input_log_enabled() const noexcept { return state_->config.log_input; }
+std::wstring InferenceClient::input_log_status() const {
+    auto text = std::wstring(input_log_status_text(state_->log_status.load()));
+    const auto dropped = state_->log_dropped.load();
+    if (dropped) text += L" / 保存待ちから除外: " + std::to_wstring(dropped);
+    return text;
 }
 void InferenceClient::poll() {
     std::optional<InferenceCompletion> result;
@@ -142,6 +180,7 @@ std::optional<InferenceConfig> current_inference_config() {
         config.server = settings.server; config.model = settings.model;
         config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
         config.policy = settings.policy;
+        config.log_input = settings.log_input; config.log_directory = settings.log_directory;
     }
     for (const auto item : {std::pair{L"NSKKZIME_INFERENCE_DELAY_MS",&config.delay_ms},std::pair{L"NSKKZIME_INFERENCE_TIMEOUT_MS",&config.timeout_ms}})
         if (const auto value = environment_value(item.first)) {
@@ -157,5 +196,7 @@ std::optional<InferenceConfig> current_inference_config() {
 }
 void set_inference_status(const void* owner, const wchar_t* text) noexcept { status_owner = owner; status_text = text; }
 void clear_inference_status(const void* owner) noexcept { if (status_owner == owner) { status_owner = nullptr; status_text = L"推論: オフ"; } }
-std::wstring inference_status() { return status_text; }
+std::wstring inference_status() {
+    return std::wstring(status_text) + L"\r\n" + (logging_client ? logging_client->input_log_status() : L"入力ログ: オフ");
+}
 }

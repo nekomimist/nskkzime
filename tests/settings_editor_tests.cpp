@@ -68,6 +68,8 @@ int wmain(int argc, wchar_t** argv) {
              settings.zenz.server = files.root / L"not-present.exe";
              settings.zenz.threads = 7;
              settings.zenz.timeout_ms = 42;
+             settings.zenz.log_input = true;
+             settings.zenz.log_directory = files.root;
              auto& policy = settings.zenz.policy;
              policy.long_min_length = 15;
              policy.rerank = true;

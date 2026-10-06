@@ -1,5 +1,6 @@
 #pragma once
 #include "inference_ipc.h"
+#include "input_log.h"
 #include "nskkzime/inference_policy.h"
 #include <functional>
 #include <memory>
@@ -13,6 +14,8 @@ struct InferenceConfig {
     std::filesystem::path model; // Empty: dummy backend, otherwise zenz.
     unsigned int threads = 4;
     InferencePolicy policy;
+    bool log_input = false;
+    std::filesystem::path log_directory;
 };
 struct InferenceCompletion {
     InferenceStatus status = InferenceStatus::Unavailable;
@@ -32,6 +35,11 @@ public:
     ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0); // Zero uses the generation timeout.
     void cancel() noexcept;
     void poll();
+    // Called only after TSF has revalidated the current ordinary input field.
+    // Queue-only; neither disk I/O nor JSON encoding runs on the input thread.
+    void record_input(const InferenceRequest&, const InferenceResponse*, InferenceStatus) noexcept;
+    bool input_log_enabled() const noexcept;
+    std::wstring input_log_status() const;
 private:
     struct State;
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);

@@ -24,7 +24,7 @@ struct Editor {
     std::filesystem::path file;
     SettingsDocument document;
     std::vector<std::filesystem::path> dictionaries;
-    std::array<HWND, 4> pages{};
+    std::array<HWND, 5> pages{};
     HWND window = nullptr;
     bool valid = false, loading = false, dirty = false, confirming_close = false;
     std::shared_ptr<Work> work;
@@ -58,6 +58,8 @@ void update_enabled(Editor& editor) {
     enabled(romaji, IDC_ROMAJI_BROWSE, checked(romaji, IDC_CUSTOM_ROMAJI));
     for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_SERVER, IDC_SERVER_BROWSE, IDC_RERANK, IDC_LEARN_GENERATED})
         enabled(inference, id, checked(inference, IDC_ZENZ));
+    for (const auto id : {IDC_LOG_DIRECTORY, IDC_LOG_BROWSE})
+        enabled(editor.pages[4], id, checked(editor.pages[4], IDC_INPUT_LOG));
     const auto selection = SendDlgItemMessageW(editor.pages[0], IDC_DICTIONARIES, LB_GETCURSEL, 0, 0);
     enabled(editor.pages[0], IDC_REMOVE, selection != LB_ERR);
     enabled(editor.pages[0], IDC_UP, selection > 0);
@@ -109,6 +111,8 @@ void reload(Editor& editor) {
         set(advanced, IDC_SCORE_TIMEOUT, std::to_wstring(zenz.policy.score_timeout_ms));
         set(advanced, IDC_PROMOTE_THRESHOLD, std::to_wstring(zenz.policy.promote_threshold));
         set(advanced, IDC_MAX_GAP, std::to_wstring(zenz.policy.max_score_gap));
+        check(editor.pages[4], IDC_INPUT_LOG, zenz.log_input);
+        set(editor.pages[4], IDC_LOG_DIRECTORY, zenz.log_directory.native());
         editor.valid = true;
         editor.dirty = false;
         std::wstring message = editor.document.original ? L"設定を読み込みました。"
@@ -159,6 +163,8 @@ DictionarySettings draft(Editor& editor) {
     zenz.policy.score_timeout_ms = number<unsigned>(page, IDC_SCORE_TIMEOUT, L"採点の期限", 1, 10000);
     zenz.policy.promote_threshold = number<float>(page, IDC_PROMOTE_THRESHOLD, L"必要なスコア差", 0, 100);
     zenz.policy.max_score_gap = number<float>(page, IDC_MAX_GAP, L"スコア差の上限", 0, 100);
+    zenz.log_input = checked(editor.pages[4], IDC_INPUT_LOG);
+    zenz.log_directory = get(editor.pages[4], IDC_LOG_DIRECTORY);
     return result;
 }
 void validate(Editor& editor, bool save) {
@@ -205,15 +211,15 @@ void finish(Editor& editor) {
     update_enabled(editor);
     report(editor, work->check.report);
 }
-std::vector<std::filesystem::path> choose(HWND window, bool multiple, const COMDLG_FILTERSPEC* filters, UINT count) {
+std::vector<std::filesystem::path> choose(HWND window, bool multiple, const COMDLG_FILTERSPEC* filters, UINT count, bool folder = false) {
     ComPtr<IFileOpenDialog> dialog;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
         throw std::runtime_error("cannot open file picker");
     DWORD options = 0;
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_DONTADDTORECENT |
-                       (multiple ? FOS_ALLOWMULTISELECT : 0));
-    dialog->SetFileTypes(count, filters);
+                       (multiple ? FOS_ALLOWMULTISELECT : 0) | (folder ? FOS_PICKFOLDERS : 0));
+    if (!folder) dialog->SetFileTypes(count, filters);
     const auto shown = dialog->Show(window);
     if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
         return {};
@@ -250,7 +256,7 @@ void browse(Editor& editor, int id) {
                               id == IDC_MODEL_BROWSE    ? model
                               : id == IDC_SERVER_BROWSE ? server
                                                         : all,
-                              id == IDC_MODEL_BROWSE ? 2 : 1);
+                              id == IDC_MODEL_BROWSE ? 2 : 1, id == IDC_LOG_BROWSE);
     if (paths.empty())
         return;
     if (id == IDC_ADD) {
@@ -264,6 +270,8 @@ void browse(Editor& editor, int id) {
         list(editor, static_cast<int>(editor.dictionaries.size()) - 1);
     } else if (id == IDC_ROMAJI_BROWSE)
         set(editor.pages[1], IDC_ROMAJI_PATH, paths[0].native());
+    else if (id == IDC_LOG_BROWSE)
+        set(editor.pages[4], IDC_LOG_DIRECTORY, paths[0].native());
     else
         set(editor.pages[2], id == IDC_MODEL_BROWSE ? IDC_MODEL : IDC_SERVER, paths[0].native());
     editor.dirty = true;
@@ -314,7 +322,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SetWindowLongPtrW(window, DWLP_USER, lparam);
             set(window, IDC_FILE, L"保存先: " + editor->file.native());
             SendDlgItemMessageW(window, IDC_REPORT, EM_SETLIMITTEXT, 65535, 0);
-            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細"};
+            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断"};
             for (std::size_t i = 0; i < editor->pages.size(); ++i) {
                 TCITEMW item{};
                 item.mask = TCIF_TEXT;
@@ -373,13 +381,13 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             } else if (id == IDOK || id == IDC_CHECK)
                 validate(*editor, id == IDOK);
             else if (!editor->work && editor->valid && !editor->loading) {
-                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_SERVER_BROWSE)
+                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_SERVER_BROWSE || id == IDC_LOG_BROWSE)
                     browse(*editor, id);
                 else if (id == IDC_REMOVE || id == IDC_UP || id == IDC_DOWN)
                     reorder(*editor, id);
                 else if (id == IDC_DICTIONARIES && notification == LBN_SELCHANGE)
                     update_enabled(*editor);
-                else if (id >= IDC_LEARNING && id <= IDC_MAX_GAP &&
+                else if (id >= IDC_LEARNING && id <= IDC_LOG_DIRECTORY &&
                          (notification == BN_CLICKED || notification == EN_CHANGE)) {
                     editor->dirty = true;
                     update_enabled(*editor);

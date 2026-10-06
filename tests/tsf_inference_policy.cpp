@@ -42,6 +42,7 @@ int wmain(int argc,wchar_t** argv) {
     const auto id=learning_client_id();const std::wstring token(id.begin(),id.end());
     const auto root=std::filesystem::current_path()/("tsf-policy-"+id);std::filesystem::create_directory(root);
     const auto config=root/L"settings.ini", dictionary=root/L"dictionary.skk", user=root/L"user.nskkdb";
+    const auto log_directory = root / L"input-logs";
     {std::ofstream file(dictionary,std::ios::binary);file<<"かいとう /回答;元一/解答;元二/解凍;元三/\nありがとうございます /元一;辞書/元二/\nかk /書;文章/描;絵/\n";}
     DictionarySettings settings{{dictionary},false};settings.zenz={true,root/L"fixture.gguf",argv[1],4,1500}; settings.zenz.policy.rerank=true;
     save_dictionary_settings(config,settings);
@@ -85,14 +86,51 @@ int wmain(int argc,wchar_t** argv) {
         }
         empty=true;{Session s;s.start("Arigatougozaimasu");s.complete();check(s.context->doc->text==L"前元一後","empty long result lost dictionary");}empty=false;
         {Session s;const auto before=count.load();s.context->input_scope=IS_PRIVATE;s.start();s.wait();check(count==before&&s.context->doc->text==L"前回答後","private field scored");}
+        // Logging is opt-in per client, even when the inference server is shared.
+        std::filesystem::create_directory(log_directory);
+        settings.zenz.log_input = true; settings.zenz.log_directory = log_directory; save_dictionary_settings(config, settings);
+        auto log_files = [&] {
+            std::vector<std::filesystem::path> paths;
+            for (const auto& item : std::filesystem::directory_iterator(log_directory))
+                if (item.path().extension() == L".jsonl") paths.push_back(item.path());
+            return paths;
+        };
+        {Session s(L"ログ前😀"); s.start(); s.complete();
+         const auto until = GetTickCount64() + 2000;
+         while (inference_status().find(L"保存中") == std::wstring::npos && GetTickCount64() < until) s.wait(10);
+         check(inference_status().find(L"保存中") != std::wstring::npos && log_files().size() == 1, "validated response was not logged");
+         std::ifstream input(log_files()[0], std::ios::binary); const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+         check(bytes.find("ログ前😀") != std::string::npos && bytes.find("かいとう") != std::string::npos && bytes.find("回答") != std::string::npos,
+               "diagnostic log lost reading/context/score candidates");}
+        for (const auto scope : {IS_PASSWORD, IS_PRIVATE, IS_NUMERIC_PIN}) {
+            Session s(L"保存禁止"); s.context->input_scope = scope; s.start(); s.wait();
+        }
+        {Session s(L"属性不明"); s.context->unknown_scope = true; s.start(); s.wait();}
+        {Session s(L"途中保護"); s.start(); s.context->input_scope = IS_PRIVATE; s.context->notify(); s.wait();}
+        {Session s(L"取消応答"); s.start(); s.queued(); s.key(VK_ESCAPE); s.context->pump(); s.wait(50);}
+        {Session s(L"編集拒否"); s.start(); s.queued(); s.context->doc->reject_write = true; s.context->pump(); s.wait(50);}
+        {Session s(L"適用直後"); s.start(); s.queued();
+         s.context->scope_query = [&](ITfRange*, InputScope& scope) {
+             if (s.context->doc->text.find(L"解答") != std::wstring::npos) scope = IS_PRIVATE;
+             return S_OK;
+         };
+         s.context->pump(); s.wait(50);}
+        check(log_files().size() == 1, "protected, cancelled or rejected input was logged");
+        settings.zenz.log_input = false; save_dictionary_settings(config, settings);
+        {Session s(L"無効化後"); s.start(); s.complete(); s.wait(50);}
+        check(log_files().size() == 1, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
         settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"1");
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"みかん"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"short fallback did not persist");}
         {Session s;s.start("Arigatougozaimasu");s.complete();s.key(VK_RETURN);s.wait(250);check(read_user_dictionary(user).lookup({U"ありがとうございます"}).empty(),"long generation polluted dictionary");}
-        check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy and learning\n";result=0;
+        check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy, opt-in logging and learning\n";result=0;
     } catch(const std::exception& error) {std::cerr<<"FAIL "<<error.what()<<'\n';}
     SetKeyboardState(previous);CoUninitialize();try {server.get();}catch(...) {result=1;}Sleep(11000);
     for(const auto& path:{config,dictionary,user,std::filesystem::path(user.native()+L".lock")}) {std::error_code ignored;std::filesystem::remove(path,ignored);}
+    if (std::filesystem::exists(log_directory)) {
+        for (const auto& entry : std::filesystem::directory_iterator(log_directory)) { std::error_code ignored; std::filesystem::remove(entry.path(), ignored); }
+        std::error_code ignored; std::filesystem::remove(log_directory, ignored);
+    }
     std::error_code ignored;std::filesystem::remove(root,ignored);return result;
 }

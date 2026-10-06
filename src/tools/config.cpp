@@ -24,6 +24,8 @@ void help() {
         "  --set-zenz-min-length N   Prefer generation for N or more kana (0 disables)\n"
         "  --set-zenz-rerank on|off  Promote the best dictionary candidate when confident\n"
         "  --set-zenz-learning on|off Learn short fallback generations after successful commit\n"
+        "  --enable-input-log DIR    Save readings, surrounding text and candidates for diagnosis\n"
+        "  --disable-input-log       Stop logging after restarting the target applications\n"
         "  --help                    Show this help\n"
         "Default: %LOCALAPPDATA%\\nskkzime\\settings.ini (UTF-8)\n"
         "NSKKZIME_CONFIG overrides that file; NSKKZIME_DICTIONARY selects isolated dictionary settings.\n"
@@ -43,14 +45,15 @@ int wmain(int argc, wchar_t** argv) {
         }
         const std::wstring_view action(argv[index++]);
         const bool policy = action == L"--set-zenz-min-length" || action == L"--set-zenz-rerank" || action == L"--set-zenz-learning";
-        if (!policy && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
+        const bool enable_log = action == L"--enable-input-log", disable_log = action == L"--disable-input-log";
+        if (!policy && !enable_log && !disable_log && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
             help(); return 2;
         }
         const bool set = action == L"--set-dictionaries", disable = action == L"--disable-dictionaries";
         const bool learning = action == L"--set-learning";
         const bool romaji = action == L"--set-romaji", reset_romaji = action == L"--reset-romaji";
         const bool zenz = action == L"--set-zenz", disable_inference = action == L"--disable-inference";
-        if ((!set && !learning && !romaji && !zenz && !policy && index != argc) || (set && index == argc) || ((learning || romaji || policy) && index + 1 != argc) || (zenz && index + 2 != argc)) { help(); return 2; }
+        if ((!set && !learning && !romaji && !zenz && !policy && !enable_log && index != argc) || (set && index == argc) || ((learning || romaji || policy || enable_log) && index + 1 != argc) || (zenz && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
@@ -61,10 +64,12 @@ int wmain(int argc, wchar_t** argv) {
         }
         const auto file = explicit_file ? *explicit_file : dictionary_settings_path();
         const auto dictionary_override = environment_value(L"NSKKZIME_DICTIONARY");
-        if (zenz || disable_inference || policy) {
+        if (zenz || disable_inference || policy || enable_log || disable_log) {
             auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
             if (zenz) { settings.zenz.enabled = true; settings.zenz.model = argv[index]; settings.zenz.server = argv[index+1]; }
             else if (disable_inference) settings.zenz = {};
+            else if (enable_log) { settings.zenz.log_input = true; settings.zenz.log_directory = argv[index]; }
+            else if (disable_log) settings.zenz.log_input = false;
             else {
                 const std::wstring value(argv[index]);
                 if (action == L"--set-zenz-min-length") {
@@ -75,7 +80,7 @@ int wmain(int argc, wchar_t** argv) {
                     (action == L"--set-zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == L"on";
                 }
             }
-            validate_zenz_settings(settings.zenz,zenz); save_dictionary_settings(file,settings);
+            validate_zenz_settings(settings.zenz,zenz || enable_log); save_dictionary_settings(file,settings);
             show(zenz_settings_status(settings.zenz));
             show(L"保存しました。利用するアプリを起動し直すと反映されます。モデルの実行確認にはサーバーの --convert を使ってください。"); return 0;
         }

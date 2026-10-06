@@ -78,3 +78,15 @@ BEGIN
     LTEXT "採点に採用するスコア差の上限（0～100）(&D)", -1, 5, 158, 247, 12
     EDITTEXT IDC_MAX_GAP, 258, 155, 120, 15, ES_AUTOHSCROLL
 END
+
+IDD_DIAGNOSTICS DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    AUTOCHECKBOX "入力ログを保存する（診断用）(&L)", IDC_INPUT_LOG, 5, 5, 378, 15
+    LTEXT "読み、前後の本文、変換候補を平文で保存します。通常はオフのまま使います。\n推論応答の処理時に入力属性を再確認し、保護された入力欄は記録しません。", -1, 5, 30, 378, 28
+    LTEXT "保存先（作成済みのローカルフォルダー）(&F)", -1, 5, 67, 378, 12
+    EDITTEXT IDC_LOG_DIRECTORY, 5, 84, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照(&B)…", IDC_LOG_BROWSE, 316, 84, 66, 16
+    LTEXT "1ファイル1 MiB・同じフォルダーに64ファイルまで。上限や保存失敗で停止します。\n既存ログは自動削除しません。不要になったログは利用アプリを閉じて削除します。\n\n有効化・無効化とも、保存後にIMEを使うアプリを起動し直してください。\n推論がオフのときは記録しません。保存済みのログは無効化後も残ります。", -1, 5, 114, 378, 65
+END

@@ -31,6 +31,10 @@ std::string serialize(const DictionarySettings& settings) {
         bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
     }
     validate_zenz_settings(settings.zenz);
+    if (settings.zenz.log_input || !settings.zenz.log_directory.empty()) {
+        bytes += settings.zenz.log_input ? "input-log=on\n" : "input-log=off\n";
+        if (!settings.zenz.log_directory.empty()) bytes += "input-log-directory=" + utf8_message(settings.zenz.log_directory.native()) + "\n";
+    }
     const auto& policy = settings.zenz.policy;
     if (settings.zenz.enabled || !settings.zenz.model.empty() || !settings.zenz.server.empty() || settings.zenz.threads != 4 || settings.zenz.timeout_ms != 1000 ||
         policy.long_min_length != 10 || policy.rerank || policy.learn_fallback || policy.rerank_limit != 20 || policy.score_timeout_ms != 300 || policy.promote_threshold != 1.0f || policy.max_score_gap != 8.0f) {
@@ -62,6 +66,23 @@ struct TemporaryFile {
 }
 void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     validate_inference_policy(settings.policy);
+    if (settings.log_input || !settings.log_directory.empty()) {
+        validate_path(settings.log_directory);
+        if (settings.log_directory.root_name().native().size() != 2 || settings.log_directory.native().find(L'"') != std::wstring::npos)
+            throw std::invalid_argument("input log requires an absolute local directory path");
+        if (check_files && settings.log_input) {
+            const auto drive = GetDriveTypeW(settings.log_directory.root_path().c_str());
+            if (drive != DRIVE_FIXED && drive != DRIVE_REMOVABLE) throw std::invalid_argument("input log requires a local drive");
+            for (auto part = settings.log_directory; !part.empty();) {
+                const auto attributes = GetFileAttributesW(part.c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                    throw std::invalid_argument("input log directory must exist and have no reparse points");
+                const auto parent = part.parent_path();
+                if (parent == part) break;
+                part = parent;
+            }
+        }
+    }
     if (settings.threads < 1 || settings.threads > 64 || settings.timeout_ms < 1 || settings.timeout_ms > 10000)
         throw std::invalid_argument("inference threads must be 1..64; timeout must be 1..10000 ms");
     for (const auto& path : {settings.model,settings.server}) {
@@ -72,11 +93,12 @@ void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     }
 }
 std::wstring zenz_settings_status(const ZenzSettings& settings) {
-    if (!settings.enabled) return L"推論設定: オフ";
+    const auto logging = settings.log_input ? L"\r\n入力ログ: オン（読み・周辺本文・候補を保存） / 保存先: " + settings.log_directory.native() : std::wstring(L"\r\n入力ログ: オフ");
+    if (!settings.enabled) return L"推論設定: オフ（入力ログも動作しません）" + logging;
     return L"推論設定: zenz / モデル: " + settings.model.native() + L"\r\nサーバー: " + settings.server.native() +
         L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms"+
         L"\r\n長い読みの生成: "+std::to_wstring(settings.policy.long_min_length)+L"文字（0は無効） / 候補採点: "+(settings.policy.rerank ? L"on" : L"off")+
-        L" / 短い生成候補の学習: "+(settings.policy.learn_fallback ? L"on" : L"off");
+        L" / 短い生成候補の学習: "+(settings.policy.learn_fallback ? L"on" : L"off") + logging;
 }
 std::wstring wide_message(std::string_view text) {
     if (text.empty()) return {};
@@ -142,11 +164,17 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
         } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms" ||
             key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
-            key == "zenz-promote-threshold" || key == "zenz-max-score-gap") {
+            key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory") {
             if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
             if (key == "inference") {
                 if (value != "zenz" && value != "off") throw std::invalid_argument("inference must equal zenz or off");
                 settings.zenz.enabled = value == "zenz";
+            } else if (key == "input-log") {
+                if (value != "on" && value != "off") throw std::invalid_argument("input-log must equal on or off");
+                settings.zenz.log_input = value == "on";
+            } else if (key == "input-log-directory") {
+                settings.zenz.log_directory = std::filesystem::path(wide_message(value));
+                validate_path(settings.zenz.log_directory);
             } else if (key == "zenz-model" || key == "zenz-server") {
                 auto& path = key == "zenz-model" ? settings.zenz.model : settings.zenz.server;
                 path = std::filesystem::path(wide_message(value)); validate_path(path);

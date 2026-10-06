@@ -4,6 +4,10 @@ OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIB
 
 ## 自動確認済みの範囲
 
+- `input_log`／`tsf_inference_policy`: 明示設定した診断ログの保存・無効化、入力スレッド外のI/O、
+  容量上限とDACL、private・password・PIN・属性不明・途中保護・取消・編集失敗時の記録抑止。
+  利用者の設定は変更せず、隔離パスのテスト入力だけを使う。詳細は [診断用入力ログ](DIAGNOSTICS.md)。
+
 `tsf_smoke` はDLLを直接LoadLibraryし、WindowsのIME設定には登録しない。
 
 - DLLエクスポート、クラスファクトリー、IUnknown同一性、参照数とアンロード。

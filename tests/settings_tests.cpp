@@ -55,6 +55,23 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/input-log-explicit-opt-in-and-path", [&] {
+            auto settings = parse_dictionary_settings("version=1\n");
+            require(!settings.zenz.log_input && settings.zenz.log_directory.empty(), "old settings enabled input log");
+            settings.zenz.log_directory = files.root;
+            const auto file = files.path(L"input-log.ini");
+            save_dictionary_settings(file, settings);
+            require(!read_dictionary_settings(file).zenz.log_input, "path alone enabled input log");
+            settings.zenz.log_input = true; save_dictionary_settings(file, settings);
+            const auto loaded = read_dictionary_settings(file);
+            require(loaded.zenz.log_input && loaded.zenz.log_directory == files.root, "log settings lost");
+            validate_zenz_settings(loaded.zenz, true);
+            settings.zenz.log_directory = missing;
+            rejects([&] { validate_zenz_settings(settings.zenz, true); });
+            for (const auto invalid : {"input-log=yes", "input-log=on", "input-log=off\ninput-log=off",
+                 "input-log-directory=relative", "input-log-directory=\\\\server\\share", "input-log-directory=C:\\a\ninput-log-directory=C:\\b"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+        }},
         {"settings/zenz-policy-roundtrip-and-bounds", [&] {
             const auto text = "version=1\nzenz-min-length=12\nzenz-rerank=on\nzenz-learn-fallback=on\nzenz-rerank-limit=8\nzenz-score-timeout-ms=250\nzenz-promote-threshold=1.5\nzenz-max-score-gap=7.5\n";
             const auto settings=parse_dictionary_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_dictionary_settings(file,settings);

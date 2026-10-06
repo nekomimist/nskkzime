@@ -9,6 +9,8 @@ struct ZenzSettings {
     std::filesystem::path model, server;
     unsigned int threads = 4, timeout_ms = 1000;
     InferencePolicy policy;
+    bool log_input = false;
+    std::filesystem::path log_directory;
 };
 struct DictionarySettings {
     std::vector<std::filesystem::path> dictionaries; // Highest priority first.

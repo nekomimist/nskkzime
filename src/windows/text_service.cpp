@@ -518,6 +518,22 @@ private:
                         return S_OK;
                     }
                     if (changed) { self->engine_ = std::move(next); self->refresh_candidates(cookie); }
+                    try { if (self->inference_ && self->inference_->input_log_enabled() && self->composition_context_.Get() == pending.context.Get()) {
+                        // Applying text/UI can re-enter the host. Recheck privacy
+                        // and identity after it, before queuing any text for disk.
+                        const auto current = self->composition_;
+                        const auto revision = self->engine_.revision();
+                        const auto generation = self->context_generation_;
+                        ComPtr<ITfRange> active;
+                        if (current && SUCCEEDED(current->GetRange(&active)) && active) {
+                            const auto allowed = surrounding_text(pending.context.Get(), active.Get(), cookie);
+                            if (self->inference_ && self->composition_.Get() == current.Get() && self->engine_.revision() == revision && self->context_generation_ == generation &&
+                                allowed.permission == InputPermission::Allowed && allowed.before == pending.text.before && allowed.after == pending.text.after)
+                                self->inference_->record_input(pending.plan.request,
+                                    !timed_out && result.status == InferenceStatus::Ok ? &result.response : nullptr,
+                                    timed_out ? InferenceStatus::Timeout : result.status);
+                        }
+                    } } catch (...) { /* Diagnostics must not fail an already applied edit. */ }
                     set_inference_status(self.Get(),adjusted ? (pending.plan.purpose == InferencePurpose::Rerank ? L"推論: 最良の辞書候補を先頭へ移動" : L"推論: 生成候補を反映") :
                         timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 現在の辞書候補または読みで継続");
                     return S_OK;
