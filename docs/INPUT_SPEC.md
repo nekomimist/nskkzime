@@ -1,6 +1,7 @@
 # 最初の入力仕様
 
 これは現在の実装の仕様であり、DDSKK完全互換を示すものではない。
+固定版DDSKKとの38例の実測と初版の対応範囲は [DDSKKとの操作比較](DDSKK_COMPATIBILITY.md) に記録する。
 コア内の文字列はUnicodeコードポイント（UTF-32）、TSFとの境界でUTF-16、CLIでUTF-8へ変換する。
 `Mode` はHiragana / Katakana / Latin、`Stage` はDirect / Reading / Okuri / Selecting / Registering。
 abbrevは読みの入力方法として別に保持し、かなモードと候補選択の状態を流用する。

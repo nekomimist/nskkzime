@@ -163,6 +163,9 @@ if(WIN32)
     add_test(NAME tool_launcher COMMAND tool_launcher_tests)
     set_tests_properties(tool_launcher PROPERTIES TIMEOUT 20)
     find_program(NSKKZIME_PWSH NAMES pwsh REQUIRED)
+    add_test(NAME ddskk_contract COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare-ddskk.ps1
+      -CoreOnly -Trace $<TARGET_FILE:skk_trace> -OutputRoot ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(ddskk_contract PROPERTIES TIMEOUT 60)
     add_test(NAME stage_dev COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/stage_dev_tests.ps1
       -StageScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/stage-dev.ps1 -TestRoot ${CMAKE_CURRENT_BINARY_DIR})
     add_executable(settings_editor_tests tests/settings_editor_tests.cpp)

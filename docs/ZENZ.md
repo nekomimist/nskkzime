@@ -65,6 +65,8 @@ CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空�
 キー／クリック操作・期限切れ・編集拒否後の候補保持・送り仮名と文脈・短い生成語の永続化を検査する。
 これはテスト用TSFホストによる検証で、実アプリのキー配送や表示をすべて再現するものではない。
 通常版はReleaseの38件が全件成功した。Debugは37件の全件成功後、追加した配置テストと起動テストも成功した。
+その後、DDSKKの比較データを使う `ddskk_contract` を追加し、通常Debug／Releaseと実モデル入りReleaseで成功した。
+現在のCTest登録数は通常39件、実モデル入り44件。比較用のGNU EmacsとDDSKKは推論サーバーの依存には含まない。
 
 ```powershell
 .\scripts\bench-zenz.ps1 -Rounds 30 -Output out/zenz-benchmark.json
