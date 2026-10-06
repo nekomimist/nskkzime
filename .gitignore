@@ -2,3 +2,4 @@
 /.vs/
 /CMakeUserPresets.json
 *.user
+__pycache__/

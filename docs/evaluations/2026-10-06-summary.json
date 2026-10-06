@@ -1,0 +1,1127 @@
+{
+  "format_version": 1,
+  "description": "Aggregate offline baseline only; no corpus text or dictionary candidates. See ../EVALUATION.md for interpretation and reproduction.",
+  "metadata": {
+    "timestamp": "2026-10-06T11:01:36.142558+00:00",
+    "complete": true,
+    "model_sha256": "29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673",
+    "dictionary_sha256": "4124afc6d16a524e12ce89f5ee55575401e867ae61a0935e5cc575b66a841629",
+    "server_sha256": "3da85f8fa897933b006fd885e6a96c1dafad6ada6853a0859a4b38b3351d4a74",
+    "core_sha256": "6b08481cbe1e65fa86ba80fce21cfce062de150698964bff43402b58f319c4fd",
+    "script_sha256": "d951faf2407025d5f4d3a43c98098ea027509b101a5ae724da68f182a132dd88",
+    "fixture_sha256": "1e96a9844c807d4254c025b9bc9440ee276dd89f972240183f2f40e93d8a2631",
+    "ajimee_revision": "401666cd56d1a570c2021798b64b6da4396bfd45",
+    "ajimee_sha256": "e9eb668fd6aa14b1e26436f429b5550108af0a1dfd443b8cea0bcb3ab3028fca",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "cpu": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "logical_processors": 32,
+    "threads": 4,
+    "rounds": 3,
+    "stress_rounds": 5,
+    "cases": 232,
+    "generation_budget_ms": 1000,
+    "score_budget_ms": 300,
+    "policy": {
+      "long_min_length": 10,
+      "rerank_limit": 20,
+      "promote_threshold": 1.0,
+      "max_score_gap": 8.0
+    },
+    "notes": "Offline, sequential stdio. Times include Python/JSON/stdio, except native core/lookup. Not TSF/UI latency. OS file cache was not flushed. Accuracy uses round zero; errors remain in denominators. Corpus text is saved explicitly for this evaluation.",
+    "dictionary": {
+      "candidates": 240285,
+      "entries": 175779,
+      "hello": "nskkzime-eval-core",
+      "load_ms": 181.6909,
+      "malformed_lines": 2,
+      "unsupported_candidates": 0
+    },
+    "core_keys": {
+      "samples": 46000,
+      "p50_ms": 0.0002,
+      "p95_ms": 0.0013,
+      "max_ms": 0.0429
+    },
+    "core_conversion_keys": {
+      "samples": 5000,
+      "p50_ms": 0.0005,
+      "p95_ms": 0.0021,
+      "max_ms": 0.005
+    },
+    "dictionary_lookup_all": {
+      "samples": 4640,
+      "p50_ms": 0.0001,
+      "p95_ms": 0.0014,
+      "max_ms": 0.0086
+    },
+    "dictionary_lookup_hit": {
+      "samples": 560,
+      "p50_ms": 0.0013,
+      "p95_ms": 0.0024,
+      "max_ms": 0.0086
+    },
+    "dictionary_lookup_miss": {
+      "samples": 4080,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0001,
+      "max_ms": 0.0063
+    },
+    "convert_startup_ms": 37.599299976136535,
+    "score_startup_ms": 38.51419995771721,
+    "requests": 1749,
+    "analysis_script_sha256": "c02a840803203239218735c89e36a855e6b235045b7a84cf9cf0046b63720a76"
+  },
+  "verified_after_collection": {
+    "dictionary_sha256_after": "4124afc6d16a524e12ce89f5ee55575401e867ae61a0935e5cc575b66a841629",
+    "model_sha256_after": "29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673"
+  },
+  "groups": [
+    {
+      "corpus": "ajimee",
+      "operation": "convert",
+      "context": "left",
+      "samples": 600,
+      "p50_ms": 135.40869997814298,
+      "p95_ms": 437.38449999364093,
+      "max_ms": 775.3294000285678,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 165,
+      "ineligible_cases": 35,
+      "baseline": {
+        "cases": 200,
+        "top1": 0,
+        "top5": 0,
+        "found": 0,
+        "mrr": 0.0,
+        "space_enter_mean": null,
+        "page_digit_mean": null
+      },
+      "result": {
+        "cases": 200,
+        "top1": 145,
+        "top5": 158,
+        "found": 158,
+        "mrr": 0.7526666666666667,
+        "space_enter_mean": 1.1265822784810127,
+        "page_digit_mean": 1.0
+      },
+      "raw_generation": {
+        "cases": 200,
+        "top1": 173,
+        "top5": 188,
+        "found": 188,
+        "mrr": 0.8968333333333334,
+        "space_enter_mean": 1.122340425531915,
+        "page_digit_mean": 1.0
+      },
+      "filtered_generation": {
+        "cases": 200,
+        "top1": 145,
+        "top5": 158,
+        "found": 158,
+        "mrr": 0.7526666666666667,
+        "space_enter_mean": 1.1265822784810127,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 158,
+        "worsened": 0,
+        "unchanged": 42
+      },
+      "paired_actions": {
+        "cases": 0,
+        "space_enter_delta_mean": null,
+        "page_digit_delta_mean": null
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 23,
+            "top1": 20,
+            "top5": 21,
+            "found": 21,
+            "mrr": 0.8913043478260869,
+            "space_enter_mean": 1.0476190476190477,
+            "page_digit_mean": 1.0
+          },
+          "samples": 69,
+          "p50_ms": 63.33079998148605,
+          "p95_ms": 95.86529998341575,
+          "max_ms": 118.16400004317984,
+          "eligible_cases": 21
+        },
+        "10-19": {
+          "quality": {
+            "cases": 69,
+            "top1": 57,
+            "top5": 62,
+            "found": 62,
+            "mrr": 0.8555555555555555,
+            "space_enter_mean": 1.1451612903225807,
+            "page_digit_mean": 1.0
+          },
+          "samples": 207,
+          "p50_ms": 99.90919998381287,
+          "p95_ms": 135.40869997814298,
+          "max_ms": 170.93179997755215,
+          "eligible_cases": 64
+        },
+        "20-39": {
+          "quality": {
+            "cases": 62,
+            "top1": 43,
+            "top5": 46,
+            "found": 46,
+            "mrr": 0.7150537634408602,
+            "space_enter_mean": 1.0869565217391304,
+            "page_digit_mean": 1.0
+          },
+          "samples": 186,
+          "p50_ms": 168.0151000036858,
+          "p95_ms": 245.4213000019081,
+          "max_ms": 276.7779999994673,
+          "eligible_cases": 49
+        },
+        "40+": {
+          "quality": {
+            "cases": 46,
+            "top1": 25,
+            "top5": 29,
+            "found": 29,
+            "mrr": 0.5797101449275363,
+            "space_enter_mean": 1.206896551724138,
+            "page_digit_mean": 1.0
+          },
+          "samples": 138,
+          "p50_ms": 369.5142000215128,
+          "p95_ms": 566.6849000263028,
+          "max_ms": 775.3294000285678,
+          "eligible_cases": 31
+        }
+      }
+    },
+    {
+      "corpus": "ajimee",
+      "operation": "convert",
+      "context": "none",
+      "samples": 600,
+      "p50_ms": 132.64150003669783,
+      "p95_ms": 438.9773000148125,
+      "max_ms": 761.1937000183389,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 165,
+      "ineligible_cases": 35,
+      "baseline": {
+        "cases": 200,
+        "top1": 0,
+        "top5": 0,
+        "found": 0,
+        "mrr": 0.0,
+        "space_enter_mean": null,
+        "page_digit_mean": null
+      },
+      "result": {
+        "cases": 200,
+        "top1": 136,
+        "top5": 154,
+        "found": 154,
+        "mrr": 0.7151666666666666,
+        "space_enter_mean": 1.2142857142857142,
+        "page_digit_mean": 1.0
+      },
+      "raw_generation": {
+        "cases": 200,
+        "top1": 161,
+        "top5": 183,
+        "found": 183,
+        "mrr": 0.8493333333333334,
+        "space_enter_mean": 1.2076502732240437,
+        "page_digit_mean": 1.0
+      },
+      "filtered_generation": {
+        "cases": 200,
+        "top1": 136,
+        "top5": 154,
+        "found": 154,
+        "mrr": 0.7151666666666666,
+        "space_enter_mean": 1.2142857142857142,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 154,
+        "worsened": 0,
+        "unchanged": 46
+      },
+      "paired_actions": {
+        "cases": 0,
+        "space_enter_delta_mean": null,
+        "page_digit_delta_mean": null
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 23,
+            "top1": 18,
+            "top5": 21,
+            "found": 21,
+            "mrr": 0.8478260869565217,
+            "space_enter_mean": 1.1428571428571428,
+            "page_digit_mean": 1.0
+          },
+          "samples": 69,
+          "p50_ms": 61.16710003698245,
+          "p95_ms": 80.72289999108762,
+          "max_ms": 109.15720002958551,
+          "eligible_cases": 21
+        },
+        "10-19": {
+          "quality": {
+            "cases": 69,
+            "top1": 52,
+            "top5": 59,
+            "found": 59,
+            "mrr": 0.788647342995169,
+            "space_enter_mean": 1.2542372881355932,
+            "page_digit_mean": 1.0
+          },
+          "samples": 207,
+          "p50_ms": 92.66530000604689,
+          "p95_ms": 128.18369996966794,
+          "max_ms": 140.75809996575117,
+          "eligible_cases": 64
+        },
+        "20-39": {
+          "quality": {
+            "cases": 62,
+            "top1": 42,
+            "top5": 46,
+            "found": 46,
+            "mrr": 0.706989247311828,
+            "space_enter_mean": 1.108695652173913,
+            "page_digit_mean": 1.0
+          },
+          "samples": 186,
+          "p50_ms": 156.67799999937415,
+          "p95_ms": 227.48940001474693,
+          "max_ms": 282.61699998984113,
+          "eligible_cases": 49
+        },
+        "40+": {
+          "quality": {
+            "cases": 46,
+            "top1": 24,
+            "top5": 28,
+            "found": 28,
+            "mrr": 0.5496376811594204,
+            "space_enter_mean": 1.3571428571428572,
+            "page_digit_mean": 1.0
+          },
+          "samples": 138,
+          "p50_ms": 367.9180999752134,
+          "p95_ms": 539.4314999575727,
+          "max_ms": 761.1937000183389,
+          "eligible_cases": 31
+        }
+      }
+    },
+    {
+      "corpus": "diagnostic",
+      "operation": "convert",
+      "context": "both",
+      "samples": 84,
+      "p50_ms": 40.57200002716854,
+      "p95_ms": 116.77710001822561,
+      "max_ms": 150.2792999963276,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 28,
+      "ineligible_cases": 0,
+      "baseline": {
+        "cases": 28,
+        "top1": 9,
+        "top5": 24,
+        "found": 24,
+        "mrr": 0.5291666666666667,
+        "space_enter_mean": 2.1666666666666665,
+        "page_digit_mean": 1.0
+      },
+      "result": {
+        "cases": 28,
+        "top1": 13,
+        "top5": 28,
+        "found": 28,
+        "mrr": 0.6720238095238095,
+        "space_enter_mean": 2.0,
+        "page_digit_mean": 1.0
+      },
+      "raw_generation": {
+        "cases": 28,
+        "top1": 28,
+        "top5": 28,
+        "found": 28,
+        "mrr": 1.0,
+        "space_enter_mean": 1.0,
+        "page_digit_mean": 1.0
+      },
+      "filtered_generation": {
+        "cases": 28,
+        "top1": 28,
+        "top5": 28,
+        "found": 28,
+        "mrr": 1.0,
+        "space_enter_mean": 1.0,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 4,
+        "worsened": 0,
+        "unchanged": 24
+      },
+      "paired_actions": {
+        "cases": 24,
+        "space_enter_delta_mean": 0.0,
+        "page_digit_delta_mean": 0.0
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 25,
+            "top1": 10,
+            "top5": 25,
+            "found": 25,
+            "mrr": 0.6326666666666667,
+            "space_enter_mean": 2.12,
+            "page_digit_mean": 1.0
+          },
+          "samples": 75,
+          "p50_ms": 37.12549997726455,
+          "p95_ms": 68.91100003849715,
+          "max_ms": 78.80219997605309,
+          "eligible_cases": 25
+        },
+        "10-19": {
+          "quality": {
+            "cases": 2,
+            "top1": 2,
+            "top5": 2,
+            "found": 2,
+            "mrr": 1.0,
+            "space_enter_mean": 1.0,
+            "page_digit_mean": 1.0
+          },
+          "samples": 6,
+          "p50_ms": 114.1080999514088,
+          "p95_ms": 150.2792999963276,
+          "max_ms": 150.2792999963276,
+          "eligible_cases": 2
+        },
+        "20-39": {
+          "quality": {
+            "cases": 1,
+            "top1": 1,
+            "top5": 1,
+            "found": 1,
+            "mrr": 1.0,
+            "space_enter_mean": 1.0,
+            "page_digit_mean": 1.0
+          },
+          "samples": 3,
+          "p50_ms": 116.77710001822561,
+          "p95_ms": 118.46940004033968,
+          "max_ms": 118.46940004033968,
+          "eligible_cases": 1
+        },
+        "40+": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        }
+      }
+    },
+    {
+      "corpus": "diagnostic",
+      "operation": "convert",
+      "context": "left",
+      "samples": 84,
+      "p50_ms": 43.59060002025217,
+      "p95_ms": 111.90799996256828,
+      "max_ms": 147.22340001026168,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 28,
+      "ineligible_cases": 0,
+      "baseline": {
+        "cases": 28,
+        "top1": 9,
+        "top5": 24,
+        "found": 24,
+        "mrr": 0.5291666666666667,
+        "space_enter_mean": 2.1666666666666665,
+        "page_digit_mean": 1.0
+      },
+      "result": {
+        "cases": 28,
+        "top1": 13,
+        "top5": 28,
+        "found": 28,
+        "mrr": 0.6720238095238095,
+        "space_enter_mean": 2.0,
+        "page_digit_mean": 1.0
+      },
+      "raw_generation": {
+        "cases": 28,
+        "top1": 26,
+        "top5": 28,
+        "found": 28,
+        "mrr": 0.9642857142857143,
+        "space_enter_mean": 1.0714285714285714,
+        "page_digit_mean": 1.0
+      },
+      "filtered_generation": {
+        "cases": 28,
+        "top1": 28,
+        "top5": 28,
+        "found": 28,
+        "mrr": 1.0,
+        "space_enter_mean": 1.0,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 4,
+        "worsened": 0,
+        "unchanged": 24
+      },
+      "paired_actions": {
+        "cases": 24,
+        "space_enter_delta_mean": 0.0,
+        "page_digit_delta_mean": 0.0
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 25,
+            "top1": 10,
+            "top5": 25,
+            "found": 25,
+            "mrr": 0.6326666666666667,
+            "space_enter_mean": 2.12,
+            "page_digit_mean": 1.0
+          },
+          "samples": 75,
+          "p50_ms": 41.75440000835806,
+          "p95_ms": 89.19749996857718,
+          "max_ms": 91.81549999630079,
+          "eligible_cases": 25
+        },
+        "10-19": {
+          "quality": {
+            "cases": 2,
+            "top1": 2,
+            "top5": 2,
+            "found": 2,
+            "mrr": 1.0,
+            "space_enter_mean": 1.0,
+            "page_digit_mean": 1.0
+          },
+          "samples": 6,
+          "p50_ms": 111.90799996256828,
+          "p95_ms": 147.22340001026168,
+          "max_ms": 147.22340001026168,
+          "eligible_cases": 2
+        },
+        "20-39": {
+          "quality": {
+            "cases": 1,
+            "top1": 1,
+            "top5": 1,
+            "found": 1,
+            "mrr": 1.0,
+            "space_enter_mean": 1.0,
+            "page_digit_mean": 1.0
+          },
+          "samples": 3,
+          "p50_ms": 110.15790002420545,
+          "p95_ms": 111.9557999772951,
+          "max_ms": 111.9557999772951,
+          "eligible_cases": 1
+        },
+        "40+": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        }
+      }
+    },
+    {
+      "corpus": "diagnostic",
+      "operation": "convert",
+      "context": "none",
+      "samples": 84,
+      "p50_ms": 40.284000046085566,
+      "p95_ms": 104.11949997069314,
+      "max_ms": 145.15990001382306,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 28,
+      "ineligible_cases": 0,
+      "baseline": {
+        "cases": 28,
+        "top1": 9,
+        "top5": 24,
+        "found": 24,
+        "mrr": 0.5291666666666667,
+        "space_enter_mean": 2.1666666666666665,
+        "page_digit_mean": 1.0
+      },
+      "result": {
+        "cases": 28,
+        "top1": 13,
+        "top5": 28,
+        "found": 28,
+        "mrr": 0.6720238095238095,
+        "space_enter_mean": 2.0,
+        "page_digit_mean": 1.0
+      },
+      "raw_generation": {
+        "cases": 28,
+        "top1": 12,
+        "top5": 24,
+        "found": 24,
+        "mrr": 0.5755952380952382,
+        "space_enter_mean": 2.0833333333333335,
+        "page_digit_mean": 1.0
+      },
+      "filtered_generation": {
+        "cases": 28,
+        "top1": 12,
+        "top5": 24,
+        "found": 24,
+        "mrr": 0.6011904761904762,
+        "space_enter_mean": 1.8333333333333333,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 4,
+        "worsened": 0,
+        "unchanged": 24
+      },
+      "paired_actions": {
+        "cases": 24,
+        "space_enter_delta_mean": 0.0,
+        "page_digit_delta_mean": 0.0
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 25,
+            "top1": 10,
+            "top5": 25,
+            "found": 25,
+            "mrr": 0.6326666666666667,
+            "space_enter_mean": 2.12,
+            "page_digit_mean": 1.0
+          },
+          "samples": 75,
+          "p50_ms": 39.8620999767445,
+          "p95_ms": 69.55329998163506,
+          "max_ms": 72.84290000097826,
+          "eligible_cases": 25
+        },
+        "10-19": {
+          "quality": {
+            "cases": 2,
+            "top1": 2,
+            "top5": 2,
+            "found": 2,
+            "mrr": 1.0,
+            "space_enter_mean": 1.0,
+            "page_digit_mean": 1.0
+          },
+          "samples": 6,
+          "p50_ms": 104.11949997069314,
+          "p95_ms": 145.15990001382306,
+          "max_ms": 145.15990001382306,
+          "eligible_cases": 2
+        },
+        "20-39": {
+          "quality": {
+            "cases": 1,
+            "top1": 1,
+            "top5": 1,
+            "found": 1,
+            "mrr": 1.0,
+            "space_enter_mean": 1.0,
+            "page_digit_mean": 1.0
+          },
+          "samples": 3,
+          "p50_ms": 103.53259998373687,
+          "p95_ms": 105.15809996286407,
+          "max_ms": 105.15809996286407,
+          "eligible_cases": 1
+        },
+        "40+": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        }
+      }
+    },
+    {
+      "corpus": "diagnostic",
+      "operation": "score",
+      "context": "both",
+      "samples": 84,
+      "p50_ms": 41.09269997570664,
+      "p95_ms": 59.85799996415153,
+      "max_ms": 67.12680001510307,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 28,
+      "ineligible_cases": 0,
+      "baseline": {
+        "cases": 28,
+        "top1": 11,
+        "top5": 27,
+        "found": 28,
+        "mrr": 0.6235544217687075,
+        "space_enter_mean": 2.25,
+        "page_digit_mean": 1.0
+      },
+      "result": {
+        "cases": 28,
+        "top1": 27,
+        "top5": 28,
+        "found": 28,
+        "mrr": 0.9821428571428571,
+        "space_enter_mean": 1.0357142857142858,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 16,
+        "worsened": 0,
+        "unchanged": 12
+      },
+      "paired_actions": {
+        "cases": 28,
+        "space_enter_delta_mean": -1.2142857142857142,
+        "page_digit_delta_mean": 0.0
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 28,
+            "top1": 27,
+            "top5": 28,
+            "found": 28,
+            "mrr": 0.9821428571428571,
+            "space_enter_mean": 1.0357142857142858,
+            "page_digit_mean": 1.0
+          },
+          "samples": 84,
+          "p50_ms": 41.09269997570664,
+          "p95_ms": 59.85799996415153,
+          "max_ms": 67.12680001510307,
+          "eligible_cases": 28
+        },
+        "10-19": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        },
+        "20-39": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        },
+        "40+": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        }
+      }
+    },
+    {
+      "corpus": "diagnostic",
+      "operation": "score",
+      "context": "left",
+      "samples": 84,
+      "p50_ms": 35.21810000529513,
+      "p95_ms": 53.35160001413897,
+      "max_ms": 54.12749998504296,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 28,
+      "ineligible_cases": 0,
+      "baseline": {
+        "cases": 28,
+        "top1": 11,
+        "top5": 27,
+        "found": 28,
+        "mrr": 0.6235544217687075,
+        "space_enter_mean": 2.25,
+        "page_digit_mean": 1.0
+      },
+      "result": {
+        "cases": 28,
+        "top1": 27,
+        "top5": 28,
+        "found": 28,
+        "mrr": 0.9821428571428571,
+        "space_enter_mean": 1.0357142857142858,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 16,
+        "worsened": 0,
+        "unchanged": 12
+      },
+      "paired_actions": {
+        "cases": 28,
+        "space_enter_delta_mean": -1.2142857142857142,
+        "page_digit_delta_mean": 0.0
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 28,
+            "top1": 27,
+            "top5": 28,
+            "found": 28,
+            "mrr": 0.9821428571428571,
+            "space_enter_mean": 1.0357142857142858,
+            "page_digit_mean": 1.0
+          },
+          "samples": 84,
+          "p50_ms": 35.21810000529513,
+          "p95_ms": 53.35160001413897,
+          "max_ms": 54.12749998504296,
+          "eligible_cases": 28
+        },
+        "10-19": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        },
+        "20-39": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        },
+        "40+": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        }
+      }
+    },
+    {
+      "corpus": "diagnostic",
+      "operation": "score",
+      "context": "none",
+      "samples": 84,
+      "p50_ms": 29.15080002276227,
+      "p95_ms": 46.04329995345324,
+      "max_ms": 47.562000050675124,
+      "server_errors": 0,
+      "over_budget": 0,
+      "eligible_cases": 28,
+      "ineligible_cases": 0,
+      "baseline": {
+        "cases": 28,
+        "top1": 11,
+        "top5": 27,
+        "found": 28,
+        "mrr": 0.6235544217687075,
+        "space_enter_mean": 2.25,
+        "page_digit_mean": 1.0
+      },
+      "result": {
+        "cases": 28,
+        "top1": 10,
+        "top5": 27,
+        "found": 28,
+        "mrr": 0.5967687074829932,
+        "space_enter_mean": 2.357142857142857,
+        "page_digit_mean": 1.0
+      },
+      "rank_changes": {
+        "improved": 1,
+        "worsened": 4,
+        "unchanged": 23
+      },
+      "paired_actions": {
+        "cases": 28,
+        "space_enter_delta_mean": 0.10714285714285714,
+        "page_digit_delta_mean": 0.0
+      },
+      "by_length": {
+        "1-9": {
+          "quality": {
+            "cases": 28,
+            "top1": 10,
+            "top5": 27,
+            "found": 28,
+            "mrr": 0.5967687074829932,
+            "space_enter_mean": 2.357142857142857,
+            "page_digit_mean": 1.0
+          },
+          "samples": 84,
+          "p50_ms": 29.15080002276227,
+          "p95_ms": 46.04329995345324,
+          "max_ms": 47.562000050675124,
+          "eligible_cases": 28
+        },
+        "10-19": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        },
+        "20-39": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        },
+        "40+": {
+          "quality": {
+            "cases": 0,
+            "top1": 0,
+            "top5": 0,
+            "found": 0,
+            "mrr": null,
+            "space_enter_mean": null,
+            "page_digit_mean": null
+          },
+          "samples": 0,
+          "p50_ms": null,
+          "p95_ms": null,
+          "max_ms": null,
+          "eligible_cases": 0
+        }
+      }
+    },
+    {
+      "corpus": "stress",
+      "operation": "convert",
+      "context": "none",
+      "samples": 30,
+      "p50_ms": 463.8336999923922,
+      "p95_ms": 989.7338000009768,
+      "max_ms": 997.8797999792732,
+      "server_errors": 10,
+      "over_budget": 0,
+      "by_case": {
+        "reading-1024": {
+          "samples": 5,
+          "p50_ms": 0.8235999848693609,
+          "p95_ms": 0.8422999526374042,
+          "max_ms": 0.8422999526374042,
+          "server_errors": 5,
+          "generated_length_min": null,
+          "generated_length_max": null
+        },
+        "reading-128": {
+          "samples": 5,
+          "p50_ms": 988.6247999966145,
+          "p95_ms": 997.8797999792732,
+          "max_ms": 997.8797999792732,
+          "server_errors": 5,
+          "generated_length_min": null,
+          "generated_length_max": null
+        },
+        "reading-256": {
+          "samples": 5,
+          "p50_ms": 940.7082999823615,
+          "p95_ms": 956.4922000281513,
+          "max_ms": 956.4922000281513,
+          "server_errors": 0,
+          "generated_length_min": 55,
+          "generated_length_max": 75
+        },
+        "reading-32": {
+          "samples": 5,
+          "p50_ms": 236.73589999089018,
+          "p95_ms": 242.66749998787418,
+          "max_ms": 242.66749998787418,
+          "server_errors": 0,
+          "generated_length_min": 26,
+          "generated_length_max": 32
+        },
+        "reading-512": {
+          "samples": 5,
+          "p50_ms": 453.03930004592985,
+          "p95_ms": 463.8336999923922,
+          "max_ms": 463.8336999923922,
+          "server_errors": 0,
+          "generated_length_min": 1,
+          "generated_length_max": 1
+        },
+        "reading-64": {
+          "samples": 5,
+          "p50_ms": 466.02470002835616,
+          "p95_ms": 470.90059996116906,
+          "max_ms": 470.90059996116906,
+          "server_errors": 0,
+          "generated_length_min": 53,
+          "generated_length_max": 59
+        }
+      }
+    },
+    {
+      "corpus": "stress",
+      "operation": "score",
+      "context": "none",
+      "samples": 15,
+      "p50_ms": 70.54640003480017,
+      "p95_ms": 222.77669998584315,
+      "max_ms": 222.77669998584315,
+      "server_errors": 0,
+      "over_budget": 0,
+      "by_case": {
+        "candidates-2": {
+          "samples": 5,
+          "p50_ms": 17.3320000176318,
+          "p95_ms": 17.56320003187284,
+          "max_ms": 17.56320003187284,
+          "server_errors": 0
+        },
+        "candidates-20": {
+          "samples": 5,
+          "p50_ms": 70.54640003480017,
+          "p95_ms": 71.39689999166876,
+          "max_ms": 71.39689999166876,
+          "server_errors": 0
+        },
+        "candidates-64": {
+          "samples": 5,
+          "p50_ms": 219.82580004259944,
+          "p95_ms": 222.77669998584315,
+          "max_ms": 222.77669998584315,
+          "server_errors": 0
+        }
+      }
+    }
+  ]
+}

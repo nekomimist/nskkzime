@@ -9,7 +9,8 @@ SKK辞書の読み込み、TSF DLLとテスト用ホストがあります。日�
 ## ビルド
 
 PowerShell 7、Visual Studio 2022 Build ToolsのC++ツールセット、Windows SDK、
-「C++ CMake tools for Windows」を使用します。通常ビルドは外部ライブラリのダウンロード不要です。
+「C++ CMake tools for Windows」、自動テスト用のPython 3.11以上を使用します。
+Pythonは標準ライブラリのみで、追加パッケージは不要です。通常ビルドは外部ライブラリのダウンロード不要です。
 
 ```powershell
 .\scripts\build.ps1
@@ -32,6 +33,7 @@ MSBuildを実行できます。ユーザーの永続的な環境変数は変更�
 | ファイル | 用途 |
 |---|---|
 | `skk_trace.exe` | キー列と、未確定・確定文字列の遷移をJSON Linesで出力 |
+| `nskkzime_eval_core.exe` | 明示した読み取り専用辞書で検索とキー処理を測る、オフライン評価の補助CLI |
 | `core_tests.exe` | 入力コアの回帰テスト |
 | `dictionary_tests.exe` | 辞書形式・文字コード・候補の統合の回帰テスト |
 | `nskkzime_config.exe` | ユーザーごとの辞書設定を保存・表示・検査 |
@@ -122,9 +124,11 @@ UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの�
 ## 検証の範囲
 
 2026-10-06、MSVC 19.44 / Windows SDK 10.0.26100.0で検証しています。
-通常Debug／ReleaseのCTest39項目、実モデル入りReleaseの44項目を確認済みです（新規項目は追加後に個別実行）。
+通常Debug／ReleaseのCTest40項目、実モデル入りReleaseの45項目を確認済みです（新規項目は追加後に個別実行）。
 移植元のprompt/modelテストと、実モデルの並行IPC・取消・CLI・DLL経由の自動起動と変換・候補採点も確認しています。
 GNU Emacs 30.2上の固定版DDSKKとの38キー列の実測も完了しました。一致する28例と相違する10例、再現手順は [DDSKKとの操作比較](docs/DDSKK_COMPATIBILITY.md) に記録しています。
+公開200例・自作32例と合成負荷による1,749要求のモデル評価も完了しました。文脈による改善、対象外の読み、長文の失敗、部品別の遅延は [品質・遅延評価](docs/EVALUATION.md) を参照してください。
+`evaluation` は16ケースで、正解率の分母・順位差・操作回数・文字数・異常応答・子プロセスの終了と、実辞書の送り別検索・コアの時間計測を検証します。
 `core` は62ケース（固定シードによる10,000イベントの状態検査を含む）です。
 `romaji` は14ケースで、外来音・記号・独自ルール・持ち越し・不正設定・登録欄・送り仮名・Shiftと10,000キーの入力を検証します。
 `romaji_trace` はルールファイルを指定したCLI入力、`tsf_romaji` は保存設定のDLL接続・カタカナ・編集失敗・ルールの保持と読み込み失敗時の復帰を検証します。
