@@ -1,5 +1,6 @@
 #include "inference_ipc.h"
 #include "dictionary_settings.h"
+#include "cpu_requirements.h"
 #include "nskkzime/romaji.h"
 #include <algorithm>
 #include <iostream>
@@ -97,6 +98,7 @@ int wmain(int argc, wchar_t** argv) {
             throw std::invalid_argument("conversion options require --convert");
 #ifdef NSKKZIME_WITH_ZENZ
         if (convert) (void)encode_request(request);
+        require_zenz_cpu(current_cpu_features());
         const auto instance = token.empty() ? NativeHandle{} : claim_inference_server(token);
         if (!token.empty() && !instance.valid()) return 0; // Concurrent startup already owns this model endpoint.
         ZenzBackend inference(model,static_cast<int>(threads));

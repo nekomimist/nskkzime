@@ -17,6 +17,7 @@ PowerShell 7、Build Tools 2022、Hugging Faceの `hf` CLIを使う。
 
 出力は `out/build/windows-x64-zenz/Release/`。これを標準の製品ビルドとする。
 現構成はx64 CPU専用で、AVX2/FMA/F16C/BMI2を使う。GPU対応や別CPUへの配布は未検証。
+起動前に設定CLIの `--check-cpu` で [CPU/OSの要件](CPU_SUPPORT.md) を確認できる。IME側もサーバー起動前に検査する。
 `-Zenz` は互換用の指定として受け付けるが、省略しても同じ構成になる。
 `-TestOnly` はllama.cppを省略する開発用構成で、配布対象外。標準サーバー自体にもテスト用の `--dummy` がある。
 

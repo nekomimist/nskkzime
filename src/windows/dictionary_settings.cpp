@@ -1,4 +1,5 @@
 #include "dictionary_settings.h"
+#include "cpu_requirements.h"
 #include "local_storage.h"
 #include "dictionary_cache.h"
 #include <windows.h>
@@ -66,6 +67,7 @@ struct TemporaryFile {
 }
 void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     validate_inference_policy(settings.policy);
+    if (check_files && settings.enabled) require_zenz_cpu(current_cpu_features());
     if (settings.log_input || !settings.log_directory.empty()) {
         validate_path(settings.log_directory);
         if (settings.log_directory.root_name().native().size() != 2 || settings.log_directory.native().find(L'"') != std::wstring::npos)

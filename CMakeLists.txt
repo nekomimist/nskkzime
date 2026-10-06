@@ -69,7 +69,7 @@ endif()
 
 if(WIN32)
   add_library(nskkzime_runtime STATIC src/windows/dictionary_settings.cpp src/windows/runtime_dictionary.cpp src/windows/romaji_settings.cpp
-    src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp src/windows/input_timing.cpp)
+    src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp src/windows/input_timing.cpp src/windows/cpu_requirements.cpp)
   target_include_directories(nskkzime_runtime PUBLIC src/windows)
   target_link_libraries(nskkzime_runtime PUBLIC skk_dictionary nskkzime_protocol shell32 ole32 uuid advapi32 bcrypt)
   add_library(nskkzime_inference STATIC src/windows/inference_ipc.cpp src/windows/inference_client.cpp src/windows/input_log.cpp)
@@ -224,6 +224,10 @@ if(WIN32)
     add_executable(input_timing_tests tests/input_timing_tests.cpp)
     target_link_libraries(input_timing_tests PRIVATE nskkzime_runtime)
     add_test(NAME input_timing COMMAND input_timing_tests)
+    add_executable(cpu_requirements_tests tests/cpu_requirements_tests.cpp)
+    target_include_directories(cpu_requirements_tests SYSTEM PRIVATE third_party)
+    target_link_libraries(cpu_requirements_tests PRIVATE nskkzime_runtime)
+    add_test(NAME cpu_requirements COMMAND cpu_requirements_tests)
     # Link the same adapter sources to exercise deferred click requests without
     # injecting native input or relying on a registered IME/interactive desktop.
     add_executable(tsf_candidate_click tests/tsf_candidate_click.cpp src/windows/text_service.cpp

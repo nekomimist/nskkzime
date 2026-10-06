@@ -54,6 +54,8 @@ PEヘッダーの判定は [MicrosoftのPE仕様](https://learn.microsoft.com/en
 ランタイムのダウンロード・導入はパッケージ作成に含めない。
 
 zenz CPUは現在のCMake構成で `/arch:AVX2`、FMA、F16C、BMI2を使う。OSのAVX対応も必要。
+整数命令とSSE系を含む固定条件を `nskkzime_config.exe --check-cpu` で検査できる。
+IMEも推論サーバーの起動前に検査する。判定方法・固定したCMake設定は [CPU対応](CPU_SUPPORT.md) を参照。
 パッケージ作成時のPE確認だけでCPU互換性を判定しない。対応しないCPUやARM64・x86アプリは未検証。
 
 マニフェストには梱包時のソースrevision、追跡対象ファイルの変更有無、各ファイルのハッシュ・長さ・

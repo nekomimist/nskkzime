@@ -1,5 +1,6 @@
 #include "dictionary_settings.h"
 #include "romaji_settings.h"
+#include "cpu_requirements.h"
 #include <algorithm>
 #include <iostream>
 
@@ -14,6 +15,7 @@ void help() {
     std::cout << "Usage: nskkzime_config [--config ABSOLUTE_PATH] ACTION\n"
         "  --show                    Show stored paths and environment overrides\n"
         "  --check                   Load effective dictionaries and report diagnostics\n"
+        "  --check-cpu               Check zenz CPU/OS requirements without loading a model\n"
         "  --set-dictionaries PATH... Validate and save absolute paths, highest priority first\n"
         "  --disable-dictionaries    Save an empty list (kana input only)\n"
         "  --set-learning on|off     Enable or disable persistent candidate learning\n"
@@ -36,6 +38,11 @@ void help() {
 int wmain(int argc, wchar_t** argv) {
     try {
         if (argc == 1 || (argc == 2 && std::wstring_view(argv[1]) == L"--help")) { help(); return 0; }
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--check-cpu") {
+            const auto features = current_cpu_features();
+            std::cout << zenz_cpu_report(features) << '\n';
+            return zenz_cpu_supported(features) ? 0 : 3;
+        }
         int index = 1;
         std::optional<std::filesystem::path> explicit_file;
         if (std::wstring_view(argv[index]) == L"--config") {

@@ -1,4 +1,5 @@
 #include "inference_ipc.h"
+#include "cpu_requirements.h"
 #include <sddl.h>
 #include <algorithm>
 #include <array>
@@ -128,6 +129,7 @@ int serve_dummy_inference(std::wstring_view token, DWORD delay_ms, DWORD idle_ms
 }
 NativeHandle launch_zenz_server(const std::filesystem::path& program, const std::filesystem::path& model,
     std::wstring_view token, unsigned threads, DWORD timeout_ms, DWORD idle_ms) {
+    require_zenz_cpu(current_cpu_features()); // Baseline parent checks before executing the AVX2-linked child.
     inference_pipe_name(token);
     for (const auto& path : {program,model}) need(path.is_absolute() && !path.filename().empty() && path.native().find_first_of(L"\"\r\n") == std::wstring::npos);
     need(threads >= 1 && threads <= 64 && timeout_ms >= 1 && timeout_ms <= 10000 && idle_ms >= 100 && idle_ms <= 60000);

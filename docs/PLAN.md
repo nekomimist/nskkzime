@@ -194,6 +194,8 @@ convert/scoreへ拡張した。互換上の違いは [推論IPCの検証](INFERE
   模擬登録によるテストで確認した。新スクリプトからのOS登録は未実測。詳細は [導入・更新管理](INSTALLATION.md)。
   DLLの登録先照合、登録・解除の排他、部分失敗後の後始末と解除再試行を実装した。
   専用レジストリと代替TSFによる自動確認に加え、今後は導入スクリプトでOSの実登録と復旧を検証する。
+  CPU/OSの事前検査CLI、IMEからの起動前検査、固定した命令セット設定を追加した。
+  この端末の検出結果と未確認のCPU範囲は [CPU対応と事前検査](CPU_SUPPORT.md) に記載する。
 - GPU対応や入力中の先読みはCPU版の評価後に検討する。
 
 参照: [skk-zenzの設計](https://github.com/nekomimist/skk-zenz/blob/db1c923223a94c6406fd19e4d75ef3b54bdf9300/docs/ARCHITECTURE.md)、

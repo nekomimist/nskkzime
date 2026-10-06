@@ -10,6 +10,7 @@
 #include "context_text.h"
 #include "inference_client.h"
 #include "romaji_settings.h"
+#include "cpu_requirements.h"
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
@@ -273,7 +274,8 @@ public:
                         inference_ = std::make_unique<InferenceClient>(*config,[this](InferenceCompletion result) { receive_inference(std::move(result)); });
                         set_inference_status(this,inference_dummy_ ? L"推論: ダミーサーバーを使用（辞書候補の枯渇時）" : L"推論: zenzを使用");
                     }
-                } catch (...) { set_inference_status(this,L"推論: 起動できません。辞書入力を続けます"); }
+                } catch (const UnsupportedZenzCpu&) { set_inference_status(this,L"推論: CPU/OSがzenzの要件を満たしません。設定CLIの --check-cpu で確認できます。辞書入力を続けます"); }
+                catch (...) { set_inference_status(this,L"推論: 起動できません。辞書入力を続けます"); }
             } catch (...) { Deactivate(); return E_OUTOFMEMORY; }
         }
         return hr;

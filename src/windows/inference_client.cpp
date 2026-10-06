@@ -1,5 +1,6 @@
 #include "inference_client.h"
 #include "dictionary_settings.h"
+#include "cpu_requirements.h"
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -176,6 +177,7 @@ std::optional<InferenceConfig> current_inference_config() {
     } else {
         const auto settings = current_dictionary_configuration().settings.zenz;
         if (!settings.enabled) return {};
+        require_zenz_cpu(current_cpu_features());
         validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
         config.server = settings.server; config.model = settings.model;
         config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;

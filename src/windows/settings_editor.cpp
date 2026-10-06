@@ -42,7 +42,7 @@ SettingsCheck check_settings_draft(const DictionarySettings& settings) {
         validate_zenz_settings(settings.zenz, true);
         result.valid = !dictionaries.failed && !romaji.failed;
         if (settings.zenz.enabled)
-            result.report += L"\r\nモデルとサーバーの存在を確認しました。推論動作の検証は含みません。";
+            result.report += L"\r\nCPU/OSの要件と、モデル・サーバーの存在を確認しました。推論動作の検証は含みません。";
         result.report = (result.valid ? L"検査が完了しました。\r\n"
                                       : L"設定を保存できません。以下のエラーを確認してください。\r\n") +
                         result.report;

@@ -15,6 +15,7 @@ Windows / x64用の開発中のSKK風IMEです。検証用ZIPに導入・更新�
   ビルドに使ったツールセット以上の版を、[Microsoft公式配布ページ](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)から取得してください。
   ランタイムのインストーラーは同梱・自動実行しません。
 - zenzサーバーにはAVX2/FMA/F16C/BMI2とOSのAVX対応が必要です。CPU要件を満たさない端末では起動しないでください。
+  正確な固定条件はマニフェストの `cpu_requirement` と、下記の `--check-cpu` で確認できます。
   初期モデルはzenz-v3.2-smallの `ggml-model-Q5_K_M.gguf`、SHA-256は
   `29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673` です。
 - PowerShell 7をZIPの検査と以下の登録手順に使います。通常のIME・GUI利用にはPythonやBuild Toolsは不要です。
@@ -33,6 +34,16 @@ Get-FileHash 'C:\Downloads\nskkzime.zip' -Algorithm SHA256
 ```powershell
 .\tools\package.ps1 -VerifyDirectory .
 ```
+
+導入やモデル実行の前に、CPU/OSを検査します。このCLIはモデルや保存設定を読み込みません。
+
+```powershell
+.\bin\nskkzime_config.exe --check-cpu
+```
+
+JSONの `supported` が `true`、終了コードが0ならCPU/OSの固定条件を満たします。
+不足時は終了コード3と `missing` に項目を表示します。その環境はこのパッケージの利用対象外です。
+この成功だけでモデルの正常動作や速度まで確認したことにはなりません。
 
 ## 初回登録と確認
 

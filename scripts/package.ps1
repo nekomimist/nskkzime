@@ -207,7 +207,7 @@ $manifest = [ordered]@{
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $null
     provenance_note = 'The packaging revision is not a proof of which source produced existing binaries.'
-    cpu_requirement = 'x64; zenz requires AVX2/FMA/F16C/BMI2 and OS AVX support'
+    cpu_requirement = 'zenz-msvc-avx2-v1: native x64; SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT/AVX/AVX2/FMA/F16C/BMI1/BMI2/LZCNT; XSAVE/OSXSAVE and OS XMM/YMM state'
     runtime_requirement = 'Microsoft Visual C++ v14 Redistributable x64, at least the toolset version used to build'
     inspected_with_msvc_tools = $toolset
     signing_note = 'Packaging does not sign files. SHA-256 verification checks consistency, not publisher identity.'

@@ -12,6 +12,15 @@ foreach(opt LLAMA_BUILD_COMMON LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_E
 endforeach()
 set(LLAMA_BUILD_NUMBER 9637)
 set(LLAMA_BUILD_COMMIT "${NSKKZIME_LLAMA_REVISION}")
+# One CPU product contract, matching the baseline parent-side preflight. Do not
+# silently retain stronger ISA variants from a previous CMake cache.
+foreach(opt GGML_CPU GGML_SSE42 GGML_AVX GGML_AVX2 GGML_BMI2)
+  set(${opt} ON CACHE BOOL "" FORCE)
+endforeach()
+foreach(opt GGML_BACKEND_DL GGML_CPU_ALL_VARIANTS GGML_AVX_VNNI GGML_AVX512
+    GGML_AVX512_VBMI GGML_AVX512_VNNI GGML_AVX512_BF16 GGML_AMX_TILE GGML_AMX_INT8 GGML_AMX_BF16)
+  set(${opt} OFF CACHE BOOL "" FORCE)
+endforeach()
 function(nskkzime_add_llama)
   # The pinned fork uses C++17 UTF-8 literals; our own code remains C++20.
   set(CMAKE_CXX_STANDARD 17)
