@@ -1,6 +1,6 @@
 # 開発用パッケージと配布の残課題
 
-`scripts/package.ps1` で通常SKK版とzenz CPU版をそれぞれZIPにまとめる。
+`scripts/package.ps1` でzenz CPUを含む一種類のZIPを作る。zenzなし版の配布・維持は行わない。
 実行ファイルと依存ライセンスを固定リストから梱包し、マニフェストとSHA-256で不足・破損を確認する。
 ファイルの作成だけを行い、Windowsへの登録、インストーラーの起動、設定・辞書の変更は行わない。
 現時点では開発用であり、公開リリースではない。
@@ -8,34 +8,35 @@
 ## 作成と検査
 
 PowerShell 7、Build Tools 2022、Gitが必要。先にReleaseをビルド・テストする。
-通常版はモデルサーバーを含まず、zenz版ではその同じビルドディレクトリーの実サーバーを同梱する。
+同じ標準ビルドディレクトリーの実モデルサーバーを必ず同梱する。
 モデルの準備は [ZENZ.md](ZENZ.md)、ZIP内の利用者向け手順は [PACKAGE_README.md](PACKAGE_README.md)。
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release
-.\scripts\package.ps1 -Output out/packages/nskkzime-skk.zip
-.\scripts\build.ps1 -Configuration Release -Zenz
-.\scripts\package.ps1 -Zenz -Output out/packages/nskkzime-zenz-cpu.zip
-.\scripts\package.ps1 -Verify out/packages/nskkzime-zenz-cpu.zip
+.\scripts\package.ps1 -Output out/packages/nskkzime.zip
+.\scripts\package.ps1 -Verify out/packages/nskkzime.zip
 ```
 
 `-SourceDirectory` でビルド先を指定できるが、末尾が `Release` で、親の `CMakeCache.txt` がx64と
-選択したバックエンドに一致する必要がある。出力先が既にある場合は拒否し、上書きしない。
+zenz有効（`NSKKZIME_WITH_ZENZ=ON`）である必要がある。軽量テスト専用ビルドは梱包を拒否する。
+出力先が既にある場合は拒否し、上書きしない。
 新規ZIPは隣接する一時ファイルへ書き込み、検査成功後に最終名へ変更する。旧ZIPや登録先を変更しない。
 同じ内容・同じ記録条件なら、エントリー順とZIP時刻を固定して同じバイト列を生成する。
 
-| 同梱物 | 通常SKK | zenz CPU |
-|---|---:|---:|
-| TSF DLL、辞書補助プロセス、設定GUI、辞書管理GUI | あり | あり |
-| 設定CLI、辞書管理CLI、登録済みIME用の入力検証アプリ | あり | あり |
-| `nkkz-ime-server.exe` | なし | 実モデル対応版 |
-| nlohmann/json MIT、Unicode License v3 | あり | あり |
-| skk-zenz MIT、azooKey llama.cpp MIT | なし | あり |
-| 利用手順、ZIP検査スクリプト、マニフェスト | あり | あり |
-| モデル、SKK辞書、ユーザー設定、学習データ | なし | なし |
+| 同梱物 | nskkzime（zenz CPU） |
+|---|---|
+| TSF DLL、辞書補助プロセス、設定GUI、辞書管理GUI | あり |
+| 設定CLI、辞書管理CLI、登録済みIME用の入力検証アプリ | あり |
+| `nkkz-ime-server.exe` | 実モデル対応版 |
+| nlohmann/json MIT、Unicode License v3 | あり |
+| skk-zenz MIT、azooKey llama.cpp MIT | あり |
+| 利用手順、ZIP検査スクリプト、マニフェスト | あり |
+| モデル、SKK辞書、ユーザー設定、学習データ | なし |
 
-`manifest.json` を除くファイル数は通常11、zenz14。外部データや個別評価結果を誤って梱包しない。
+`manifest.json` を除くファイル数は14。外部データや個別評価結果を誤って梱包しない。
 登録用DLLとその補助プロセス・GUIは全て `bin/` に置く。
+従来の `-Zenz` オプションは互換用に受け付けるが、指定の有無で内容は変わらない。
+過去のzenzなしZIPは検査だけ可能にしている。新規作成・更新・別版としてのリリース検証は行わない。
 
 ## ビルドと依存の検査
 
@@ -65,10 +66,10 @@ Build ToolsやGitを使わず、ZIPに含めた同じスクリプトでも実行
 
 ## 確認済み範囲（2026-10-06）
 
-- 通常Releaseとzenz Releaseで実ファイルの梱包・ZIP検査に成功。同じ入力から2度作成したZIPのSHA-256も一致。
+- 標準のzenz入りReleaseで実ファイルの梱包・ZIP検査に成功。同じ入力から2度作成したZIPのSHA-256も一致。
 - CTestの `package` で、既存ZIPの保全、バイナリー破損、ライセンス不足、マニフェストの重複、
-  ZIP内の重複・大小文字だけ異なる重複・上位パス・余分な設定ファイル、x86ヘッダー、未知の依存DLL、バックエンド違いを拒否。
-  通常Debugでは梱包を拒否し、出力を作らないことを確認。
+  ZIP内の重複・大小文字だけ異なる重複・上位パス・余分な設定ファイル、推論サーバー不足、x86ヘッダー、未知の依存DLLを拒否。
+  Debugとzenzなしのテスト専用Releaseでは梱包を拒否し、出力を作らないことを確認。
 - 日本語と空白を含む別フォルダーへzenz ZIPを展開し、同梱検査スクリプトと設定／辞書管理CLIのhelpを確認。
   展開先の実モデルサーバーで `こうこうのきょうし` → `高校の教師` の候補生成を確認。
 - これらの確認ではOS登録とユーザーの設定・学習データは変更していない。

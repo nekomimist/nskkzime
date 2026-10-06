@@ -7,8 +7,8 @@ Windows / x64用の開発中のSKK風IMEです。これは検証用ZIPで、完�
 ## 内容と前提
 
 `bin/` にIME DLL、辞書補助プロセス、設定GUI、辞書管理GUI、設定CLI、辞書管理CLI、入力検証アプリを収めています。
-`zenz-cpu` 版だけは実モデル用の `nkkz-ime-server.exe` も含みます。
-`manifest.json` に通常版／zenz版の区別、各ファイルのSHA-256・サイズ・依存DLL・署名検査結果を記録しています。
+実モデル用の `nkkz-ime-server.exe` を必ず含む、zenz CPUの単一構成です。
+`manifest.json` に構成（`zenz-cpu`）、各ファイルのSHA-256・サイズ・依存DLL・署名検査結果を記録しています。
 記録したソースrevisionは梱包時点のもので、既存バイナリーのビルド元を証明するものではありません。
 
 - Windows x64、Microsoft Visual C++ v14 Redistributable **x64** が必要です。
@@ -77,6 +77,6 @@ $key = 'HKLM:\Software\Classes\CLSID\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}\Inpr
 ## 依存ライセンス
 
 同梱ライセンスは `licenses/` にあります。nlohmann/jsonはMIT、Unicode対応表はUnicode License v3、
-zenz版のskk-zenzとazooKey llama.cppはMITです。
+skk-zenzとazooKey llama.cppはMITです。
 モデルは別取得・別ライセンス（固定モデルのカードはApache-2.0と記載）です。
 辞書は利用する配布元の条件に従ってください。本体の公開ライセンスと署名は公開配布前に確定します。

@@ -11,12 +11,11 @@
 
 ## 再現手順
 
-Python 3.11以上（標準ライブラリのみ）、通常版とzenz版のReleaseビルド、固定モデル、明示的に
+Python 3.11以上（標準ライブラリのみ）、標準のzenz入りReleaseビルド、固定モデル、明示的に
 指定するSKK辞書を使う。[zenzの準備](ZENZ.md) を済ませ、リポジトリのルートから実行する。
 
 ```powershell
 .\scripts\build.ps1 -Configuration Release
-.\scripts\build.ps1 -Configuration Release -Zenz
 git clone https://github.com/azooKey/AJIMEE-Bench.git out/reference/AJIMEE-Bench
 git -C out/reference/AJIMEE-Bench checkout --detach 401666cd56d1a570c2021798b64b6da4396bfd45
 python -B scripts/evaluate.py --dictionary SKK-JISYO.utf8.L --ajimee out/reference/AJIMEE-Bench/JWTD_v2/v1/evaluation_items.json --rounds 3 --stress-rounds 5 --key-rounds 1000 --output out/evaluation-new

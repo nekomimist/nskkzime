@@ -3,30 +3,39 @@
   "configurePresets": [
     {
       "name": "windows-x64",
-      "displayName": "Visual Studio 2022 / x64",
+      "displayName": "nskkzime / Visual Studio 2022 / x64 / zenz CPU",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/out/build/windows-x64",
-      "cacheVariables": { "BUILD_TESTING": "ON" }
+      "binaryDir": "${sourceDir}/out/build/windows-x64-zenz",
+      "cacheVariables": { "BUILD_TESTING": "ON", "NSKKZIME_WITH_ZENZ": "ON" }
     },
     {
       "name": "windows-x64-zenz",
       "inherits": "windows-x64",
-      "displayName": "Visual Studio 2022 / x64 / zenz CPU",
-      "binaryDir": "${sourceDir}/out/build/windows-x64-zenz",
-      "cacheVariables": { "NSKKZIME_WITH_ZENZ": "ON" }
+      "displayName": "Compatibility alias for windows-x64"
+    },
+    {
+      "name": "windows-x64-test-only",
+      "inherits": "windows-x64",
+      "displayName": "Lightweight tests only / no zenz / not distributable",
+      "binaryDir": "${sourceDir}/out/build/windows-x64",
+      "cacheVariables": { "NSKKZIME_WITH_ZENZ": "OFF" }
     }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "windows-x64", "configuration": "Debug" },
     { "name": "release", "configurePreset": "windows-x64", "configuration": "Release" },
-    { "name": "debug-zenz", "configurePreset": "windows-x64-zenz", "configuration": "Debug" },
-    { "name": "release-zenz", "configurePreset": "windows-x64-zenz", "configuration": "Release" }
+    { "name": "debug-zenz", "inherits": "debug" },
+    { "name": "release-zenz", "inherits": "release" },
+    { "name": "debug-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Debug" },
+    { "name": "release-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Release" }
   ],
   "testPresets": [
     { "name": "debug", "configurePreset": "windows-x64", "configuration": "Debug", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "windows-x64", "configuration": "Release", "output": { "outputOnFailure": true } },
-    { "name": "debug-zenz", "configurePreset": "windows-x64-zenz", "configuration": "Debug", "output": { "outputOnFailure": true } },
-    { "name": "release-zenz", "configurePreset": "windows-x64-zenz", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "debug-zenz", "inherits": "debug" },
+    { "name": "release-zenz", "inherits": "release" },
+    { "name": "debug-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "release-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Release", "output": { "outputOnFailure": true } }
   ]
 }

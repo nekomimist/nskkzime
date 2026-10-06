@@ -20,16 +20,16 @@ CLIは `learning` フィールドを表示するだけで保存しない。
 
 ```powershell
 # UTF-8 / EUC-JPを自動判別
-.\out\build\windows-x64\Release\skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Kanji<Space><Enter>'
+.\out\build\windows-x64-zenz\Release\skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Kanji<Space><Enter>'
 
 # 最初の辞書を優先。重複した表記と注釈は最初のものを採用
-.\out\build\windows-x64\Release\skk_trace.exe --dict 'C:\辞書\user.skk' --dict 'C:\辞書\SKK-JISYO.L' 'KaKu<Enter>'
+.\out\build\windows-x64-zenz\Release\skk_trace.exe --dict 'C:\辞書\user.skk' --dict 'C:\辞書\SKK-JISYO.L' 'KaKu<Enter>'
 
 # 必要な場合は明示指定（すべての --dict に適用）
-.\out\build\windows-x64\Release\skk_trace.exe --encoding utf-8 --dict .\tests\fixtures\basic.utf8.skk 'Jisho<Space><Enter>'
+.\out\build\windows-x64-zenz\Release\skk_trace.exe --encoding utf-8 --dict .\tests\fixtures\basic.utf8.skk 'Jisho<Space><Enter>'
 
 # abbrev: 英字見出しをそのまま検索する
-.\out\build\windows-x64\Release\skk_trace.exe --dict .\tests\fixtures\basic.utf8.skk '/skk<Space><Enter>'
+.\out\build\windows-x64-zenz\Release\skk_trace.exe --dict .\tests\fixtures\basic.utf8.skk '/skk<Space><Enter>'
 ```
 
 `--encoding` は `auto` / `utf-8` / `euc-jp`。`--dict` 省略時は内蔵の小さなテスト用辞書を使う。
@@ -42,15 +42,15 @@ CLIは `learning` フィールドを表示するだけで保存しない。
 
 ```powershell
 # 指定順に優先する。すべて読み込めることを確認してから設定を保存する
-.\out\build\windows-x64\Release\nskkzime_config.exe --set-dictionaries 'C:\辞書\personal.skk' 'C:\辞書\SKK-JISYO.L'
-.\out\build\windows-x64\Release\nskkzime_config.exe --show
-.\out\build\windows-x64\Release\nskkzime_config.exe --check
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-dictionaries 'C:\辞書\personal.skk' 'C:\辞書\SKK-JISYO.L'
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --show
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --check
 
 # 学習を無効にする。onで再び有効にできる
-.\out\build\windows-x64\Release\nskkzime_config.exe --set-learning off
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-learning off
 
 # 辞書変換を無効にし、かな入力だけにする
-.\out\build\windows-x64\Release\nskkzime_config.exe --disable-dictionaries
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --disable-dictionaries
 ```
 
 保存先はユーザーの `%LOCALAPPDATA%\nskkzime\settings.ini`。管理者権限は不要。
@@ -91,9 +91,9 @@ CLIの終了コードは正常・非致命的な行スキップが0、設定・�
 ## 設定GUI
 
 ```powershell
-.\out\build\windows-x64\Release\nskkzime_settings.exe
+.\out\build\windows-x64-zenz\Release\nskkzime_settings.exe
 # 日常の設定とは別のファイルを編集する場合
-.\out\build\windows-x64\Release\nskkzime_settings.exe --config 'C:\検証\settings.ini'
+.\out\build\windows-x64-zenz\Release\nskkzime_settings.exe --config 'C:\検証\settings.ini'
 ```
 
 既定では上記の `settings.ini` を開く。`NSKKZIME_CONFIG` による保存先指定にも対応し、
@@ -264,26 +264,26 @@ SKK-JISYOとして直接編集せず、書き出し・取り込みには下記�
 
 ```powershell
 # 保存済みの語をJSON Linesで表示。読み、送りキー、送り仮名、表記、注釈の順
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --list
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --list
 
 # 「かんじ」の「感じ」だけをユーザー辞書から削除
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --forget 'かんじ' '感じ'
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --forget 'かんじ' '感じ'
 
 # 送りありでは語幹と、英小文字1字の送りキー・ひらがなの送りを指定
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --forget 'か' '描' --okuri k 'く'
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --forget 'か' '描' --okuri k 'く'
 
 # 新しいUTF-8 SKKファイルへ書き出す。既存ファイルは上書きしない
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --export 'C:\辞書\nskkzime-export.skk'
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --export 'C:\辞書\nskkzime-export.skk'
 
 # 取り込みを事前検査してから、既存順位を保って追加する
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --check-import 'C:\辞書\my-skk-jisyo'
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --import 'C:\辞書\my-skk-jisyo'
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --check-import 'C:\辞書\my-skk-jisyo'
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --import 'C:\辞書\my-skk-jisyo'
 
 # 取り込んだ「かk」の共通候補だけを削除。送り「く」などの個別候補は保つ
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --forget 'か' '描' --okuri-key k
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --forget 'か' '描' --okuri-key k
 
 # 別の保存ファイルを管理する場合（環境変数より優先）
-.\out\build\windows-x64\Release\nskkzime_user_dictionary.exe --file 'C:\検証\user-dictionary.nskkdb' --list
+.\out\build\windows-x64-zenz\Release\nskkzime_user_dictionary.exe --file 'C:\検証\user-dictionary.nskkdb' --list
 ```
 
 既定の保存先はIMEと同じで、`NSKKZIME_USER_DICTIONARY` / `NSKKZIME_CONFIG` にも従う。
@@ -326,9 +326,9 @@ SKKで表現できない見出し（空白や先頭`;`など）・文字・長�
 ## 学習辞書の管理GUI
 
 ```powershell
-.\out\build\windows-x64\Release\nskkzime_dictionary_gui.exe
+.\out\build\windows-x64-zenz\Release\nskkzime_dictionary_gui.exe
 # 別の学習辞書を操作する場合
-.\out\build\windows-x64\Release\nskkzime_dictionary_gui.exe --file 'C:\検証\user-dictionary.nskkdb'
+.\out\build\windows-x64-zenz\Release\nskkzime_dictionary_gui.exe --file 'C:\検証\user-dictionary.nskkdb'
 ```
 
 保存先は管理CLIと同じ。画面上部に対象ファイルを表示する。

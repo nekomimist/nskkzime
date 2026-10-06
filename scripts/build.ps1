@@ -1,10 +1,12 @@
 #requires -Version 7.0
 param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
-    [switch]$Zenz,
+    [switch]$Zenz, # Accepted for compatibility; zenz is now the default.
+    [switch]$TestOnly,
     [ValidateRange(1, 64)][int]$Jobs = [Math]::Min(8, [Environment]::ProcessorCount)
 )
 $ErrorActionPreference = 'Stop'
+if ($Zenz -and $TestOnly) { throw '-Zenz と -TestOnly は同時に指定できません。' }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio Installer / vswhere.exe が見つかりません。' }
@@ -15,7 +17,7 @@ $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 if (-not (Test-Path -LiteralPath $cmake)) { throw 'Build Tools の C++ CMake tools for Windows が必要です。' }
 $preset = $Configuration.ToLowerInvariant()
 $configurePreset = 'windows-x64'
-if ($Zenz) { $preset += '-zenz'; $configurePreset += '-zenz' }
+if ($TestOnly) { $preset += '-test-only'; $configurePreset += '-test-only' }
 # Some launcher environments contain both PATH and Path. Legacy MSBuild's
 # ProcessStartInfo rejects that environment. Normalize only our child process,
 # without changing the caller's environment or the user's persisted settings.

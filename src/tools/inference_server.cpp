@@ -20,7 +20,7 @@ void help() {
         "nkkz-ime-server --model PATH [--stdio | --pipe-token TOKEN] [--threads N] [--timeout-ms N]\n"
         "nkkz-ime-server --model PATH --convert KANA [--left TEXT] [--right TEXT] [-n N] [--score TEXT]...\n"
         "--version prints the protocol and compiled backend. Output is UTF-8 JSON Lines.\n"
-        "Model mode requires the optional zenz build. Default threads: 4; request timeout: 1000 ms.\n";
+        "Product builds include zenz; --dummy is for tests. Default threads: 4; request timeout: 1000 ms.\n";
 }
 unsigned number(std::wstring_view text, unsigned maximum) {
     if (text.empty() || !std::all_of(text.begin(),text.end(),[](wchar_t ch) { return ch >= L'0' && ch <= L'9'; }))

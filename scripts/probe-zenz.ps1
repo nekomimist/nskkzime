@@ -11,7 +11,7 @@ $config = Join-Path $BuildDirectory 'nskkzime_config.exe'
 $probe = Join-Path $BuildDirectory 'ime_probe_local.exe'
 foreach ($file in @($server,$config,$probe)) { if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing build file: $file" } }
 $version = & $server --version | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $version.backend -ne 'zenz') { throw 'Build the real server with scripts/build.ps1 -Configuration Release -Zenz first.' }
+if ($LASTEXITCODE -ne 0 -or $version.backend -ne 'zenz') { throw 'Build the server with scripts/build.ps1 -Configuration Release first.' }
 $settings = Join-Path $BuildDirectory ("probe-zenz-$([Guid]::NewGuid().ToString('N')).ini")
 try {
     & $config --config $settings --set-zenz $Model $server

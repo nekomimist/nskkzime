@@ -2,7 +2,7 @@
 [CmdletBinding(DefaultParameterSetName = 'Create')]
 param(
     [Parameter(ParameterSetName = 'Create')][string]$SourceDirectory,
-    [Parameter(ParameterSetName = 'Create')][switch]$Zenz,
+    [Parameter(ParameterSetName = 'Create')][switch]$Zenz, # Legacy no-op; creation always includes zenz.
     [Parameter(Mandatory, ParameterSetName = 'Create')][string]$Output,
     [Parameter(Mandatory, ParameterSetName = 'Verify')][string]$Verify
 )
@@ -17,6 +17,8 @@ function Get-Digest([byte[]]$Bytes) {
     [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
 function Get-PackageNames([bool]$WithZenz) {
+    # Read-only compatibility with previously generated SKK archives. New
+    # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
     if ($WithZenz) { $names += @('bin/nkkz-ime-server.exe') + $zenzLicenses }
     $names | Sort-Object -CaseSensitive
@@ -79,8 +81,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     return
 }
 if (-not $SourceDirectory) {
-    $build = if ($Zenz) { 'windows-x64-zenz' } else { 'windows-x64' }
-    $SourceDirectory = Join-Path $repository "out/build/$build/Release"
+    $SourceDirectory = Join-Path $repository 'out/build/windows-x64-zenz/Release'
 }
 $source = [IO.Path]::GetFullPath($SourceDirectory)
 $destination = [IO.Path]::GetFullPath($Output)
@@ -88,8 +89,7 @@ if (Test-Path -LiteralPath $destination) { throw "出力先は既に存在しま
 if ([IO.Path]::GetFileName($source) -cne 'Release') { throw 'Releaseディレクトリーを指定してください。' }
 $cache = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $source) 'CMakeCache.txt') -Raw
 if ($cache -notmatch '(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$') { throw 'x64ビルドではありません。' }
-$expectedBackend = if ($Zenz) { 'ON' } else { 'OFF' }
-if ($cache -notmatch "(?m)^NSKKZIME_WITH_ZENZ:BOOL=$expectedBackend\r?`$") { throw '指定したパッケージとビルドのバックエンドが一致しません。' }
+if ($cache -notmatch '(?m)^NSKKZIME_WITH_ZENZ:BOOL=ON\r?$') { throw 'zenzを含まないテスト専用ビルドは配布できません。' }
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 $vs = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Build Tools 2022が見つかりません。' }
@@ -100,18 +100,16 @@ $systemLibraries = @('kernel32.dll', 'user32.dll', 'gdi32.dll', 'advapi32.dll', 
 $runtimeLibraries = @('msvcp140.dll', 'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $sources = [ordered]@{}
 foreach ($name in $binaries) { $sources['bin/' + $name] = Join-Path $source $name }
-if ($Zenz) { $sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe' }
+$sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe'
 $sources['README.md'] = Join-Path $repository 'docs/PACKAGE_README.md'
 $sources['tools/package.ps1'] = $PSCommandPath
 $sources['licenses/nlohmann-MIT.txt'] = Join-Path $repository 'third_party/nlohmann/LICENSE.MIT'
 $sources['licenses/Unicode-3.0.txt'] = Join-Path $repository 'third_party/unicode/LICENSE.txt'
-if ($Zenz) {
-    $sources['licenses/skk-zenz-MIT.txt'] = Join-Path $repository 'third_party/skk-zenz/LICENSE'
-    $sources['licenses/llama-MIT.txt'] = Join-Path $repository 'third_party/llama.LICENSE'
-}
+$sources['licenses/skk-zenz-MIT.txt'] = Join-Path $repository 'third_party/skk-zenz/LICENSE'
+$sources['licenses/llama-MIT.txt'] = Join-Path $repository 'third_party/llama.LICENSE'
 $payload = [ordered]@{}
 $files = @()
-foreach ($name in @(Get-PackageNames ([bool]$Zenz))) {
+foreach ($name in @(Get-PackageNames $true)) {
     $path = $sources[$name]
     $bytes = [IO.File]::ReadAllBytes($path)
     if ($bytes.Length -eq 0 -or $bytes.Length -gt 128MB) { throw "ファイルサイズが不正です: $name" }
@@ -148,11 +146,11 @@ $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
     format_version = 1; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
-    variant = $(if ($Zenz) { 'zenz-cpu' } else { 'skk' })
+    variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $null
     provenance_note = 'The packaging revision is not a proof of which source produced existing binaries.'
-    cpu_requirement = $(if ($Zenz) { 'x64; zenz requires AVX2/FMA/F16C/BMI2 and OS AVX support' } else { 'x64' })
+    cpu_requirement = 'x64; zenz requires AVX2/FMA/F16C/BMI2 and OS AVX support'
     runtime_requirement = 'Microsoft Visual C++ v14 Redistributable x64, at least the toolset version used to build'
     inspected_with_msvc_tools = $toolset
     signing_note = 'Packaging does not sign files. SHA-256 verification checks consistency, not publisher identity.'

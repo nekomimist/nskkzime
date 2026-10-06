@@ -442,7 +442,7 @@ def main():
     parser.add_argument("--ajimee", type=Path, help="Pinned AJIMEE evaluation_items.json")
     parser.add_argument("--cases", type=Path, default=ROOT / "tests/fixtures/quality-cases.json")
     parser.add_argument("--server", type=Path, default=ROOT / "out/build/windows-x64-zenz/Release/nkkz-ime-server.exe")
-    parser.add_argument("--core", type=Path, default=ROOT / "out/build/windows-x64/Release/nskkzime_eval_core.exe")
+    parser.add_argument("--core", type=Path, default=ROOT / "out/build/windows-x64-zenz/Release/nskkzime_eval_core.exe")
     parser.add_argument("--model", type=Path, default=ROOT / "out/models/zenz-v3.2-small/ggml-model-Q5_K_M.gguf")
     parser.add_argument("--threads", type=int, choices=range(1, 65), default=4)
     parser.add_argument("--rounds", type=int, choices=range(1, 31), default=3)

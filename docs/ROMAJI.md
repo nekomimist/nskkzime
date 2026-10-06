@@ -9,9 +9,9 @@
 [サンプル](../examples/romaji.tsv) を別の場所へコピーして編集し、絶対パスで登録する。
 
 ```powershell
-.\out\build\windows-x64\Release\nskkzime_config.exe --set-romaji 'C:\設定\romaji.tsv'
-.\out\build\windows-x64\Release\nskkzime_config.exe --check
-.\out\build\windows-x64\Release\nskkzime_config.exe --reset-romaji
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-romaji 'C:\設定\romaji.tsv'
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --check
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --reset-romaji
 ```
 
 `--set-romaji` はファイル全体を検証してから、既存の `settings.ini` へ `romaji=絶対パス` を保存する。
@@ -27,7 +27,7 @@
 保存せずにCLIで試すこともできる。
 
 ```powershell
-.\out\build\windows-x64\Release\skk_trace.exe --romaji .\examples\romaji.tsv 'wi,tp.'
+.\out\build\windows-x64-zenz\Release\skk_trace.exe --romaji .\examples\romaji.tsv 'wi,tp.'
 ```
 
 サンプルでは「ゐ，東京．」となる。GUIで試す `ime_probe_rules.exe` は専用fixtureを使い、

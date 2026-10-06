@@ -1,6 +1,6 @@
 # 非同期変換サーバーの検証
 
-`nkkz-ime-server.exe` は通常ビルドではダミー応答、`-Zenz` ビルドではllama.cppによる実変換・採点に対応する。
+標準の `nkkz-ime-server.exe` はllama.cppによる実変換・採点に対応し、テスト用に `--dummy` 応答も備える。
 IME側は既定で無効。保存設定でzenzを有効にすると、長い読み・辞書候補の枯渇時に実モデルへ要求する。
 辞書候補の採点によるpromoteも設定で有効にできる。長い読みの初期値は10文字、採点は既定でオフ。
 ビルド・モデル取得・設定・計測は [zenz CPUサーバー](ZENZ.md) を参照。
@@ -93,7 +93,7 @@ zenzでは保存されたサーバーとモデルの絶対パスを使う。同�
 プローブは遅延8000ms・期限10000msを設定する。サーバーを単独起動する場合の例:
 
 ```powershell
-.\out\build\windows-x64\Release\nkkz-ime-server.exe --dummy --pipe-token local-test --delay-ms 150 --idle-ms 10000
+.\out\build\windows-x64-zenz\Release\nkkz-ime-server.exe --dummy --pipe-token local-test --delay-ms 150 --idle-ms 10000
 ```
 
 通常のデスクトップx64プロセスで検証している。AppContainer・低整合性・昇格プロセス間の接続、

@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
-    [string]$Trace = (Join-Path $PSScriptRoot '../out/build/windows-x64/Release/skk_trace.exe'),
+    [string]$Trace = (Join-Path $PSScriptRoot '../out/build/windows-x64-zenz/Release/skk_trace.exe'),
     [string]$Emacs,
     [string]$Ddskk = (Join-Path $PSScriptRoot '../out/reference/ddskk'),
     [switch]$CoreOnly,

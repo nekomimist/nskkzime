@@ -28,7 +28,10 @@ add_library(nskkzime_protocol STATIC src/server/protocol.cpp src/server/inferenc
 target_include_directories(nskkzime_protocol SYSTEM PRIVATE third_party)
 target_link_libraries(nskkzime_protocol PUBLIC skk_core)
 
-option(NSKKZIME_WITH_ZENZ "Build the CPU zenz inference backend into nkkz-ime-server" OFF)
+option(NSKKZIME_WITH_ZENZ "Build the CPU zenz backend (OFF is for lightweight tests only)" ON)
+if(NOT NSKKZIME_WITH_ZENZ AND NOT BUILD_TESTING)
+  message(FATAL_ERROR "nskkzime requires zenz. Disable it only for a BUILD_TESTING configuration.")
+endif()
 if(NSKKZIME_WITH_ZENZ)
   include(cmake/zenz.cmake)
 endif()
@@ -175,8 +178,8 @@ if(WIN32)
     add_test(NAME evaluation COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/evaluation_tests.py $<TARGET_FILE:nskkzime_eval_core>)
     set_tests_properties(evaluation PROPERTIES TIMEOUT 30)
     set(NSKKZIME_PACKAGE_TEST_ARGS)
-    if(NSKKZIME_WITH_ZENZ)
-      list(APPEND NSKKZIME_PACKAGE_TEST_ARGS -Zenz)
+    if(NOT NSKKZIME_WITH_ZENZ)
+      list(APPEND NSKKZIME_PACKAGE_TEST_ARGS -TestOnly)
     endif()
     add_test(NAME package COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/package_tests.ps1
       -PackageScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/package.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR}

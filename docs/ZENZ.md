@@ -12,12 +12,13 @@ PowerShell 7、Build Tools 2022、Hugging Faceの `hf` CLIを使う。
 
 ```powershell
 .\scripts\prepare-zenz.ps1
-.\scripts\build.ps1 -Configuration Release -Zenz
+.\scripts\build.ps1 -Configuration Release
 ```
 
-出力は `out/build/windows-x64-zenz/Release/`。通常版と別のビルドディレクトリーを使う。
+出力は `out/build/windows-x64-zenz/Release/`。これを標準の製品ビルドとする。
 現構成はx64 CPU専用で、AVX2/FMA/F16C/BMI2を使う。GPU対応や別CPUへの配布は未検証。
-標準ビルドはモデルなしのダミーサーバーを引き続き生成する。
+`-Zenz` は互換用の指定として受け付けるが、省略しても同じ構成になる。
+`-TestOnly` はllama.cppを省略する開発用構成で、配布対象外。標準サーバー自体にもテスト用の `--dummy` がある。
 
 ## 単体での実行
 
@@ -69,7 +70,8 @@ CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空�
 さらに `evaluation` の16ケースが通常Debug／Releaseと実モデル入りReleaseで成功した。
 その後、開発用ZIPの `package` を通常Debug／Releaseと実モデル入りReleaseで確認した。
 登録処理の `tsf_registration` を追加し、通常Debugの新規項目、通常Releaseの全42件、実モデル入りReleaseの全47件が成功した。
-現在のCTest登録数は通常42件、実モデル入り47件。比較用のGNU EmacsとDDSKKは推論サーバーの依存には含まない。
+以上は標準構成をzenz入りへ統一する前の検証履歴。以後は標準Releaseの47件を確認基準とし、
+軽量テスト用42件を毎回別に実行しない。比較用のGNU EmacsとDDSKKは推論サーバーの依存には含まない。
 
 ```powershell
 .\scripts\bench-zenz.ps1 -Rounds 30 -Output out/zenz-benchmark.json

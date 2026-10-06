@@ -1,7 +1,8 @@
 # nskkzime
 
-SKK風の操作に、[skk-zenz](https://github.com/nekomimist/skk-zenz) の
+nskkzimeは **nekomimist's skk zenz ime** の略です。SKK風の操作に、[skk-zenz](https://github.com/nekomimist/skk-zenz) の
 zenzによる変換・候補採点を組み合わせる日本語IME。最初の対象はWindows / x64です。
+製品のビルド・配布はzenz入りの一種類です。辞書だけの入力は推論停止時にも使える基礎機能として維持します。
 
 現在は **最初の開発用プロトタイプ** です。OS非依存の入力コア、キー列を再生するCLI、
 SKK辞書の読み込み、TSF DLLとテスト用ホストがあります。日常利用できるIMEの完成版ではありません。
@@ -10,14 +11,16 @@ SKK辞書の読み込み、TSF DLLとテスト用ホストがあります。日�
 
 PowerShell 7、Visual Studio 2022 Build ToolsのC++ツールセット、Windows SDK、
 「C++ CMake tools for Windows」、自動テスト用のPython 3.11以上を使用します。
-Pythonは標準ライブラリのみで、追加パッケージは不要です。通常ビルドは外部ライブラリのダウンロード不要です。
+Pythonは標準ライブラリのみで、追加パッケージは不要です。初回に固定版llama.cppとモデルを準備します。
+モデル取得の前提と手順は [zenz CPUサーバー](docs/ZENZ.md) を参照してください。
 
 ```powershell
-.\scripts\build.ps1
+.\scripts\prepare-zenz.ps1
 .\scripts\build.ps1 -Configuration Release
 ```
 
 スクリプトは `vswhere` でBuild Toolsと付属CMakeを検出し、configure・build・CTestを実行します。
+デバッグ時は `-Configuration Debug`（省略時の既定）を使います。
 Developer Command Promptや、CMakeをPATHに追加する操作は不要です。
 子プロセスへ渡す環境変数の名前を正規化するため、`PATH` と `Path` の重複がある起動環境でも
 MSBuildを実行できます。ユーザーの永続的な環境変数は変更しません。
@@ -25,11 +28,14 @@ MSBuildを実行できます。ユーザーの永続的な環境変数は変更�
 制限された実行環境でMSBuildの並列ワーカーが待機する場合は `-Jobs 1` を使います。
 名前付きパイプ・共有メモリーを含むテストには、それらを利用できる通常のWindows実行環境が必要です。
 
-出力先は `out/build/windows-x64/Debug/` または `Release/` です。
-実モデル入りのCPUサーバーは `.\scripts\prepare-zenz.ps1` で固定版の依存とモデルを取得し、
-`.\scripts\build.ps1 -Configuration Release -Zenz` で別ディレクトリーへビルドします。
+出力先は `out/build/windows-x64-zenz/Debug/` または `Release/` です。
+追加オプションなしで実モデル対応のCPUサーバーを含みます。従来の `-Zenz` 指定も互換用に受け付けます。
 準備・変換CLI・IMEの接続設定は [zenz CPUサーバー](docs/ZENZ.md) を参照してください。
-Release成果物を通常版／zenz版の開発用ZIPへまとめるには [パッケージの作成と検査](docs/DISTRIBUTION.md) を参照してください。
+Release成果物を開発用ZIPへまとめるには [パッケージの作成と検査](docs/DISTRIBUTION.md) を参照してください。
+
+コア・TSFの変更を短時間で確認するときだけ `-TestOnly` でllama.cppなしの構成を選べます。
+出力は `out/build/windows-x64/`。これは配布対象外で、ZIP作成も拒否します。
+毎回両構成をビルドする必要はなく、zenz入りReleaseのテストを製品の確認基準とします。
 
 | ファイル | 用途 |
 |---|---|
@@ -40,7 +46,7 @@ Release成果物を通常版／zenz版の開発用ZIPへまとめるには [パ�
 | `nskkzime_config.exe` | ユーザーごとの辞書設定を保存・表示・検査 |
 | `nskkzime_settings.exe` | 辞書・ローマ字・zenz設定を編集し、検査して保存するGUI |
 | `nskkzime_dictionary_server.exe` | 候補学習の保存とプロセス間同期。IMEが必要時に自動起動 |
-| `nkkz-ime-server.exe` | 通常版はダミー、`-Zenz` 版は実モデルの変換・採点。パイプ／標準入出力 |
+| `nkkz-ime-server.exe` | 実モデルの変換・採点。パイプ／標準入出力。テスト用の `--dummy` も備える |
 | `nskkzime_user_dictionary.exe` | 登録・学習語の一覧、削除、SKKファイルの書き出し・一括取り込み |
 | `nskkzime_dictionary_gui.exe` | 学習辞書の一覧・絞り込み・送り別の削除・SKK取り込み／書き出しを行うGUI |
 | `nskkzime_tsf.dll` | 開発用のTSF Text Input Processor |
@@ -54,10 +60,10 @@ Release成果物を通常版／zenz版の開発用ZIPへまとめるには [パ�
 ## 操作を試す
 
 ```powershell
-.\out\build\windows-x64\Debug\skk_trace.exe 'Kanji<Space><Space><Enter>'
-.\out\build\windows-x64\Debug\skk_trace.exe 'KaKu<Space><Enter>'
-.\out\build\windows-x64\Debug\skk_trace.exe 'Kanji<Space>desu'
-.\out\build\windows-x64\Debug\skk_trace.exe 'Kanji<Space><C-g><C-g>'
+.\out\build\windows-x64-zenz\Debug\skk_trace.exe 'Kanji<Space><Space><Enter>'
+.\out\build\windows-x64-zenz\Debug\skk_trace.exe 'KaKu<Space><Enter>'
+.\out\build\windows-x64-zenz\Debug\skk_trace.exe 'Kanji<Space>desu'
+.\out\build\windows-x64-zenz\Debug\skk_trace.exe 'Kanji<Space><C-g><C-g>'
 ```
 
 順に「感じ」「描く」「漢字です」、変換取消を確認できます。
@@ -69,15 +75,15 @@ CLIはUTF-8を出力します。入力はASCIIのキー列です。
 既存のSKK辞書も読み取り専用で利用できます。
 
 ```powershell
-.\out\build\windows-x64\Release\skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Jisho<Space><Enter>'
+.\out\build\windows-x64-zenz\Release\skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Jisho<Space><Enter>'
 ```
 
 UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの件数・診断を標準エラーへ出します。
 `--dict` を繰り返すと先に指定した辞書を優先します。TSFの辞書設定は次のコマンドで保存できます。
 
 ```powershell
-.\out\build\windows-x64\Release\nskkzime_config.exe --set-dictionaries 'C:\辞書\SKK-JISYO.L'
-.\out\build\windows-x64\Release\nskkzime_config.exe --check
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-dictionaries 'C:\辞書\SKK-JISYO.L'
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --check
 ```
 
 保存先は `%LOCALAPPDATA%\nskkzime\settings.ini`。複数の絶対パスを並べると先の辞書を優先します。
@@ -125,7 +131,7 @@ UTF-8／EUC-JPを判別し、候補と注釈をJSON Linesへ、読み込みの�
 ## 検証の範囲
 
 2026-10-06、MSVC 19.44 / Windows SDK 10.0.26100.0で検証しています。
-通常Debug／ReleaseのCTest42項目、実モデル入りReleaseの47項目を確認済みです（Debugの新規項目は修正後に個別実行）。
+zenz入りReleaseのCTest47項目を確認済みです。軽量テスト専用構成は42項目で、必要時のみ使います。
 移植元のprompt/modelテストと、実モデルの並行IPC・取消・CLI・DLL経由の自動起動と変換・候補採点も確認しています。
 GNU Emacs 30.2上の固定版DDSKKとの38キー列の実測も完了しました。一致する28例と相違する10例、再現手順は [DDSKKとの操作比較](docs/DDSKK_COMPATIBILITY.md) に記録しています。
 公開200例・自作32例と合成負荷による1,749要求のモデル評価も完了しました。文脈による改善、対象外の読み、長文の失敗、部品別の遅延は [品質・遅延評価](docs/EVALUATION.md) を参照してください。
@@ -146,7 +152,7 @@ GNU Emacs 30.2上の固定版DDSKKとの38キー列の実測も完了しまし�
 設定GUIでは隔離した保存先で、4タブ、日本語・空白を含む辞書の追加と順序変更、独自ルール、数値エラー、保存・再読み込み・未保存確認・外部変更時の拒否を実画面で確認しました。
 `tool_launcher` は保存先の固定、Unicode・空白を含む起動引数、バックグラウンド起動、連打・終了・起動失敗を検証します。
 実GUIも同じ起動処理で開き、隔離した設定・学習辞書が表示され、開閉だけでは保存内容が変わらないことを確認しました。
-`stage_dev` はGUIを含む4ファイルの配置、同一版の再利用、GUI更新時の分離、不足・不一致時の拒否と旧版の保持を検証します。
+`stage_dev` は推論サーバー・GUIを含む5ファイルの配置、同一版の再利用、サーバー／GUI更新時の分離、不足・不一致時の拒否と旧版の保持を検証します。
 `learning` は11ケースで、永続化・送り別の順位・再送の重複排除・複数プロセス・保存失敗・強制終了後の復旧・削除の同期・一括取り込みと並行学習・未保存の学習と削除の順序を検証します。
 `user_dictionary` は12ケースで、削除範囲・削除後の再登録・SKK書き出し／取り込みの順位・文字・送り範囲の保持・容量超過時の保全を検証します。
 `user_dictionary_cli` は管理CLIの一連の操作、Unicode、UTF-8／EUC-JP取り込み、事前検査、既存ファイルの保全を隔離した保存先で確認します。

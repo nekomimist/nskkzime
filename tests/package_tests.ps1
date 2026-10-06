@@ -3,13 +3,13 @@ param(
     [Parameter(Mandatory)][string]$PackageScript,
     [Parameter(Mandatory)][string]$BuildDirectory,
     [Parameter(Mandatory)][string]$Configuration,
-    [switch]$Zenz
+    [switch]$TestOnly
 )
 $ErrorActionPreference = 'Stop'
 $fixture = Join-Path ([IO.Path]::GetFullPath($BuildDirectory)) ('package-test 日本語 space-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($fixture) | Out-Null
 $source = Join-Path $BuildDirectory $Configuration
-$arguments = @{ SourceDirectory = $source; Zenz = $Zenz; Output = (Join-Path $fixture 'package.zip') }
+$arguments = @{ SourceDirectory = $source; Output = (Join-Path $fixture 'package.zip') }
 function Assert-Package([bool]$Condition, [string]$Reason) { if (-not $Condition) { throw $Reason } }
 function Expect-Failure([scriptblock]$Action, [string]$Expected) {
     $message = $null
@@ -22,6 +22,7 @@ function Rewrite-Zip([string]$InputZip, [string]$OutputZip, [string]$Mode) {
     try {
         foreach ($entry in $inputArchive.Entries) {
             if ($Mode -eq 'missing' -and $entry.FullName -eq 'licenses/Unicode-3.0.txt') { continue }
+            if ($Mode -eq 'missing-server' -and $entry.FullName -eq 'bin/nkkz-ime-server.exe') { continue }
             $memory = [IO.MemoryStream]::new()
             $stream = $entry.Open()
             try { $stream.CopyTo($memory); $bytes = $memory.ToArray() } finally { $stream.Dispose(); $memory.Dispose() }
@@ -45,17 +46,22 @@ try {
         Write-Output 'PASS Debug configuration rejected without creating an archive'
         return
     }
+    if ($TestOnly) {
+        Expect-Failure { & $PackageScript @arguments } 'テスト専用ビルドは配布できません'
+        Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'Test-only package was written.'
+        Write-Output 'PASS test-only configuration rejected without creating an archive'
+        return
+    }
     $created = & $PackageScript @arguments
     $verified = & $PackageScript -Verify $created.Path
-    $expected = if ($Zenz) { 14 } else { 11 }
-    Assert-Package ($verified.Verified -and $verified.Files -eq $expected) 'Incomplete package.'
+    Assert-Package ($verified.Verified -and $verified.Files -eq 14 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
     Assert-Package ($verified.SHA256 -eq $created.SHA256) 'Verification changed archive.'
     Expect-Failure { & $PackageScript @arguments } '上書きしません'
     Assert-Package ((Get-FileHash -LiteralPath $created.Path).Hash -eq $created.SHA256) 'Existing archive overwritten.'
     $arguments.Output = Join-Path $fixture 'same-input.zip'
     $repeat = & $PackageScript @arguments
     Assert-Package ($repeat.SHA256 -eq $created.SHA256) 'Identical inputs did not reproduce ZIP bytes.'
-    $failures = [ordered]@{ corrupt = 'ハッシュまたは長さ'; missing = 'ファイル一覧'; 'manifest-duplicate' = '不足・余分・重複';
+    $failures = [ordered]@{ corrupt = 'ハッシュまたは長さ'; missing = 'ファイル一覧'; 'missing-server' = 'ファイル一覧'; 'manifest-duplicate' = '不足・余分・重複';
         duplicate = '不正または重複'; 'case-duplicate' = '不正または重複'; traversal = '不正または重複'; extra = 'ファイル一覧' }
     foreach ($mode in $failures.Keys) {
         $bad = Join-Path $fixture ($mode + '.zip')
@@ -65,8 +71,7 @@ try {
     # Check a genuine wrong-architecture input without changing build artifacts.
     $fake = Join-Path $fixture 'Release'
     [IO.Directory]::CreateDirectory($fake) | Out-Null
-    $backend = if ($Zenz) { 'ON' } else { 'OFF' }
-    [IO.File]::WriteAllText((Join-Path $fixture 'CMakeCache.txt'), "CMAKE_GENERATOR_PLATFORM:INTERNAL=x64`nNSKKZIME_WITH_ZENZ:BOOL=$backend`n")
+    [IO.File]::WriteAllText((Join-Path $fixture 'CMakeCache.txt'), "CMAKE_GENERATOR_PLATFORM:INTERNAL=x64`nNSKKZIME_WITH_ZENZ:BOOL=ON`n")
     $bytes = [IO.File]::ReadAllBytes((Join-Path $source 'ime_probe.exe'))
     $pe = [BitConverter]::ToUInt32($bytes, 60)
     $bytes[$pe + 4] = 0x4c; $bytes[$pe + 5] = 0x01
@@ -82,10 +87,10 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
     Expect-Failure { & $PackageScript @arguments } '未確認の依存DLL'
     Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'Unknown dependency was packaged.'
-    $arguments.SourceDirectory = $source
-    $arguments.Zenz = -not [bool]$Zenz
-    Expect-Failure { & $PackageScript @arguments } 'バックエンドが一致しません'
-    Write-Output 'PASS complete package, Unicode paths, reproducible bytes, no overwrite, corruption, missing/duplicate/traversing/extra files, wrong architecture, unknown dependency and backend'
+    [IO.File]::WriteAllText((Join-Path $fixture 'CMakeCache.txt'), "CMAKE_GENERATOR_PLATFORM:INTERNAL=x64`nNSKKZIME_WITH_ZENZ:BOOL=OFF`n")
+    Expect-Failure { & $PackageScript @arguments } 'テスト専用ビルドは配布できません'
+    Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'A test-only build was packaged.'
+    Write-Output 'PASS zenz-only package, required server, Unicode paths, reproducible bytes, no overwrite, corruption, missing/duplicate/traversing/extra files, wrong architecture, unknown dependency and test-only rejection'
 } finally {
     # Enumerate only our uniquely named workspace fixture; no recursive deletion.
     $absolute = [IO.Path]::GetFullPath($fixture)

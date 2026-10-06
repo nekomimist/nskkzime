@@ -1,13 +1,13 @@
 #Requires -Version 7.0
 [CmdletBinding()]
 param(
-    [string]$SourceDirectory = (Join-Path $PSScriptRoot '../out/build/windows-x64/Release'),
+    [string]$SourceDirectory = (Join-Path $PSScriptRoot '../out/build/windows-x64-zenz/Release'),
     [string]$DestinationRoot = (Join-Path $PSScriptRoot '../out/installed')
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory)
 $bundleRoot = [IO.Path]::GetFullPath($DestinationRoot)
-$requiredFiles = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe')
+$requiredFiles = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe')
 $hashes = [ordered]@{}
 foreach ($name in $requiredFiles) {
     $source = Join-Path $sourceRoot $name
