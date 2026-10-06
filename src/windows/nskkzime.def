@@ -9,3 +9,5 @@ EXPORTS
     NskkzimeEnableContextPreview PRIVATE
     NskkzimeGetContextPreview PRIVATE
     NskkzimeGetInferenceStatus PRIVATE
+    NskkzimeEnableInputTiming PRIVATE
+    NskkzimeGetInputTiming PRIVATE

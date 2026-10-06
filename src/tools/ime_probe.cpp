@@ -9,7 +9,7 @@
 
 using Microsoft::WRL::ComPtr;
 namespace {
-constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104, preview_id = 105;
+constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104, preview_id = 105, timing_id = 106;
 #ifdef NSKKZIME_PROBE_ROMAJI
 constexpr auto window_title = L"nskkzime 入力検証 (ローマ字ルール・学習なし)";
 #elif defined(NSKKZIME_PROBE_DUMMY)
@@ -29,8 +29,30 @@ struct Probe {
     bool switched = false;
     HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr, mode = nullptr;
     HWND preview_check = nullptr, preview_text = nullptr;
-    std::wstring last_preview;
+    HWND timing_check = nullptr, timing_text = nullptr;
+    std::wstring last_preview, last_timing;
     HFONT font = nullptr, status_font = nullptr;
+    void enable_timing(bool enable) {
+        using Enable = HRESULT (__stdcall*)(BOOL);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+        const auto function = reinterpret_cast<Enable>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeEnableInputTiming"));
+#pragma warning(pop)
+        if (function) function(enable);
+    }
+    void update_timing() {
+        using GetTiming = HRESULT (__stdcall*)(BSTR*);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+        const auto function = reinterpret_cast<GetTiming>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeGetInputTiming"));
+#pragma warning(pop)
+        EnableWindow(timing_check, function != nullptr);
+        BSTR value = nullptr;
+        std::wstring text = L"遅延計測: このDLLでは利用できません。";
+        if (function && SUCCEEDED(function(&value)) && value) text = value;
+        SysFreeString(value);
+        if (text != last_timing) { SetWindowTextW(timing_text, text.c_str()); last_timing = std::move(text); }
+    }
     void enable_preview(bool enable) {
         using Enable = HRESULT (__stdcall*)(BOOL);
 #pragma warning(push)
@@ -139,7 +161,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
         probe->status_font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
-        control(window, L"STATIC", L"入力本文は保存しません。候補の学習は辞書設定に従います。", 0, 16, 12, 680, 30, 0, probe->font);
+        control(window, L"STATIC", L"本文の診断ログ・候補の学習はIMEの保存設定に従います。", 0, 16, 12, 680, 30, 0, probe->font);
         control(window, L"BUTTON", L"nskkzimeを選ぶ", WS_TABSTOP, 16, 48, 190, 36, activate_id, probe->font);
         control(window, L"BUTTON", L"元のIMEに戻す", WS_TABSTOP, 218, 48, 180, 36, restore_id, probe->font);
         control(window, L"BUTTON", L"状態を更新", WS_TABSTOP, 410, 48, 150, 36, refresh_id, probe->font);
@@ -150,11 +172,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         probe->plain = control(window, L"EDIT", L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 132, 660, 105, 201, probe->font);
         control(window, L"STATIC", L"RichEdit (TSF)", 0, 16, 250, 600, 26, 0, probe->font);
+        probe->timing_check = control(window, L"BUTTON", L"遅延計測（本文なし）", WS_TABSTOP | BS_AUTOCHECKBOX,
+            425, 250, 260, 26, timing_id, probe->font);
         probe->rich = control(window, MSFTEDIT_CLASS, L"", WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
             16, 282, 660, 105, 202, probe->font);
         probe->preview_text = control(window, L"STATIC", L"", 0, 16, 400, 660, 78, 0, probe->status_font);
+        probe->timing_text = control(window, L"EDIT", L"", WS_TABSTOP | ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
+            16, 480, 660, 76, 204, probe->status_font);
         probe->status = control(window, L"EDIT", L"", WS_TABSTOP | ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-            16, 485, 660, 210, 203, probe->status_font);
+            16, 562, 660, 150, 203, probe->status_font);
         if (!probe->plain || !probe->rich || !probe->status) return -1;
         // RichEdit defaults to IMM compatibility input. Explicitly enable its
         // native TSF text store so the two controls exercise different hosts.
@@ -162,11 +188,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (FAILED(probe->set_input_scopes(IS_TEXT))) return -1;
         probe->last_edit = probe->plain;
         probe->report(L"起動", S_OK);
-        probe->update_mode(); probe->update_preview(); SetTimer(window, mode_id, 300, nullptr);
+        probe->update_mode(); probe->update_preview(); probe->update_timing(); SetTimer(window, mode_id, 300, nullptr);
         return 0;
     }
     case WM_TIMER:
-        if (wparam == mode_id) { probe->update_mode(); probe->update_preview(); return 0; } break;
+        if (wparam == mode_id) { probe->update_mode(); probe->update_preview(); probe->update_timing(); return 0; } break;
     case WM_COMMAND:
         if (HIWORD(wparam) == EN_SETFOCUS && (LOWORD(wparam) == 201 || LOWORD(wparam) == 202)) {
             probe->last_edit = reinterpret_cast<HWND>(lparam); return 0;
@@ -189,11 +215,16 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             probe->enable_preview(SendMessageW(probe->preview_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
             probe->update_preview(); SetFocus(probe->last_edit); return 0;
         }
+        if (LOWORD(wparam) == timing_id) {
+            probe->enable_timing(SendMessageW(probe->timing_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            probe->update_timing(); SetFocus(probe->last_edit); return 0;
+        }
         break;
     case WM_CLOSE:
         probe->restore();
         DestroyWindow(window); return 0;
     case WM_DESTROY:
+        probe->enable_timing(false);
         probe->enable_preview(false);
         probe->restore();
         probe->set_input_scopes(IS_DEFAULT); // Remove associations before the child HWNDs are destroyed.
@@ -245,7 +276,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             klass.lpszClassName = L"nskkzime-input-probe";
             if (RegisterClassW(&klass)) {
                 const auto window = CreateWindowExW(0, klass.lpszClassName, window_title, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 750, nullptr, nullptr, instance, &probe);
+                    CW_USEDEFAULT, CW_USEDEFAULT, 720, 770, nullptr, nullptr, instance, &probe);
                 if (window) {
                     ShowWindow(window, show); UpdateWindow(window); SetFocus(probe.plain);
                     ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);

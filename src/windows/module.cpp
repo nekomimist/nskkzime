@@ -3,6 +3,7 @@
 #include "context_text.h"
 #include "inference_client.h"
 #include "romaji_settings.h"
+#include "input_timing.h"
 #include <new>
 
 namespace nskkzime::windows {
@@ -64,6 +65,18 @@ extern "C" HRESULT __stdcall DllRegisterServer() { return nskkzime::windows::reg
 extern "C" HRESULT __stdcall DllUnregisterServer() { return nskkzime::windows::unregister_server(); }
 extern "C" HRESULT __stdcall NskkzimeEnableContextPreview(BOOL enable) {
     nskkzime::windows::enable_context_preview(enable != FALSE); return S_OK;
+}
+extern "C" HRESULT __stdcall NskkzimeEnableInputTiming(BOOL enable) {
+    return nskkzime::windows::enable_input_timing(enable != FALSE) ? S_OK : E_OUTOFMEMORY;
+}
+extern "C" HRESULT __stdcall NskkzimeGetInputTiming(BSTR* output) {
+    if (!output) return E_POINTER;
+    *output = nullptr;
+    try {
+        const auto text = nskkzime::windows::input_timing_status();
+        *output = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
+        return *output ? S_OK : E_OUTOFMEMORY;
+    } catch (...) { return E_OUTOFMEMORY; }
 }
 extern "C" HRESULT __stdcall NskkzimeGetInferenceStatus(BSTR* output) {
     if (!output) return E_POINTER;

@@ -69,7 +69,7 @@ endif()
 
 if(WIN32)
   add_library(nskkzime_runtime STATIC src/windows/dictionary_settings.cpp src/windows/runtime_dictionary.cpp src/windows/romaji_settings.cpp
-    src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp)
+    src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp src/windows/input_timing.cpp)
   target_include_directories(nskkzime_runtime PUBLIC src/windows)
   target_link_libraries(nskkzime_runtime PUBLIC skk_dictionary nskkzime_protocol shell32 ole32 uuid advapi32 bcrypt)
   add_library(nskkzime_inference STATIC src/windows/inference_ipc.cpp src/windows/inference_client.cpp src/windows/input_log.cpp)
@@ -219,8 +219,11 @@ if(WIN32)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_cli.cmake)
     add_executable(candidate_ui_tests tests/candidate_ui_tests.cpp src/windows/candidate_ui.cpp)
     target_include_directories(candidate_ui_tests PRIVATE src/windows)
-    target_link_libraries(candidate_ui_tests PRIVATE skk_core ole32 oleaut32 uuid user32 gdi32)
+    target_link_libraries(candidate_ui_tests PRIVATE skk_core nskkzime_runtime ole32 oleaut32 uuid user32 gdi32)
     add_test(NAME candidate_ui COMMAND candidate_ui_tests)
+    add_executable(input_timing_tests tests/input_timing_tests.cpp)
+    target_link_libraries(input_timing_tests PRIVATE nskkzime_runtime)
+    add_test(NAME input_timing COMMAND input_timing_tests)
     # Link the same adapter sources to exercise deferred click requests without
     # injecting native input or relying on a registered IME/interactive desktop.
     add_executable(tsf_candidate_click tests/tsf_candidate_click.cpp src/windows/text_service.cpp

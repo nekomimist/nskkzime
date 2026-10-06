@@ -71,7 +71,7 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
     } catch (...) { return E_OUTOFMEMORY; }
 }
 HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = registration_ ? registration_ui_guid : candidate_ui_guid; return S_OK; }
-HRESULT CandidateList::Show(BOOL show) { if (!show) cancel_pointer(); requested_visible_ = show != FALSE; render(); return S_OK; }
+HRESULT CandidateList::Show(BOOL show) { if (!show) { cancel_pointer(); discard_candidate_timing(paint_timing_); } requested_visible_ = show != FALSE; render(); return S_OK; }
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
 HRESULT CandidateList::GetDocumentMgr(ITfDocumentMgr** value) { if (!value) return E_POINTER; return document_.CopyTo(value); }
@@ -176,15 +176,18 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     const auto selection = static_cast<UINT>(engine.candidate_index());
     if (selection != selection_) updated_ |= TF_CLUIE_SELECTION | TF_CLUIE_CURRENTPAGE;
     selection_ = selection;
+    if (updated_ && !registration_) replace_candidate_timing(paint_timing_);
 }
 void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
     if (!anchor || owner_ != owner || !EqualRect(&anchor_, anchor)) cancel_pointer();
     owner_ = owner;
     located_ = anchor && anchor->bottom > anchor->top;
+    if (!located_) discard_candidate_timing(paint_timing_);
     if (located_) anchor_ = *anchor;
     render();
 }
 void CandidateList::close() noexcept {
+    discard_candidate_timing(paint_timing_);
     closed_ = true; located_ = false; requested_visible_ = false;
     actions_.reset(); cancel_pointer();
     if (window_) { DestroyWindow(window_); window_ = nullptr; }
@@ -329,8 +332,12 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     }
     if (message == WM_PAINT && self) {
         PAINTSTRUCT paint{}; const auto dc = BeginPaint(window, &paint);
-        try { self->paint(dc); } catch (...) { /* Never throw through the window procedure. */ }
-        EndPaint(window, &paint); return 0;
+        bool painted = false;
+        try { if (dc) { self->paint(dc); painted = true; } } catch (...) { /* Never throw through the window procedure. */ }
+        EndPaint(window, &paint);
+        if (painted && IsWindowVisible(window)) finish_candidate_timing(self->paint_timing_);
+        else discard_candidate_timing(self->paint_timing_);
+        return 0;
     }
     if (message == WM_NCDESTROY && self) { self->window_ = nullptr; SetWindowLongPtrW(window, GWLP_USERDATA, 0); }
     return DefWindowProcW(window, message, wparam, lparam);

@@ -325,6 +325,7 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
+        const KeyTiming timing;
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;

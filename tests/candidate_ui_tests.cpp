@@ -23,6 +23,22 @@ std::wstring text(ITfCandidateListUIElement* list, UINT index) {
 int main() {
     try {
         {
+            enable_input_timing(true);
+            Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});
+            ComPtr<CandidateList> popup; popup.Attach(new CandidateList);
+            { KeyTiming key; popup->update(engine, nullptr); }
+            check(input_timing_snapshot().pending_paints == 1, "candidate update lost key timing");
+            // Hosts which draw their own UI must not count our undisplayed popup.
+            popup->Show(FALSE);
+            check(input_timing_snapshot().pending_paints == 0 && input_timing_snapshot().candidate_paint.total == 0 &&
+                  input_timing_snapshot().discarded_paints == 1, "host-suppressed UI counted as a paint");
+            engine.handle({KeyCode::Space});
+            { KeyTiming key; popup->update(engine, nullptr); }
+            popup->locate(nullptr, nullptr);
+            check(input_timing_snapshot().pending_paints == 0 && input_timing_snapshot().discarded_paints == 2, "missing anchor kept a pending paint");
+            popup->close(); popup.Reset(); enable_input_timing(false);
+        }
+        {
             auto dictionary = std::make_shared<MemoryDictionary>();
             std::vector<Candidate> candidates;
             for (int i = 0; i < 16; ++i) candidates.push_back({std::to_string(i), U"候補" + ascii(std::to_string(i)), U"注釈"});

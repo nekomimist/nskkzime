@@ -446,15 +446,26 @@ int wmain(int argc, wchar_t** argv) {
         using GetFactory = HRESULT(WINAPI*)(REFCLSID, REFIID, void**);
         using CanUnload = HRESULT(WINAPI*)();
         using GetStatus = HRESULT(WINAPI*)(BSTR*);
+        using EnableTiming = HRESULT(WINAPI*)(BOOL);
         // GetProcAddress is the documented Windows pattern for these COM exports.
 #pragma warning(push)
 #pragma warning(disable: 4191)
         const auto get_factory = reinterpret_cast<GetFactory>(GetProcAddress(library, "DllGetClassObject"));
         const auto can_unload = reinterpret_cast<CanUnload>(GetProcAddress(library, "DllCanUnloadNow"));
         const auto get_status = reinterpret_cast<GetStatus>(GetProcAddress(library, "NskkzimeGetDictionaryStatus"));
+        const auto get_timing = reinterpret_cast<GetStatus>(GetProcAddress(library, "NskkzimeGetInputTiming"));
+        const auto enable_timing = reinterpret_cast<EnableTiming>(GetProcAddress(library, "NskkzimeEnableInputTiming"));
 #pragma warning(pop)
         check(get_factory && can_unload, "missing COM exports");
         check(get_status && get_status(nullptr) == E_POINTER, "invalid diagnostic export contract");
+        check(get_timing && enable_timing && get_timing(nullptr) == E_POINTER, "invalid timing exports");
+        const auto timing_text = [&] {
+            BSTR value = nullptr; succeeded(get_timing(&value), "timing status failed");
+            const std::wstring text(value, SysStringLen(value)); SysFreeString(value); return text;
+        };
+        check(timing_text().find(L"オフ") != std::wstring::npos, "timing enabled by default");
+        succeeded(enable_timing(TRUE), "timing enable failed");
+        check(timing_text().find(L"TSF OnKeyDown: n=0") != std::wstring::npos, "new timing included old keys");
         const auto status_text = [&] {
             BSTR value = nullptr; succeeded(get_status(&value), "dictionary status failed");
             const std::wstring text(value, SysStringLen(value)); SysFreeString(value); return text;
@@ -498,6 +509,9 @@ int wmain(int argc, wchar_t** argv) {
             if (configured && !empty) check(status.find(argv[2]) != status.npos, "saved configuration source invisible");
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
+        check(timing_text().find(L"TSF OnKeyDown: n=0") == std::wstring::npos, "DLL key timing did not collect callbacks");
+        succeeded(enable_timing(FALSE), "timing disable failed");
+        check(timing_text().find(L"オフ") != std::wstring::npos, "timing disable did not clear state");
         std::cout << "PASS COM exports/identity/unload, real TSF manager startup, "
                   << (empty ? "kana fallback without dictionary" : "test-host activation/composition/cancel/failure/focus isolation") << '\n';
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; result = 1; }

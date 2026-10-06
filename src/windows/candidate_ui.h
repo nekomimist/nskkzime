@@ -1,5 +1,6 @@
 #pragma once
 #include "module.h"
+#include "input_timing.h"
 #include "nskkzime/engine.h"
 #include <wrl/client.h>
 #include <functional>
@@ -84,6 +85,7 @@ private:
     std::weak_ptr<CandidateActions> actions_;
     std::uint64_t revision_ = 0;
     CandidatePointer pointer_;
+    InputTimingToken paint_timing_;
 };
 
 class CandidatePresenter {
