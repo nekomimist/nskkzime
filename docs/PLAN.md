@@ -182,6 +182,8 @@ convert/scoreへ拡張した。互換上の違いは [推論IPCの検証](INFERE
   展開したCLIと実モデル変換を確認。手順と範囲は [配布準備](DISTRIBUTION.md)。
 - [ ] クリーン環境への導入・更新・復旧、公開用の本体ライセンス・署名・インストーラー、CPU対応範囲の実測。
   ZIPに登録・解除・旧版への復帰手順を含めたが、ZIPからのOS登録は未実測。
+  DLLの登録先照合、登録・解除の排他、部分失敗後の後始末と解除再試行を実装した。
+  専用レジストリと代替TSFによる自動確認に加え、今後のインストーラーでOSの実登録と復旧を検証する。
 - GPU対応や入力中の先読みはCPU版の評価後に検討する。
 
 参照: [skk-zenzの設計](https://github.com/nekomimist/skk-zenz/blob/db1c923223a94c6406fd19e4d75ef3b54bdf9300/docs/ARCHITECTURE.md)、

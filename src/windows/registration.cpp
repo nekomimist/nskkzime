@@ -1,4 +1,5 @@
 #include "module.h"
+#include "registration_registry.h"
 #include <wrl/client.h>
 #include <string>
 #include <vector>
@@ -6,26 +7,74 @@
 namespace nskkzime::windows {
 namespace {
 using Microsoft::WRL::ComPtr;
+HRESULT contains_guid(IEnumGUID* items, REFGUID wanted) noexcept {
+    if (!items) return E_UNEXPECTED;
+    for (;;) {
+        GUID id{};
+        ULONG fetched = 0;
+        const auto hr = items->Next(1, &id, &fetched);
+        if (FAILED(hr)) return hr;
+        if (!fetched) return hr == S_FALSE ? S_FALSE : E_UNEXPECTED;
+        if (id == wanted) return S_OK;
+    }
+}
 struct ComScope {
     HRESULT status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     ~ComScope() { if (SUCCEEDED(status)) CoUninitialize(); }
 };
-struct KeyHandle {
-    HKEY key = nullptr;
-    ~KeyHandle() { if (key) RegCloseKey(key); }
+struct RegistrationLock {
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Global\\nskkzime-registration-{6EF45A57-E12E-49F1-8A4E-2569D8361A50}");
+    HRESULT status = E_FAIL;
+    bool acquired = false;
+    RegistrationLock() noexcept {
+        if (!mutex) { status = HRESULT_FROM_WIN32(GetLastError()); return; }
+        const auto result = WaitForSingleObject(mutex, 0);
+        acquired = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+        status = acquired ? S_OK : HRESULT_FROM_WIN32(result == WAIT_TIMEOUT ? ERROR_BUSY : GetLastError());
+    }
+    ~RegistrationLock() { if (acquired) ReleaseMutex(mutex); if (mutex) CloseHandle(mutex); }
 };
-std::wstring class_path() {
-    wchar_t guid[39]{};
-    StringFromGUID2(service_clsid, guid, 39);
-    return std::wstring(L"Software\\Classes\\CLSID\\") + guid;
-}
-LSTATUS set_string(HKEY key, const wchar_t* name, const std::wstring& value) {
-    return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
-                         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
-}
-}
-HRESULT register_server() noexcept {
+class SystemTsfRegistration final : public registration::TsfRegistration {
+    ComPtr<ITfInputProcessorProfiles> profiles;
+    ComPtr<ITfCategoryMgr> categories;
+public:
+    HRESULT initialize() noexcept override {
+        auto hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
+        if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
+        return hr;
+    }
+    HRESULT register_processor() noexcept override { return profiles->Register(service_clsid); }
+    HRESULT add_profile(const std::wstring& dll) noexcept override {
+        constexpr wchar_t description[] = L"nskkzime (development)";
+        return profiles->AddLanguageProfile(service_clsid, language_id, profile_guid, description,
+            ARRAYSIZE(description) - 1, dll.c_str(), static_cast<ULONG>(dll.size()), 0);
+    }
+    HRESULT enable_profile() noexcept override {
+        return profiles->EnableLanguageProfile(service_clsid, language_id, profile_guid, TRUE);
+    }
+    HRESULT register_category(REFGUID category) noexcept override {
+        return categories->RegisterCategory(service_clsid, category, service_clsid);
+    }
+    HRESULT unregister_category(REFGUID category) noexcept override {
+        ComPtr<IEnumGUID> items;
+        auto hr = categories->EnumCategoriesInItem(service_clsid, &items);
+        if (FAILED(hr)) return hr;
+        hr = contains_guid(items.Get(), category);
+        if (hr != S_OK) return hr;
+        return categories->UnregisterCategory(service_clsid, category, service_clsid);
+    }
+    HRESULT unregister_processor() noexcept override {
+        ComPtr<IEnumGUID> items;
+        auto hr = profiles->EnumInputProcessorInfo(&items);
+        if (FAILED(hr)) return hr;
+        hr = contains_guid(items.Get(), service_clsid);
+        return hr == S_OK ? profiles->Unregister(service_clsid) : hr;
+    }
+};
+HRESULT change_registration(bool remove) noexcept {
     try {
+        RegistrationLock lock;
+        if (FAILED(lock.status)) return lock.status;
         ComScope com;
         if (FAILED(com.status) && com.status != RPC_E_CHANGED_MODE) return com.status;
         std::vector<wchar_t> filename(32768);
@@ -33,63 +82,12 @@ HRESULT register_server() noexcept {
         if (!length) return HRESULT_FROM_WIN32(GetLastError());
         if (length == filename.size()) return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
         const std::wstring path(filename.data(), length);
-        const auto registry_path = class_path();
-        KeyHandle key;
-        DWORD disposition = 0;
-        auto error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, registry_path.c_str(), 0, nullptr, 0,
-                                    KEY_WRITE, nullptr, &key.key, &disposition);
-        if (error != ERROR_SUCCESS) return HRESULT_FROM_WIN32(error);
-        // Development registration: never overwrite another build's registration.
-        if (disposition != REG_CREATED_NEW_KEY) return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
-        error = set_string(key.key, nullptr, L"nskkzime development prototype");
-        KeyHandle inproc;
-        if (!error) error = RegCreateKeyExW(key.key, L"InprocServer32", 0, nullptr, 0, KEY_WRITE, nullptr, &inproc.key, nullptr);
-        if (!error) error = set_string(inproc.key, nullptr, path);
-        if (!error) error = set_string(inproc.key, L"ThreadingModel", L"Apartment");
-        HRESULT hr = HRESULT_FROM_WIN32(error);
-        ComPtr<ITfInputProcessorProfiles> profiles;
-        ComPtr<ITfCategoryMgr> categories;
-        bool registered = false;
-        if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
-        if (SUCCEEDED(hr)) { hr = profiles->Register(service_clsid); registered = SUCCEEDED(hr); }
-        constexpr wchar_t description[] = L"nskkzime (development)";
-        if (SUCCEEDED(hr)) hr = profiles->AddLanguageProfile(service_clsid, language_id, profile_guid,
-            description, ARRAYSIZE(description) - 1, path.c_str(), static_cast<ULONG>(path.size()), 0);
-        if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
-        if (SUCCEEDED(hr)) hr = categories->RegisterCategory(service_clsid, GUID_TFCAT_TIP_KEYBOARD, service_clsid);
-        if (SUCCEEDED(hr)) hr = categories->RegisterCategory(service_clsid, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, service_clsid);
-        if (SUCCEEDED(hr)) hr = categories->RegisterCategory(service_clsid, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, service_clsid);
-        if (SUCCEEDED(hr)) hr = categories->RegisterCategory(service_clsid, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, service_clsid);
-        if (SUCCEEDED(hr)) hr = profiles->EnableLanguageProfile(service_clsid, language_id, profile_guid, TRUE);
-        if (FAILED(hr)) {
-            if (categories) categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, service_clsid);
-            if (categories) categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, service_clsid);
-            if (categories) categories->UnregisterCategory(service_clsid, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, service_clsid);
-            if (categories) categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIP_KEYBOARD, service_clsid);
-            if (registered) profiles->Unregister(service_clsid);
-            RegDeleteTreeW(HKEY_LOCAL_MACHINE, registry_path.c_str());
-        }
-        return hr;
+        SystemTsfRegistration tsf;
+        return remove ? registration::unregister_in(HKEY_LOCAL_MACHINE, path, tsf)
+                      : registration::register_in(HKEY_LOCAL_MACHINE, path, tsf);
     } catch (...) { return E_OUTOFMEMORY; }
 }
-HRESULT unregister_server() noexcept {
-    try {
-        ComScope com;
-        if (FAILED(com.status) && com.status != RPC_E_CHANGED_MODE) return com.status;
-        ComPtr<ITfCategoryMgr> categories;
-        auto hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
-        if (FAILED(hr)) return hr;
-        categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIP_KEYBOARD, service_clsid);
-        categories->UnregisterCategory(service_clsid, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, service_clsid);
-        categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, service_clsid);
-        categories->UnregisterCategory(service_clsid, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, service_clsid);
-        ComPtr<ITfInputProcessorProfiles> profiles;
-        hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
-        if (FAILED(hr)) return hr;
-        hr = profiles->Unregister(service_clsid);
-        if (FAILED(hr)) return hr;
-        const auto error = RegDeleteTreeW(HKEY_LOCAL_MACHINE, class_path().c_str());
-        return error == ERROR_FILE_NOT_FOUND ? S_OK : HRESULT_FROM_WIN32(error);
-    } catch (...) { return E_OUTOFMEMORY; }
 }
-} // namespace nskkzime::windows
+HRESULT register_server() noexcept { return change_registration(false); }
+HRESULT unregister_server() noexcept { return change_registration(true); }
+}

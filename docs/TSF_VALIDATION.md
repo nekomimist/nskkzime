@@ -5,6 +5,9 @@
 `tsf_smoke` はDLLを直接LoadLibraryし、WindowsのIME設定には登録しない。
 
 - DLLエクスポート、クラスファクトリー、IUnknown同一性、参照数とアンロード。
+- `tsf_registration`: 専用のHKCUキーとTSF呼び出しの代替実装で、COM登録先の保存、
+  別版・不正値・部分登録の保全、登録の各段階の失敗と後始末、解除失敗後の再試行を検証する。
+  本番のHKLMやWindowsのTSFプロファイルは変更しない。Debugと両Release構成で成功。
 - 実TSFマネージャーの生成・起動・終了。
 - テスト用マネージャーでの初期化・終了、途中の登録失敗からの後始末。
 - テスト用テキストストアでの未確定表示、候補選択、送り仮名、確定、取消。
@@ -90,6 +93,17 @@ $env:NSKKZIME_DICTIONARY = (Resolve-Path .\SKK-JISYO.utf8.L).Path
 日本語プロファイル、キーボード・表示属性・入力モードコンパートメント・システムトレイ対応のカテゴリーを使用する。
 プロファイルを有効化するが、既定IMEは変更しない。別のビルドを誤って上書きしないよう、
 CLSIDが既に登録済みなら登録を拒否する。登録先のDLLを変更する前に、元のDLLで解除する。
+新しい実装の `DllUnregisterServer` はHKLMの `InprocServer32` と実行中DLLの絶対パスを
+大文字小文字を区別せず比較し、別のパスなら `ERROR_NOT_OWNER` を返してTSFを変更しない。
+未登録なら何もせず `S_FALSE`、欠損・型違い・終端不正等で所有元を確認できなければ失敗する。
+登録・解除は共通の名前付きmutexで直列化し、処理中の別呼び出しは `ERROR_BUSY` で終了する。
+この保護を持たない旧DLLや、レジストリへの直接操作との排他までは保証しない。
+
+登録中の失敗では実行を試みたTSF操作を巻き戻す。後始末にも失敗した場合は、解除を再試行できるよう
+COMの登録先を残して失敗を返す。解除中のカテゴリー・プロファイル操作の失敗も無視せず、
+登録先を残す。再試行ではWindowsの列挙APIで既に存在しない項目を確認してから飛ばす。
+これは各操作の失敗を検出する処理であり、OS全体に対する原子的な更新や旧版の自動復元ではない。
+新しいDLLでの実OS登録・解除と、権限／OS側障害からの復旧の実測は引き続き必要。
 アンインストーラー・署名・更新処理はPhase 3で実装する。
 
 登録スクリプトは `stage-dev.ps1` を使い、Release DLL・辞書補助プロセス・設定GUI・辞書管理GUIを同じ
@@ -405,6 +419,9 @@ TSF対応RichEditでは同じ手順で「あか」になる。標準EDITでは�
 アプリ側で編集した文字列が古い候補に戻らないかを確認する。
 
 参照: [Text Service Registration](https://learn.microsoft.com/en-us/windows/win32/tsf/text-service-registration)、
+[RegQueryValueExWの文字列終端](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryvalueexw)、
+[EnumCategoriesInItem](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcategorymgr-enumcategoriesinitem)、
+[EnumInputProcessorInfo](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-enuminputprocessorinfo)、
 [RequestEditSession](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession)、
 [OnEndEdit](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itftexteditsink-onendedit)。
 TSFキー判定の終了処理は [Microsoft SampleIMEのキー通知](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/IME/cpp/SampleIME/KeyEventSink.cpp) も参照。

@@ -68,7 +68,8 @@ CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空�
 その後、DDSKKの比較データを使う `ddskk_contract` を追加し、通常Debug／Releaseと実モデル入りReleaseで成功した。
 さらに `evaluation` の16ケースが通常Debug／Releaseと実モデル入りReleaseで成功した。
 その後、開発用ZIPの `package` を通常Debug／Releaseと実モデル入りReleaseで確認した。
-現在のCTest登録数は通常41件、実モデル入り46件。比較用のGNU EmacsとDDSKKは推論サーバーの依存には含まない。
+登録処理の `tsf_registration` を追加し、通常Debugの新規項目、通常Releaseの全42件、実モデル入りReleaseの全47件が成功した。
+現在のCTest登録数は通常42件、実モデル入り47件。比較用のGNU EmacsとDDSKKは推論サーバーの依存には含まない。
 
 ```powershell
 .\scripts\bench-zenz.ps1 -Rounds 30 -Output out/zenz-benchmark.json
