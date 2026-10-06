@@ -54,7 +54,7 @@ try {
     }
     $created = & $PackageScript @arguments
     $verified = & $PackageScript -Verify $created.Path
-    Assert-Package ($verified.Verified -and $verified.Files -eq 14 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
+    Assert-Package ($verified.Verified -and $verified.Files -eq 16 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
     Assert-Package ($verified.SHA256 -eq $created.SHA256) 'Verification changed archive.'
     Expect-Failure { & $PackageScript @arguments } '上書きしません'
     Assert-Package ((Get-FileHash -LiteralPath $created.Path).Hash -eq $created.SHA256) 'Existing archive overwritten.'
@@ -68,6 +68,29 @@ try {
         Rewrite-Zip $created.Path $bad $mode
         Expect-Failure { & $PackageScript -Verify $bad } $failures[$mode]
     }
+    $expanded = Join-Path $fixture 'expanded'
+    [IO.Compression.ZipFile]::ExtractToDirectory($created.Path, $expanded)
+    $directoryResult = & $PackageScript -VerifyDirectory $expanded
+    Assert-Package ($directoryResult.Verified -and $directoryResult.FormatVersion -eq 2 -and $directoryResult.Paths.Count -eq 17) 'Expanded package verification failed.'
+    $directoryReadme = Join-Path $expanded 'README.md'
+    $originalReadme = [IO.File]::ReadAllBytes($directoryReadme)
+    [IO.File]::AppendAllText($directoryReadme, 'corrupt')
+    Expect-Failure { & $PackageScript -VerifyDirectory $expanded } 'ハッシュまたは長さ'
+    [IO.File]::Delete($directoryReadme)
+    Expect-Failure { & $PackageScript -VerifyDirectory $expanded } 'ファイル一覧'
+    [IO.File]::WriteAllBytes($directoryReadme, $originalReadme)
+    $extraFile = Join-Path $expanded 'settings.ini'
+    [IO.File]::WriteAllText($extraFile, 'private data')
+    Expect-Failure { & $PackageScript -VerifyDirectory $expanded } '余分なファイル'
+    [IO.File]::Delete($extraFile)
+    $extraDirectory = Join-Path $expanded 'empty'
+    [IO.Directory]::CreateDirectory($extraDirectory) | Out-Null
+    Expect-Failure { & $PackageScript -VerifyDirectory $expanded } '余分なディレクトリー'
+    [IO.Directory]::Delete($extraDirectory)
+    $junction = Join-Path $fixture 'linked-package'
+    New-Item -ItemType Junction -Path $junction -Target $expanded | Out-Null
+    try { Expect-Failure { & $PackageScript -VerifyDirectory $junction } '再解析ポイント' }
+    finally { [IO.Directory]::Delete($junction) }
     # Check a genuine wrong-architecture input without changing build artifacts.
     $fake = Join-Path $fixture 'Release'
     [IO.Directory]::CreateDirectory($fake) | Out-Null
@@ -92,15 +115,9 @@ try {
     Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'A test-only build was packaged.'
     Write-Output 'PASS zenz-only package, required server, Unicode paths, reproducible bytes, no overwrite, corruption, missing/duplicate/traversing/extra files, wrong architecture, unknown dependency and test-only rejection'
 } finally {
-    # Enumerate only our uniquely named workspace fixture; no recursive deletion.
+    # Only this uniquely named workspace fixture may be recursively removed.
     $absolute = [IO.Path]::GetFullPath($fixture)
     $allowed = [IO.Path]::GetFullPath($BuildDirectory).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     if (-not $absolute.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture escaped build directory.' }
-    $fake = Join-Path $absolute 'Release'
-    if (Test-Path -LiteralPath $fake) {
-        foreach ($file in Get-ChildItem -LiteralPath $fake -File) { Remove-Item -LiteralPath $file.FullName }
-        Remove-Item -LiteralPath $fake
-    }
-    foreach ($file in Get-ChildItem -LiteralPath $absolute -File) { Remove-Item -LiteralPath $file.FullName }
-    Remove-Item -LiteralPath $absolute
+    Remove-Item -LiteralPath $absolute -Recurse -Force
 }

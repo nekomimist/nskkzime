@@ -185,6 +185,11 @@ if(WIN32)
       -PackageScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/package.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR}
       -Configuration $<CONFIG> ${NSKKZIME_PACKAGE_TEST_ARGS})
     set_tests_properties(package PROPERTIES TIMEOUT 90)
+    if(NSKKZIME_WITH_ZENZ)
+      add_test(NAME installation COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/installation_tests.ps1
+        -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR} -Configuration $<CONFIG>)
+      set_tests_properties(installation PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    endif()
     add_test(NAME ddskk_contract COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare-ddskk.ps1
       -CoreOnly -Trace $<TARGET_FILE:skk_trace> -OutputRoot ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(ddskk_contract PROPERTIES TIMEOUT 60)

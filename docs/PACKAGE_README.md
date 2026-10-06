@@ -1,6 +1,6 @@
 # nskkzime 開発用パッケージ
 
-Windows / x64用の開発中のSKK風IMEです。これは検証用ZIPで、完成版のインストーラーではありません。
+Windows / x64用の開発中のSKK風IMEです。検証用ZIPに導入・更新用のPowerShellスクリプトを含みます。
 署名・本体の公開ライセンス・クリーン環境での導入試験は未完了です。
 モデル、SKK辞書、設定、学習データは含みません。既存ファイルを上書きせず、版ごとに別の場所へ展開してください。
 
@@ -28,50 +28,57 @@ Get-FileHash 'C:\Downloads\nskkzime.zip' -Algorithm SHA256
 .\tools\package.ps1 -Verify 'C:\Downloads\nskkzime.zip'
 ```
 
-検査はファイルを展開・実行・登録しません。元ZIPの検査なので、展開した後に変更されたファイルは対象外です。
+展開したファイルも検査できます。検査はファイルを実行・登録しません。
+
+```powershell
+.\tools\package.ps1 -VerifyDirectory .
+```
 
 ## 初回登録と確認
 
 登録には管理者権限が必要です。まず設定・辞書・学習データのバックアップを取り、使用中のアプリを閉じます。
-展開したフォルダーを固定した場所へ置き、**管理者のx64 PowerShell 7**で以下を実行します。
+展開したフォルダーで、**本人のアカウントの管理者のx64 PowerShell 7**から以下を実行します。
 管理者として別のユーザー資格情報を使う構成や、複数ユーザーへの展開は未検証です。
 
 ```powershell
-$dll = (Resolve-Path '.\bin\nskkzime_tsf.dll').Path
-& "$env:SystemRoot\System32\regsvr32.exe" $dll
+.\tools\install.ps1 -Action Status
+.\tools\install.ps1 -Action Install
 ```
 
-DLLの登録は既存のnskkzime登録を上書きしません。既に登録されている場合は下記の更新手順を使います。
-DLLと同じ `bin/` 内の補助プロセス・GUIを移動しないでください。
-登録後は通常権限に戻し、`bin/nskkzime_settings.exe` で手元のSKK辞書を設定して、
-`bin/ime_probe.exe` の標準EDIT／RichEditで入力・変換・確定・取消を確認します。
+配置先は `%ProgramFiles%\nskkzime\versions\<版ID>` です。版IDはマニフェストのSHA-256です。
+配置後にもう一度全ファイルを検査して登録します。一般ユーザーが書き換えられる配置先や再解析ポイントは拒否します。
+`Status` は管理者権限なしで使え、登録DLL、現在の版ID、保存済み版ID、未完了の更新を表示します。
+管理外の登録（従来の開発用登録や手動で登録したZIP）は自動解除しません。元の手順で解除してから導入します。
+開発用の `out/installed` からの移行では、リポジトリーの `scripts/register-dev.ps1 -Unregister` を先に使います。
+
+登録後は通常権限に戻し、登録DLLと同じ `bin/` の `nskkzime_settings.exe` で手元のSKK辞書を設定して、
+`ime_probe.exe` の標準EDIT／RichEditで入力・変換・確定・取消を確認します。
 辞書のない状態ではかな入力のみです。設定保存後は入力先アプリを起動し直します。
 zenzは既定オフです。使う場合は設定GUIからモデルと同梱サーバーの絶対パスを指定します。
 
 ## 更新・解除・旧版への復帰
 
-新しい版は別フォルダーへ展開し、ZIPを検査します。旧版のファイルは復帰用に残します。
-現在登録されているDLLの場所は、次の読み取りコマンドで確認できます。
+新しいZIPは別フォルダーへ展開して検査します。使用中のアプリを閉じ、管理者のPowerShellで新しい版の
+`tools/install.ps1 -Action Install` を実行します。旧版を解除して新しい版を登録し、旧版のファイルも保持します。
+失敗した場合は旧版への復帰を試みます。復帰にも失敗した場合や処理を中断した場合は更新記録を保持します。
+原因を解消し、動作中の `regsvr32` が終了した後に、同じスクリプトの `Recover` で変更前の状態へ戻します。
 
 ```powershell
-$key = 'HKLM:\Software\Classes\CLSID\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}\InprocServer32'
-(Get-ItemProperty -LiteralPath $key).'(default)'
+.\tools\install.ps1 -Action Status
+.\tools\install.ps1 -Action Recover
 ```
 
-使用中のアプリを閉じ、管理者のx64 PowerShellから、**確認した現在のDLL**で解除します。
+正常に更新した後でも、`Status` の `AvailableVersions` にある旧版IDを指定して復帰できます。
 
 ```powershell
-& "$env:SystemRoot\System32\regsvr32.exe" /u 'C:\確認した現在の版\bin\nskkzime_tsf.dll'
+.\tools\install.ps1 -Action Rollback -Version '<Statusで確認した64桁の旧版ID>'
+.\tools\install.ps1 -Action Unregister
 ```
 
-解除が成功したことを確認してから新しい版を登録します。新しい版の登録に失敗した場合は、
-上のコマンドで登録先を再確認します。新しいDLLのパスが残っている場合は、そのDLLで解除を再試行し、
-解除成功後に旧版の同じDLLを登録し直します。登録先が残らなかった場合は旧版を直接登録できます。
-この版のDLLは別のパスにある版の登録を解除しません。解除が失敗したときも登録先とDLLを保持し、
-表示されたエラーの原因を解消してから同じDLLで再試行してください。
-古いDLLを読み込んだままのアプリは起動し直してください。
-アンインストールは解除までで完了し、設定・辞書・学習データは保持します。
-復旧に必要なDLLを先に削除しないでください。このZIPはデータ移行や自動ロールバックを実行しません。
+`Unregister` はWindowsの登録だけを解除します。配置した全ての版、設定・辞書・学習データ・モデルは保持します。
+ファイル削除や「インストールされているアプリ」への追加は行いません。復旧に必要なDLLを先に削除しないでください。
+古いDLLを読み込んだままのアプリは起動し直してください。OS登録全体が一度に切り替わる仕組みではなく、
+電源断・ファイル破損等から必ず復旧できる保証はありません。実OSでの一連の導入試験は今後実施します。
 モデルサーバーを別フォルダーへ更新した場合は設定GUIのパスも更新し、入力先アプリを起動し直します。
 
 ## 依存ライセンス

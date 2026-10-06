@@ -4,7 +4,8 @@ param(
     [Parameter(ParameterSetName = 'Create')][string]$SourceDirectory,
     [Parameter(ParameterSetName = 'Create')][switch]$Zenz, # Legacy no-op; creation always includes zenz.
     [Parameter(Mandatory, ParameterSetName = 'Create')][string]$Output,
-    [Parameter(Mandatory, ParameterSetName = 'Verify')][string]$Verify
+    [Parameter(Mandatory, ParameterSetName = 'Verify')][string]$Verify,
+    [Parameter(Mandatory, ParameterSetName = 'Directory')][string]$VerifyDirectory
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -16,12 +17,36 @@ $zenzLicenses = @('licenses/skk-zenz-MIT.txt', 'licenses/llama-MIT.txt')
 function Get-Digest([byte[]]$Bytes) {
     [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
-function Get-PackageNames([bool]$WithZenz) {
+function Get-PackageNames([bool]$WithZenz, [int]$Format = 2) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
     if ($WithZenz) { $names += @('bin/nkkz-ime-server.exe') + $zenzLicenses }
+    if ($Format -eq 2) { $names += @('tools/install.ps1', 'tools/installation.psm1') }
     $names | Sort-Object -CaseSensitive
+}
+function Test-PackageContents($Contents) {
+    if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
+    if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
+    $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
+    if ($manifest.format_version -notin @(1, 2) -or $manifest.product -cne 'nskkzime' -or
+        $manifest.architecture -cne 'x64' -or $manifest.configuration -cne 'Release' -or
+        $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
+        ($manifest.format_version -eq 2 -and $manifest.variant -cne 'zenz-cpu')) {
+        throw '未対応のパッケージ形式です。'
+    }
+    $names = @(Get-PackageNames ($manifest.variant -ceq 'zenz-cpu') $manifest.format_version)
+    if ($Contents.Count -ne $names.Count + 1 -or $manifest.files.Count -ne $names.Count) { throw 'ファイル一覧が一致しません。' }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($file in $manifest.files) {
+        if ($file.path -cnotin $names -or -not $seen.Add($file.path) -or -not $Contents.ContainsKey($file.path)) {
+            throw "不足・余分・重複したファイル: $($file.path)"
+        }
+        if ($file.size -ne $Contents[$file.path].Length -or $file.sha256 -cne (Get-Digest $Contents[$file.path])) {
+            throw "ハッシュまたは長さが一致しません: $($file.path)"
+        }
+    }
+    return $manifest
 }
 function Read-Package([string]$Path) {
     $archive = [IO.Compression.ZipFile]::OpenRead($Path)
@@ -53,25 +78,55 @@ function Read-Package([string]$Path) {
                 $contents.Add($name, $memory.ToArray())
             } finally { $memory.Dispose(); $stream.Dispose() }
         }
-        if (-not $contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
-        $manifest = [Text.Encoding]::UTF8.GetString($contents['manifest.json']) | ConvertFrom-Json
-        if ($manifest.format_version -ne 1 -or $manifest.architecture -cne 'x64' -or
-            $manifest.configuration -cne 'Release' -or $manifest.variant -cnotin @('skk', 'zenz-cpu')) {
-            throw '未対応のパッケージ形式です。'
-        }
-        $names = @(Get-PackageNames ($manifest.variant -ceq 'zenz-cpu'))
-        if ($contents.Count -ne $names.Count + 1 -or $manifest.files.Count -ne $names.Count) { throw 'ファイル一覧が一致しません。' }
-        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($file in $manifest.files) {
-            if ($file.path -cnotin $names -or -not $seen.Add($file.path) -or -not $contents.ContainsKey($file.path)) {
-                throw "不足・余分・重複したファイル: $($file.path)"
-            }
-            if ($file.size -ne $contents[$file.path].Length -or $file.sha256 -cne (Get-Digest $contents[$file.path])) {
-                throw "ハッシュまたは長さが一致しません: $($file.path)"
-            }
-        }
-        return $manifest
+        return Test-PackageContents $contents
     } finally { $archive.Dispose() }
+}
+if ($PSCmdlet.ParameterSetName -eq 'Directory') {
+    $path = [IO.Path]::GetFullPath($VerifyDirectory)
+    $root = Get-Item -LiteralPath $path -Force
+    if (-not $root.PSIsContainer) { throw 'パッケージのディレクトリーを指定してください。' }
+    for ($ancestor = $root; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+        if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '再解析ポイントは検査できません。' }
+    }
+    $names = @(Get-PackageNames $true) + @('manifest.json')
+    $contents = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
+    $folders = [Collections.Generic.Queue[string]]::new()
+    $folders.Enqueue($path)
+    $total = 0L
+    while ($folders.Count) {
+        foreach ($item in Get-ChildItem -LiteralPath $folders.Dequeue() -Force) {
+            $relative = [IO.Path]::GetRelativePath($path, $item.FullName).Replace('\', '/')
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "再解析ポイントは検査できません: $relative" }
+            if ($item.PSIsContainer) {
+                if ($relative -cnotin @('bin', 'licenses', 'tools')) { throw "余分なディレクトリー: $relative" }
+                $folders.Enqueue($item.FullName)
+                continue
+            }
+            if ($relative -cnotin $names) { throw "余分なファイル: $relative" }
+            $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            $memory = [IO.MemoryStream]::new()
+            try {
+                $size = $stream.Length
+                $total += $size
+                if ($size -gt 128MB -or $total -gt 256MB) { throw 'パッケージのサイズが上限を超えています。' }
+                $buffer = [byte[]]::new(65536)
+                $remaining = $size + 1
+                while ($remaining -gt 0) {
+                    $read = $stream.Read($buffer, 0, [int][Math]::Min($buffer.Length, $remaining))
+                    if (-not $read) { break }
+                    $memory.Write($buffer, 0, $read)
+                    $remaining -= $read
+                }
+                if ($memory.Length -ne $size) { throw "ファイルの長さが変わりました: $relative" }
+                $contents.Add($relative, $memory.ToArray())
+            } finally { $memory.Dispose(); $stream.Dispose() }
+        }
+    }
+    $manifest = Test-PackageContents $contents
+    [pscustomobject]@{ Path = $path; Variant = $manifest.variant; Files = $manifest.files.Count;
+        FormatVersion = $manifest.format_version; ManifestSHA256 = (Get-Digest $contents['manifest.json']);
+        Paths = @($contents.Keys | Sort-Object -CaseSensitive); Verified = $true }
+    return
 }
 if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     $path = [IO.Path]::GetFullPath($Verify)
@@ -103,6 +158,8 @@ foreach ($name in $binaries) { $sources['bin/' + $name] = Join-Path $source $nam
 $sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe'
 $sources['README.md'] = Join-Path $repository 'docs/PACKAGE_README.md'
 $sources['tools/package.ps1'] = $PSCommandPath
+$sources['tools/install.ps1'] = Join-Path $PSScriptRoot 'install.ps1'
+$sources['tools/installation.psm1'] = Join-Path $PSScriptRoot 'installation.psm1'
 $sources['licenses/nlohmann-MIT.txt'] = Join-Path $repository 'third_party/nlohmann/LICENSE.MIT'
 $sources['licenses/Unicode-3.0.txt'] = Join-Path $repository 'third_party/unicode/LICENSE.txt'
 $sources['licenses/skk-zenz-MIT.txt'] = Join-Path $repository 'third_party/skk-zenz/LICENSE'
@@ -145,7 +202,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できませ�
 $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
-    format_version = 1; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
+    format_version = 2; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $null
