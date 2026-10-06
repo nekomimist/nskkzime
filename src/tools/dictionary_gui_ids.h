@@ -1,0 +1,12 @@
+#pragma once
+#define IDD_DICTIONARY_MANAGER 200
+#define IDC_STORE 2000
+#define IDC_SEARCH 2001
+#define IDC_WORDS 2002
+#define IDC_COUNT 2003
+#define IDC_DETAIL 2004
+#define IDC_STATUS 2005
+#define IDC_REFRESH 2006
+#define IDC_FORGET 2007
+#define IDC_IMPORT 2008
+#define IDC_EXPORT 2009

@@ -1,5 +1,9 @@
 #requires -Version 7.0
-param([ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug', [switch]$Zenz)
+param(
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
+    [switch]$Zenz,
+    [ValidateRange(1, 64)][int]$Jobs = [Math]::Min(8, [Environment]::ProcessorCount)
+)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -34,6 +38,6 @@ function Invoke-BuildTool([string]$Executable, [string[]]$ToolArguments) {
 Push-Location $repoRoot
 try {
     Invoke-BuildTool $cmake @('--preset', $configurePreset, "-DCMAKE_GENERATOR_INSTANCE=$vsRoot")
-    Invoke-BuildTool $cmake @('--build', '--preset', $preset, '--parallel')
+    Invoke-BuildTool $cmake @('--build', '--preset', $preset, '--parallel', "$Jobs")
     Invoke-BuildTool $ctest @('--preset', $preset)
 } finally { Pop-Location }
