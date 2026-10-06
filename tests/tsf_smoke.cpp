@@ -257,6 +257,47 @@ void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
     succeeded(service->ActivateEx(host.Get(), 1, 0), "selection-test activate failed"); wait_for_dictionary();
     auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    for (const bool parent_context : {false, true}) {
+        auto context = fresh(); auto origin = parent_context ? test_host::transitory_context(context.Get()) : context;
+        context->doc->text = L"前後"; context->doc->caret = 1;
+        type(keys, origin.Get(), "Kanji"); key(keys, origin.Get(), VK_SPACE);
+        const auto writes = context->doc->writes;
+        // The current candidate is already in the text store. Committing it is
+        // a composition lifecycle change, not another text insertion.
+        context->doc->reject_write = true;
+        check(key(keys, origin.Get(), VK_RETURN) && context->doc->writes == writes && context->composition->ended &&
+              context->doc->text == L"前漢字後" && context->doc->caret == 3 && !host->ui,
+              "unchanged candidate commit rewrote text or failed to finish");
+        context->doc->reject_write = false;
+        type(keys, origin.Get(), "Ka"); const auto reading_writes = context->doc->writes;
+        key(keys, origin.Get(), VK_RETURN);
+        check(context->doc->writes == reading_writes && context->doc->text == L"前漢字か後", "literal confirmation rewrote its reading");
+        type(keys, origin.Get(), "Kanji"); key(keys, origin.Get(), VK_SPACE);
+        const auto first_writes = context->doc->writes;
+        key(keys, origin.Get(), VK_PRIOR);
+        check(context->doc->writes == first_writes, "page edge rewrote unchanged candidate");
+        type(keys, origin.Get(), "a");
+        check(context->doc->writes == first_writes + 1 && context->doc->text == L"前漢字か漢字あ後",
+              "commit and additional kana skipped a necessary edit");
+    }
+    for (const bool reenter : {false, true}) {
+        auto context = fresh(); type(keys, context.Get(), "Ka");
+        const auto writes = context->doc->writes;
+        unsigned reads = 0;
+        context->doc->read_query = [&] {
+            // Two reads check the existing composition at key entry. Change
+            // the host on the later no-op comparison, without prior notice.
+            if (++reads == 3) {
+                if (reenter) context->composition->terminate();
+                else context->doc->replace(0, 1, L"改");
+            }
+        };
+        check(!key(keys, context.Get(), VK_RETURN) && context->doc->writes == writes && context->doc->text == (reenter ? L"か" : L"改"),
+              "no-op comparison overwrote a host edit or adopted reentrant composition state");
+        context->doc->read_query = {}; context->pump();
+        type(keys, context.Get(), "a");
+        check(context->doc->text == (reenter ? L"かあ" : L"改あ"), "comparison invalidation leaked old reading into next input");
+    }
     {
         auto context = fresh(); type(keys, context.Get(), "aKa"); key(keys, context.Get(), VK_RETURN);
         check(context->doc->text == L"あか" && context->doc->caret == 2 && context->selection_writes == 0,
@@ -521,11 +562,11 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
         BOOL eaten = FALSE; succeeded(keys->OnTestKeyDown(context.Get(), '1', 0, &eaten), "numeric probe failed");
         check(eaten && context->doc->text == L"感じ" && !context->composition->ended, "numeric probe changed composition");
     }
-    context->doc->reject_write = true;
-    check(!key(keys, context.Get(), '1'), "failed numeric edit consumed shortcut");
+    context->reject_session = true;
+    check(!key(keys, context.Get(), '1'), "refused numeric commit consumed shortcut");
     list->GetSelection(&selected); check(selected == 1 && context->doc->text == L"感じ" && !context->composition->ended,
         "failed numeric edit changed selection");
-    context->doc->reject_write = false;
+    context->reject_session = false;
     check(context->layout != nullptr, "composition did not subscribe to layout changes");
     auto layout = context->layout;
     // Destruction invalidates older layout requests; later changes may resume.

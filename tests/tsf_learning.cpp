@@ -105,10 +105,12 @@ int wmain(int argc, wchar_t** argv) {
         check(host->ui.As(&list) == E_NOINTERFACE, "registration exposed draft as candidates");
         type(keys.Get(), context.Get(), "Nihon"); key(keys.Get(), context.Get(), VK_SPACE);
         check(context->doc->text == L"みち", "registration draft leaked into document");
-        context->doc->reject_write = true;
-        check(!key(keys.Get(), context.Get(), '1'), "failed inner selection consumed shortcut");
-        context->doc->reject_write = false;
+        context->reject_session = true;
+        check(!key(keys.Get(), context.Get(), '1'), "refused inner selection consumed shortcut");
+        context->reject_session = false;
+        const auto draft_writes = context->doc->writes;
         check(key(keys.Get(), context.Get(), '1') && host->ui && context->doc->text == L"みち", "inner selection registered or changed host text");
+        check(context->doc->writes == draft_writes, "inner selection unnecessarily rewrote the host reading");
         BSTR description = nullptr; host->ui->GetDescription(&description);
         const bool in_draft = description && std::wstring_view(description).find(L"日本") != std::wstring_view::npos &&
             std::wstring_view(description).find(L"▼") == std::wstring_view::npos;

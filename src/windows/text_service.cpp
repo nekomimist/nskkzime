@@ -783,10 +783,20 @@ private:
             if (FAILED(hr) || !composition_) { detach_composition(); return FAILED(hr) ? hr : E_FAIL; }
             created = true;
         }
-        {
+        // Confirming the displayed candidate or editing only the registration
+        // popup often leaves the document unchanged. Avoid another host text
+        // mutation (layout/accessibility/undo), but still finish/shift the
+        // composition and update its attributes and selection below.
+        const auto current = composition_;
+        const auto revision = engine_.revision();
+        const bool unchanged = !created && text == expected_text_;
+        if (unchanged && !range_matches(range.Get(), cookie, text)) return E_UNEXPECTED;
+        // Reading the host range may reenter and end or replace the composition.
+        if (composition_.Get() != current.Get() || composition_context_.Get() != context || engine_.revision() != revision) return E_UNEXPECTED;
+        if (!unchanged) {
             const InputPhaseTiming write(InputTimingPhase::SetText);
             hr = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
-        }
+        } else hr = S_OK;
         if (FAILED(hr)) {
             if (created) {
                 ending_ = true; composition_->EndComposition(cookie); ending_ = false;
@@ -825,7 +835,7 @@ private:
             // the next key, and never replay a key whose SetText already succeeded.
             end_composition(cookie); next.reset();
         }
-        // Once SetText succeeds, consume the key even if a subsequent host operation fails.
+        // Once text is applied or verified, consume the key even if a later host operation fails.
         return S_OK;
     }
     void finish_composition(DWORD scheduling = TF_ES_ASYNC) noexcept {

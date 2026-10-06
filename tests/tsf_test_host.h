@@ -92,6 +92,8 @@ struct Document {
     bool reject_read = false;
     bool move_selection_on_write = true;
     unsigned reads = 0;
+    unsigned writes = 0;
+    std::function<void()> read_query;
     ULONG read_limit = MAXDWORD;
     std::vector<Range*> ranges;
     void replace(LONG begin, LONG finish, std::wstring_view value);
@@ -110,6 +112,7 @@ public:
         *out = static_cast<ITfRange*>(this); AddRef(); return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetText(TfEditCookie, DWORD, const WCHAR* text, LONG length) override {
+        ++doc->writes;
         if (doc->reject_write) return E_FAIL;
         const auto begin = start;
         doc->replace(start, end, std::wstring_view(text, static_cast<std::size_t>(length)));
@@ -128,6 +131,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetText(TfEditCookie, DWORD flags, WCHAR* text, ULONG maximum, ULONG* fetched) override {
         ++doc->reads;
+        if (doc->read_query) doc->read_query();
         if (doc->reject_read) return E_FAIL;
         *fetched = (std::min)({maximum, static_cast<ULONG>(end - start), doc->read_limit});
         std::copy_n(doc->text.data() + start, *fetched, text);
