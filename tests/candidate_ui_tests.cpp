@@ -118,17 +118,17 @@ int main() {
             auto actions = std::make_shared<CandidateActions>();
             std::size_t selected = 99; std::uint64_t revision = 0; unsigned calls = 0;
             actions->select = [&](std::size_t index, std::uint64_t value) { selected = index; revision = value; ++calls; };
-            ComPtr<CandidateList> list; list.Attach(new CandidateList(false, actions)); list->update(engine, nullptr);
+            ComPtr<CandidateList> list; list.Attach(new CandidateList(PopupKind::Candidates, actions)); list->update(engine, nullptr);
             list->request_selection(2); check(calls == 0, "out-of-range click dispatched");
             list->request_selection(1); check(calls == 1 && selected == 1 && revision == engine.revision(), "click lost snapshot revision");
             actions.reset(); list->request_selection(0); check(calls == 1, "expired service received click");
             actions = std::make_shared<CandidateActions>(); actions->select = [&](std::size_t, std::uint64_t) { ++calls; };
-            list.Attach(new CandidateList(false, actions)); list->update(engine, nullptr); list->close(); list->request_selection(0);
+            list.Attach(new CandidateList(PopupKind::Candidates, actions)); list->update(engine, nullptr); list->close(); list->request_selection(0);
             check(calls == 1, "closed snapshot dispatched click");
         }
         {
             Engine engine(demo_dictionary()); type(engine, "Michi"); engine.handle({KeyCode::Space});
-            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(true)); popup->update(engine, nullptr);
+            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(PopupKind::Editor)); popup->update(engine, nullptr);
             ComPtr<ITfUIElement> element; check(SUCCEEDED(popup.As(&element)), "registration UI element unavailable");
             ComPtr<ITfCandidateListUIElement> candidates;
             check(element.As(&candidates) == E_NOINTERFACE, "registration advertised editable text as a candidate list");
@@ -144,13 +144,33 @@ int main() {
             Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space}); type(engine, "X");
             unsigned selections = 0;
             auto actions = std::make_shared<CandidateActions>(); actions->select = [&](std::size_t, std::uint64_t) { ++selections; };
-            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(true, actions)); popup->update(engine, nullptr);
+            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(PopupKind::Editor, actions)); popup->update(engine, nullptr);
             UINT count = 99; popup->GetCount(&count); popup->request_selection(0);
             ComPtr<ITfCandidateListUIElement> list;
             check(count == 0 && !selections && popup.As(&list) == E_NOINTERFACE, "deletion prompt exposed actionable candidates");
             BSTR description = nullptr; popup->GetDescription(&description);
             const bool unavailable = description && std::wstring_view(description).find(L"削除できる学習語がありません") != std::wstring_view::npos;
             SysFreeString(description); check(unavailable, "read-only deletion explanation unavailable to host");
+        }
+        {
+            enable_input_timing(true);
+            Engine engine(demo_dictionary()); type(engine, "KaK");
+            unsigned selections = 0;
+            auto actions = std::make_shared<CandidateActions>(); actions->select = [&](std::size_t, std::uint64_t) { ++selections; };
+            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(PopupKind::Reading, actions));
+            { KeyTiming key; popup->update(engine, nullptr); }
+            ComPtr<ITfUIElement> element; check(SUCCEEDED(popup.As(&element)), "reading UI element unavailable");
+            ComPtr<ITfCandidateListUIElement> candidates;
+            check(element.As(&candidates) == E_NOINTERFACE, "reading advertised selectable candidates");
+            GUID guid{}; element->GetGUID(&guid); check(guid == reading_ui_guid, "reading UI identity missing");
+            BSTR value = nullptr; element->GetDescription(&value);
+            const bool has_reading = value && std::wstring_view(value).find(L"▽か*k") != std::wstring_view::npos;
+            SysFreeString(value); check(has_reading, "reading lost SKK state or pending okuri");
+            popup->request_selection(0); check(!selections, "reading popup selected a candidate");
+            check(input_timing_snapshot().pending_paints == 0, "reading counted as candidate presentation timing");
+            popup->close(); popup->Show(TRUE); BOOL shown = TRUE; popup->IsShown(&shown);
+            check(!shown, "closed reading popup reopened");
+            enable_input_timing(false);
         }
         check(module_objects == 0, "candidate COM object leaked");
         std::cout << "PASS candidate text/okuri, 7-row pages, host pagination, bounds, update flags, retained UI lifetime\n";

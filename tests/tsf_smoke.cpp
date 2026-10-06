@@ -1,6 +1,7 @@
 #include "dictionary_wait.h"
 #include "module.h"
 #include "display_attributes.h"
+#include "candidate_ui.h"
 #include "tsf_test_host.h"
 #include <wrl/client.h>
 #include <iostream>
@@ -139,6 +140,44 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
     succeeded(service->ActivateEx(host.Get(), 1, 0), "transitory activate failed"); wait_for_dictionary();
     auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    auto reading = [&]() {
+        GUID guid{};
+        return host->ui && SUCCEEDED(host->ui->GetGUID(&guid)) && guid == nskkzime::windows::reading_ui_guid;
+    };
+    auto description = [&]() {
+        BSTR value = nullptr;
+        check(host->ui && SUCCEEDED(host->ui->GetDescription(&value)), "reading description missing");
+        const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
+    };
+    {
+        auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
+        type(keys, origin.Get(), "K");
+        check(reading() && description().find(L"▽k") != std::wstring::npos && parent->doc->text == L"k",
+              "first redirected key did not present its reading outside the document");
+        const auto retained = host->ui; const auto begins = host->ui_begins;
+        BOOL shown = TRUE; retained->IsShown(&shown); check(!shown, "ignored host UI suppression");
+        type(keys, origin.Get(), "anji");
+        check(host->ui_begins == begins && description().find(L"▽かんじ") != std::wstring::npos,
+              "reading updates reopened or failed to refresh UI");
+        key(keys, origin.Get(), VK_SPACE);
+        check(host->ui && !reading() && parent->doc->text == L"漢字", "reading did not transition to candidates");
+        retained->Show(TRUE); retained->IsShown(&shown); check(!shown, "old reading element reopened after transition");
+        key(keys, origin.Get(), VK_ESCAPE);
+        check(reading() && parent->doc->text == L"かんじ", "candidate cancel did not restore reading UI");
+        const auto queries = parent->layout_queries;
+        parent->layout->OnLayoutChange(parent.Get(), TF_LC_CHANGE, nullptr); parent->pump();
+        check(parent->layout_queries > queries, "reading layout was not refreshed");
+        key(keys, origin.Get(), VK_ESCAPE);
+        check(!host->ui && parent->doc->text.empty(), "reading cancel retained UI or markers");
+        type(keys, origin.Get(), "k"); check(reading(), "pending direct romaji missing reading UI");
+        type(keys, origin.Get(), "a"); check(!host->ui && parent->doc->text == L"か", "direct kana retained reading UI");
+        type(keys, origin.Get(), "/"); check(reading(), "empty abbrev lost reading state");
+        key(keys, origin.Get(), VK_ESCAPE); check(!host->ui, "abbrev cancel retained reading UI");
+        host->reject_ui = true;
+        type(keys, origin.Get(), "Ka"); key(keys, origin.Get(), VK_RETURN);
+        check(!host->ui && parent->doc->text == L"かか", "reading presentation failure broke text input");
+        host->reject_ui = false;
+    }
     {
         auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
         parent->doc->text = L"前後"; parent->doc->caret = 1;
@@ -161,7 +200,7 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
         // Disconnecting the extension can clear its parent link before OnPopContext.
         static_cast<test_host::DocumentManager*>(origin->document_manager.Get())->transitory_parent.Reset();
         host->events->OnPopContext(origin.Get()); parent->pump();
-        check(parent->composition->ended && !parent->edits && !parent->layout, "origin pop retained parent composition");
+        check(parent->composition->ended && !parent->edits && !parent->layout && !host->ui, "origin pop retained parent composition or UI");
     }
     for (const bool source_document : {false, true}) {
         auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
@@ -206,7 +245,8 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     }
     {
         auto parent = fresh(); auto native = test_host::transitory_context(parent.Get()); native->static_flags = 0;
-        type(keys, native.Get(), "Ka"); key(keys, native.Get(), VK_RETURN);
+        type(keys, native.Get(), "Ka"); check(!host->ui, "native text store unnecessarily showed reading popup");
+        key(keys, native.Get(), VK_RETURN);
         check(native->doc->text == L"か" && parent->doc->text.empty(), "nontransitory native context was redirected");
     }
     succeeded(service->Deactivate(), "transitory deactivate failed");

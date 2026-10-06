@@ -50,13 +50,13 @@ std::optional<std::size_t> candidate_row_at(POINT point, SIZE client, int paddin
     const auto row = static_cast<std::size_t>((point.y - top) / line_height);
     return row < end - first ? std::optional{first + row} : std::nullopt;
 }
-CandidateList::CandidateList(bool registration, std::weak_ptr<CandidateActions> actions)
-    : registration_(registration), actions_(std::move(actions)) { ++module_objects; }
+CandidateList::CandidateList(PopupKind kind, std::weak_ptr<CandidateActions> actions)
+    : kind_(kind), actions_(std::move(actions)) { ++module_objects; }
 CandidateList::~CandidateList() { close(); --module_objects; }
 HRESULT CandidateList::QueryInterface(REFIID iid, void** output) {
     if (!output) return E_POINTER;
     *output = nullptr;
-    if (registration_ && iid == IID_ITfCandidateListUIElement) return E_NOINTERFACE;
+    if (kind_ != PopupKind::Candidates && iid == IID_ITfCandidateListUIElement) return E_NOINTERFACE;
     if (iid != IID_IUnknown && iid != IID_ITfUIElement && iid != IID_ITfCandidateListUIElement) return E_NOINTERFACE;
     *output = static_cast<ITfCandidateListUIElement*>(this); AddRef(); return S_OK;
 }
@@ -66,11 +66,11 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
     if (!value) return E_POINTER;
     *value = nullptr;
     try {
-        const auto description = registration_ ? heading_ + L"\n" + draft_ + L"\n" + hint_ : L"nskkzime 候補一覧";
+        const auto description = kind_ != PopupKind::Candidates ? heading_ + L"\n" + draft_ + L"\n" + hint_ : L"nskkzime 候補一覧";
         *value = SysAllocString(description.c_str()); return *value ? S_OK : E_OUTOFMEMORY;
     } catch (...) { return E_OUTOFMEMORY; }
 }
-HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = registration_ ? registration_ui_guid : candidate_ui_guid; return S_OK; }
+HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Reading ? reading_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
 HRESULT CandidateList::Show(BOOL show) { if (!show) { cancel_pointer(); discard_candidate_timing(paint_timing_); } requested_visible_ = show != FALSE; render(); return S_OK; }
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
@@ -129,7 +129,7 @@ std::optional<std::size_t> CandidateList::hit_test(POINT point) const noexcept {
     RECT area{};
     if (closed_ || !located_ || !requested_visible_ || !window_ || !IsWindowVisible(window_) || !GetClientRect(window_, &area)) return {};
     const auto [first, end] = visible_rows();
-    return candidate_row_at(point, {area.right, area.bottom}, padding_, line_height_, registration_, first, end);
+    return candidate_row_at(point, {area.right, area.bottom}, padding_, line_height_, kind_ == PopupKind::Editor, first, end);
 }
 void CandidateList::cancel_pointer() noexcept {
     pointer_.cancel();
@@ -143,10 +143,15 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     if (engine.candidates().size() > std::numeric_limits<UINT>::max()) throw std::length_error("too many candidates");
     std::vector<Row> rows;
     rows.reserve(engine.candidates().size());
-    for (std::size_t i = 0; !engine.forgetting() && i < engine.candidates().size(); ++i)
+    for (std::size_t i = 0; kind_ != PopupKind::Reading && !engine.forgetting() && i < engine.candidates().size(); ++i)
         rows.push_back({wide(engine.candidate_text(i)), wide(engine.candidates()[i].annotation)});
     updated_ = 0;
-    if (engine.forgetting()) {
+    if (kind_ == PopupKind::Reading) {
+        const std::wstring heading = engine.stage() == Stage::Direct ? L"かな入力中" : L"変換前の読み";
+        const auto draft = wide(engine.preedit());
+        if (heading != heading_ || draft != draft_) updated_ |= all_updates;
+        heading_ = heading; draft_ = draft; hint_.clear();
+    } else if (engine.forgetting()) {
         const auto& target = engine.forget_target();
         const auto heading = target ? L"学習語の削除  「" + wide(target->candidate.text) + L"」" : L"削除できる学習語がありません";
         const auto scope = target ? L"読み: " + wide(target->key.reading) + (target->key.okuri ?
@@ -156,7 +161,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
         const std::wstring hint = target ? L"yes + Enter: この登録を削除  Esc / no + Enter: 取消" : L"Enter / Esc: 候補へ戻る";
         if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
         heading_ = heading; draft_ = draft; hint_ = hint;
-    } else if (registration_) {
+    } else if (kind_ == PopupKind::Editor) {
         const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
         const auto draft = wide(engine.registration_text());
         const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
@@ -176,7 +181,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     const auto selection = static_cast<UINT>(engine.candidate_index());
     if (selection != selection_) updated_ |= TF_CLUIE_SELECTION | TF_CLUIE_CURRENTPAGE;
     selection_ = selection;
-    if (updated_ && !registration_) replace_candidate_timing(paint_timing_);
+    if (updated_ && kind_ == PopupKind::Candidates) replace_candidate_timing(paint_timing_);
 }
 void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
     if (!anchor || owner_ != owner || !EqualRect(&anchor_, anchor)) cancel_pointer();
@@ -196,7 +201,7 @@ void CandidateList::close() noexcept {
     owner_ = nullptr; document_.Reset();
 }
 void CandidateList::render() noexcept {
-    if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && !registration_)) {
+    if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && kind_ == PopupKind::Candidates)) {
         cancel_pointer();
         if (window_) ShowWindow(window_, SW_HIDE);
         return;
@@ -211,7 +216,7 @@ void CandidateList::render() noexcept {
             cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
             if (!RegisterClassW(&cls)) { class_name_.clear(); return; }
             window_ = CreateWindowExW(popup_ex_style,
-                class_name_.c_str(), registration_ ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
+                class_name_.c_str(), kind_ == PopupKind::Reading ? L"nskkzime 読み" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
                 owner_ ? GetAncestor(owner_, GA_ROOT) : nullptr, nullptr, module_instance, this);
             if (!window_) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
@@ -231,14 +236,19 @@ void CandidateList::render() noexcept {
         const auto footer_text = footer(); SIZE footer_size{};
         GetTextExtentPoint32W(dc.value, footer_text.c_str(), static_cast<int>(footer_text.size()), &footer_size);
         int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
-        if (registration_) width = std::max(width, MulDiv(580, dpi_, 96));
+        if (kind_ == PopupKind::Editor) width = std::max(width, MulDiv(580, dpi_, 96));
+        if (kind_ == PopupKind::Reading) {
+            const auto text = label(draft_); SIZE size{};
+            GetTextExtentPoint32W(dc.value, text.c_str(), static_cast<int>(text.size()), &size);
+            width = std::max(MulDiv(120, dpi_, 96), static_cast<int>(size.cx) + padding_ * 2);
+        }
         for (UINT i = first; i < visible_end; ++i) {
             const auto row = std::to_wstring(i - first + 1) + L"  " + label(rows_[i].text) + L"  — " + label(rows_[i].annotation);
             SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
             width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
         }
         width = std::min(width, MulDiv(680, dpi_, 96));
-        int height = (static_cast<int>(visible_end - first + 1) + (registration_ ? 2 : 0)) * line_height_ + padding_ * 2;
+        int height = (static_cast<int>(visible_end - first + 1) + (kind_ == PopupKind::Editor ? 2 : 0)) * line_height_ + padding_ * 2;
         // The measured text and padding describe the client area. The border
         // must be added before passing the outer dimensions to SetWindowPos.
         RECT outer{0, 0, width, height};
@@ -257,7 +267,7 @@ void CandidateList::render() noexcept {
     } catch (...) { if (window_) ShowWindow(window_, SW_HIDE); }
 }
 std::wstring CandidateList::footer() const {
-    return registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
+    return kind_ != PopupKind::Candidates ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
         L"   1〜7: 選択  Space/x: 次/前  PgDn/PgUp: 7件  X: 削除";
 }
 void CandidateList::paint(HDC dc) const {
@@ -271,8 +281,9 @@ void CandidateList::paint(HDC dc) const {
         DrawTextW(dc, value.data(), static_cast<int>(value.size()), &rect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | format);
         top += line_height_;
     };
-    if (registration_) {
-        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT)); line(label(heading_));
+    if (kind_ != PopupKind::Candidates) {
+        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+        if (kind_ == PopupKind::Editor) line(label(heading_));
         // Keep the currently edited tail visible for a long registration.
         const auto offset = draft_.size() > 160 ? draft_.size() - 160 : 0;
         auto tail = draft_.substr(offset);
@@ -280,6 +291,7 @@ void CandidateList::paint(HDC dc) const {
         const auto text = (offset ? L"…" : L"") + tail + L"▏";
         SIZE size{}; GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
         line(text, size.cx > area.right - padding_ * 2 ? DT_RIGHT : DT_END_ELLIPSIS);
+        if (kind_ == PopupKind::Reading) return;
     }
     if (!pages_.empty()) {
         const auto [first, end] = visible_rows();
@@ -342,16 +354,17 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     if (message == WM_NCDESTROY && self) { self->window_ = nullptr; SetWindowLongPtrW(window, GWLP_USERDATA, 0); }
     return DefWindowProcW(window, message, wparam, lparam);
 }
-void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions) noexcept {
-    if (!engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close(); return; }
-    const bool editor = engine.registering() || engine.forgetting();
-    if (list_ && list_->registration() != editor) close();
+void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions, bool show_reading) noexcept {
     try {
+        const bool reading = show_reading && !engine.registering() && engine.stage() != Stage::Selecting && !engine.preedit().empty();
+        if (!reading && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close(); return; }
+        const auto kind = reading ? PopupKind::Reading : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
+        if (list_ && list_->kind() != kind) close();
         ComPtr<ITfDocumentMgr> document;
         if (!context || FAILED(context->GetDocumentMgr(&document)) || !document) { close(); return; }
         if (!list_) {
             if (!thread || FAILED(thread->QueryInterface(IID_PPV_ARGS(&manager_)))) return;
-            list_.Attach(new CandidateList(editor, std::move(actions)));
+            list_.Attach(new CandidateList(kind, std::move(actions)));
             list_->update(engine, document.Get());
             BOOL show = TRUE;
             const auto list = list_; const auto manager = manager_;

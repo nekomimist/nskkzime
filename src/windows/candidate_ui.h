@@ -29,9 +29,11 @@ struct CandidatePointer {
 std::optional<std::size_t> candidate_row_at(POINT, SIZE client, int padding, int line_height,
     bool registration, std::size_t first, std::size_t end) noexcept;
 inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
+inline constexpr GUID reading_ui_guid = {0x3eb96c26, 0x5b51, 0x4a45, {0x8c, 0x5a, 0x26, 0x29, 0x80, 0xa3, 0x19, 0x0b}};
+enum class PopupKind { Candidates, Editor, Reading };
 class CandidateList final : public ITfCandidateListUIElement {
 public:
-    explicit CandidateList(bool registration = false, std::weak_ptr<CandidateActions> actions = {});
+    explicit CandidateList(PopupKind = PopupKind::Candidates, std::weak_ptr<CandidateActions> actions = {});
     ~CandidateList();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -55,7 +57,7 @@ public:
     std::size_t shortcut_index(std::size_t slot) const noexcept;
     void request_selection(std::size_t index) noexcept;
     void begin_interaction() noexcept;
-    bool registration() const { return registration_; }
+    PopupKind kind() const { return kind_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
     struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
@@ -71,7 +73,7 @@ private:
     Microsoft::WRL::ComPtr<ITfDocumentMgr> document_;
     std::vector<Row> rows_;
     std::vector<UINT> pages_;
-    const bool registration_;
+    const PopupKind kind_;
     std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
@@ -91,7 +93,7 @@ private:
 class CandidatePresenter {
 public:
     ~CandidatePresenter() { close(); }
-    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}) noexcept;
+    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false) noexcept;
     void locate(ITfContext*, ITfComposition*, TfEditCookie) noexcept;
     void hide() noexcept;
     void close() noexcept;

@@ -379,7 +379,7 @@ public:
             bool applied = false;
             InputPhaseTiming request(InputTimingPhase::EditRequest);
             const auto hr = request_edit(context, client_, TF_ES_SYNC | TF_ES_READWRITE,
-                [self, target, key, &applied](TfEditCookie cookie) {
+                [self, target, origin, key, &applied](TfEditCookie cookie) {
                     const InputPhaseTiming callback(InputTimingPhase::EditCallback);
                     for (const auto& pending : self->pending_) {
                         if (!pending->done && pending->context.Get() == target.Get()) {
@@ -391,12 +391,11 @@ public:
                     if (self->composition_ && !self->composition_valid(cookie)) {
                         self->end_composition(cookie);
                     }
-                    return self->apply_key(target.Get(), cookie, self->candidates_.selection_key(*key, self->engine_), applied);
+                    return self->apply_key(target.Get(), cookie, self->candidates_.selection_key(*key, self->engine_), applied, origin.Get());
                 });
             request.finish();
             // A refused synchronous session leaves both the key and engine untouched.
             if (SUCCEEDED(hr) && applied) {
-                if (composition_ && composition_context_.Get() == context) composition_origin_ = origin;
                 *eaten = TRUE;
                 if (code < eaten_keys_.size()) eaten_keys_.set(code);
             }
@@ -479,7 +478,7 @@ public:
                 [self, generation](TfEditCookie cookie) {
                     if (self->layout_generation_ != generation) return S_OK;
                     self->layout_pending_ = false;
-                    if (self->composition_ && (self->engine_.stage() == Stage::Selecting || self->engine_.registering()))
+                    if (self->composition_)
                         self->candidates_.locate(self->composition_context_.Get(), self->composition_.Get(), cookie);
                     return S_OK;
                 });
@@ -597,7 +596,7 @@ private:
         }
         const auto binding = input_mode_; if (binding) binding->publish(engine_.mode());
     }
-    HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied) {
+    HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied, ITfContext* origin = nullptr) {
         InputPhaseTiming core(InputTimingPhase::Core);
         auto next = engine_;
         const auto result = next.handle(key);
@@ -633,6 +632,7 @@ private:
         if (SUCCEEDED(status)) {
             cancel_inference();
             engine_ = std::move(next); applied = true;
+            if (origin && composition_ && composition_context_.Get() == target) composition_origin_ = origin;
             if (result.forgetting && persistence_allowed && publish_runtime_forgetting(dictionary_, *result.forgetting))
                 engine_.forget_registration(*result.forgetting);
             if (result.learning && persistence_allowed) {
@@ -687,7 +687,10 @@ private:
     }
     void refresh_candidates(TfEditCookie cookie) noexcept {
         const InputPhaseTiming timing(InputTimingPhase::Candidates);
-        candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_);
+        // Common EDIT's full parent permits direct editing but does not paint
+        // display attributes. Present its reading separately from document text.
+        const bool show_reading = composition_origin_ && composition_origin_.Get() != composition_context_.Get();
+        candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_, show_reading);
         candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
         if (engine_.forgetting() && !candidates_.presentation_available()) {
             engine_.cancel_forgetting(); candidates_.close();
