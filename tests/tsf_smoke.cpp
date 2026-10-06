@@ -140,6 +140,31 @@ void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     succeeded(service->ActivateEx(host.Get(), 1, 0), "selection-test activate failed"); wait_for_dictionary();
     auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
     {
+        auto context = fresh(); type(keys, context.Get(), "aKa"); key(keys, context.Get(), VK_RETURN);
+        check(context->doc->text == L"あか" && context->doc->caret == 2 && context->selection_writes == 0,
+              "already-correct host selection was rewritten");
+    }
+    {
+        auto context = fresh(); context->doc->move_selection_on_write = false;
+        type(keys, context.Get(), "aKa"); key(keys, context.Get(), VK_RETURN);
+        check(context->doc->text == L"あか" && context->doc->caret == 2 && context->selection_writes == 2,
+              "host without automatic caret movement was not repaired");
+    }
+    for (const bool unreadable : {false, true}) {
+        auto context = fresh(); context->reject_selection_read = unreadable;
+        context->interim_selection = !unreadable;
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"あ" && context->doc->caret == 1 && context->selection_writes == 1 && !context->interim_selection,
+              "unknown or interim selection skipped the normal update");
+    }
+    {
+        auto context = fresh(); context->doc->text = L"前後";
+        context->doc->selection_end = 2; context->doc->move_selection_on_write = false;
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"あ" && context->doc->caret == 1 && context->doc->selection_end == 1 && context->selection_writes == 1,
+              "nonempty selection was not collapsed after replacement");
+    }
+    {
         auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
         type(keys, context.Get(), "/");
         check(context->doc->text == L"前後" && context->composition && !context->composition->ended,

@@ -144,17 +144,6 @@ bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCo
     return permission == InputPermission::Allowed;
 }
 
-HRESULT select_end(ITfContext* context, TfEditCookie cookie, ITfRange* range) {
-    const InputPhaseTiming timing(InputTimingPhase::Selection);
-    ComPtr<ITfRange> caret;
-    auto hr = range->Clone(&caret);
-    if (FAILED(hr)) return hr;
-    hr = caret->Collapse(cookie, TF_ANCHOR_END);
-    if (FAILED(hr)) return hr;
-    TF_SELECTION selection{caret.Get(), {TF_AE_NONE, FALSE}};
-    return context->SetSelection(cookie, 1, &selection);
-}
-
 bool range_matches(ITfRange* range, TfEditCookie cookie, std::wstring_view expected) {
     ComPtr<ITfRange> cursor;
     if (FAILED(range->Clone(&cursor)) || !cursor) return false;
@@ -178,6 +167,20 @@ bool selection_at_end(ITfContext* context, TfEditCookie cookie, ITfRange* range)
     LONG order = 0;
     return SUCCEEDED(selected->IsEmpty(cookie, &empty)) && empty &&
         SUCCEEDED(selected->CompareStart(cookie, range, TF_ANCHOR_END, &order)) && order == 0;
+}
+HRESULT select_end(ITfContext* context, TfEditCookie cookie, ITfRange* range) {
+    const InputPhaseTiming timing(InputTimingPhase::Selection);
+    // Some hosts move the collapsed selection with SetText/InsertText already.
+    // Avoid another host edit/layout notification only when it is exactly right.
+    // An unknown, nonempty or interim selection still takes the normal path.
+    if (selection_at_end(context, cookie, range)) return S_OK;
+    ComPtr<ITfRange> caret;
+    auto hr = range->Clone(&caret);
+    if (FAILED(hr)) return hr;
+    hr = caret->Collapse(cookie, TF_ANCHOR_END);
+    if (FAILED(hr)) return hr;
+    TF_SELECTION selection{caret.Get(), {TF_AE_NONE, FALSE}};
+    return context->SetSelection(cookie, 1, &selection);
 }
 bool finishes_before_key(WPARAM code) {
     if (GetKeyState(VK_CONTROL) & 0x8000) return code != VK_CONTROL && code != VK_LCONTROL && code != VK_RCONTROL;

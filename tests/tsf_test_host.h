@@ -90,6 +90,7 @@ struct Document {
     bool reject_write = false;
     bool reject_shift = false;
     bool reject_read = false;
+    bool move_selection_on_write = true;
     unsigned reads = 0;
     ULONG read_limit = MAXDWORD;
     std::vector<Range*> ranges;
@@ -179,8 +180,10 @@ inline void Document::replace(LONG begin, LONG finish, std::wstring_view value) 
         range->start = position(range->start, false);
         range->end = position(range->end, true);
     }
-    caret = position(caret, true);
-    if (selection_end >= 0) selection_end = position(selection_end, true);
+    if (move_selection_on_write) {
+        caret = position(caret, true);
+        if (selection_end >= 0) selection_end = position(selection_end, true);
+    }
 }
 
 class Composition final : public ITfComposition {
@@ -265,6 +268,8 @@ public:
     bool reject_session = false;
     bool defer_optional_session = false;
     bool reject_composition = false;
+    bool reject_selection_read = false, interim_selection = false;
+    unsigned selection_writes = 0;
     bool readonly = false;
     bool unknown_scope = false;
     HRESULT scope_value_status = S_OK;
@@ -317,12 +322,15 @@ public:
         edits.Reset(); return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetSelection(TfEditCookie, ULONG, ULONG, TF_SELECTION* selection, ULONG* fetched) override {
-        *selection = {new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end), {TF_AE_NONE, FALSE}};
+        if (reject_selection_read) { *selection = {}; *fetched = 0; return E_FAIL; }
+        *selection = {new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end), {TF_AE_NONE, interim_selection ? TRUE : FALSE}};
         *fetched = 1; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetSelection(TfEditCookie, ULONG, const TF_SELECTION* selection) override {
+        ++selection_writes;
         doc->caret = static_cast<Range*>(selection->range)->start;
         doc->selection_end = static_cast<Range*>(selection->range)->end;
+        interim_selection = selection->style.fInterimChar != FALSE;
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetStatus(TF_STATUS* status) override { *status = {readonly ? static_cast<DWORD>(TF_SD_READONLY) : 0UL, 0}; return S_OK; }
