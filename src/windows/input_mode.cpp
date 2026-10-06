@@ -70,9 +70,26 @@ HRESULT ModeButton::InitMenu(ITfMenu* menu) {
             names[i], static_cast<ULONG>(wcslen(names[i])), nullptr);
         if (FAILED(hr)) return hr;
     }
+    auto hr = menu->AddMenuItem(0, TF_LBMENUF_SEPARATOR, nullptr, nullptr, nullptr, 0, nullptr);
+    if (FAILED(hr)) return hr;
+    const auto actions = actions_.lock();
+    constexpr std::array<const wchar_t*, 2> tools{{L"設定…", L"学習辞書の管理…"}};
+    for (UINT i = 0; i < tools.size(); ++i) {
+        const bool enabled = !(status_ & TF_LBI_STATUS_DISABLED) && actions && actions->open_tool && actions->tools_available[i];
+        hr = menu->AddMenuItem(settings_menu_id + i, enabled ? 0 : TF_LBMENUF_GRAYED, nullptr, nullptr,
+                              tools[i], static_cast<ULONG>(wcslen(tools[i])), nullptr);
+        if (FAILED(hr)) return hr;
+    }
     return S_OK;
 }
-HRESULT ModeButton::OnMenuSelect(UINT id) { return id >= 1 && id <= modes.size() ? select(modes[id - 1]) : E_INVALIDARG; }
+HRESULT ModeButton::OnMenuSelect(UINT id) {
+    if (id >= 1 && id <= modes.size()) return select(modes[id - 1]);
+    if (id != settings_menu_id && id != dictionary_menu_id) return E_INVALIDARG;
+    const auto actions = actions_.lock();
+    const auto slot = id - settings_menu_id;
+    if ((status_ & TF_LBI_STATUS_DISABLED) || !actions || !actions->open_tool || !actions->tools_available[slot]) return S_FALSE;
+    try { return actions->open_tool(static_cast<ImeTool>(slot)); } catch (...) { return E_FAIL; }
+}
 HRESULT ModeButton::GetIcon(HICON* out) {
     if (!out) return E_POINTER;
     *out = nullptr;

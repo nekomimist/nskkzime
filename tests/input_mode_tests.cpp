@@ -15,6 +15,25 @@ using namespace nskkzime::windows;
 using Microsoft::WRL::ComPtr;
 namespace {
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+class Menu final : public ITfMenu {
+public:
+    struct Item { UINT id; DWORD flags; std::wstring text; };
+    std::vector<Item> items;
+    ULONG refs = 1;
+    bool reject = false;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_ITfMenu) return E_NOINTERFACE;
+        *out = this; AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+    ULONG STDMETHODCALLTYPE Release() override { const auto value = --refs; if (!value) delete this; return value; }
+    HRESULT STDMETHODCALLTYPE AddMenuItem(UINT id, DWORD flags, HBITMAP, HBITMAP, const WCHAR* text, ULONG size, ITfMenu**) override {
+        if (reject) return E_FAIL;
+        items.push_back({id, flags, text ? std::wstring(text, size) : std::wstring{}}); return S_OK;
+    }
+};
 struct Session {
     ComPtr<test_host::ModeManager> host;
     ComPtr<test_host::Context> context;
@@ -63,6 +82,26 @@ int wmain(int argc, wchar_t** argv) {
     int result = 1;
     try {
         {
+            auto actions = std::make_shared<ModeActions>(); unsigned mode_changes = 0;
+            std::vector<ImeTool> opened;
+            actions->change = [&](Mode) { ++mode_changes; };
+            actions->tools_available = {true, true};
+            actions->open_tool = [&](ImeTool tool) { opened.push_back(tool); return S_OK; };
+            ComPtr<ModeButton> button; button.Attach(new ModeButton(actions));
+            ComPtr<Menu> menu; menu.Attach(new Menu);
+            check(button->InitMenu(menu.Get()) == S_OK && menu->items.size() == 6, "missing mode/tool menu items");
+            check(menu->items[0].flags == TF_LBMENUF_CHECKED && menu->items[3].flags == TF_LBMENUF_SEPARATOR &&
+                menu->items[4].id == settings_menu_id && menu->items[4].text == L"設定…" &&
+                menu->items[5].id == dictionary_menu_id && menu->items[5].text == L"学習辞書の管理…", "tool menu identity incorrect");
+            check(button->OnMenuSelect(settings_menu_id) == S_OK && button->OnMenuSelect(dictionary_menu_id) == S_OK &&
+                opened == std::vector<ImeTool>{ImeTool::Settings, ImeTool::Dictionary} && !mode_changes, "tool selection changed input mode or picked wrong GUI");
+            actions->tools_available[1] = false; menu->items.clear(); button->InitMenu(menu.Get());
+            check(menu->items[5].flags == TF_LBMENUF_GRAYED && button->OnMenuSelect(dictionary_menu_id) == S_FALSE, "invalid dictionary path remained actionable");
+            menu->reject = true; check(button->InitMenu(menu.Get()) == E_FAIL, "host menu error ignored");
+            check(button->OnMenuSelect(99) == E_INVALIDARG, "unknown menu command accepted");
+            button->close(); check(button->OnMenuSelect(settings_menu_id) == S_FALSE && opened.size() == 2, "closed menu launched GUI");
+        }
+        {
             Session s; check(s.label() == L"あ" && s.host->open->value == 1, "initial hiragana");
             TF_LANGBARITEMINFO info{}; s.button()->GetInfo(&info); check(info.guidItem == GUID_LBI_INPUTMODE, "shell item id");
             HICON icon = nullptr; check(SUCCEEDED(s.button()->GetIcon(&icon)) && icon, "mode icon"); DestroyIcon(icon);
@@ -91,6 +130,8 @@ int wmain(int argc, wchar_t** argv) {
             auto retained = s.button(); s.service->Deactivate();
             check(!s.host->button && !s.host->open->sink && !s.host->conversion->sink && s.host->preserved.empty(), "mode bindings leaked");
             check(retained->OnMenuSelect(1) == S_FALSE, "retired button remained live");
+            check(retained->OnMenuSelect(settings_menu_id) == S_FALSE && retained->OnMenuSelect(dictionary_menu_id) == S_FALSE,
+                "retired service could open tools");
         }
         {
             Session s(true); check(s.label() == L"A" && !s.key('A'), "existing closed state ignored");

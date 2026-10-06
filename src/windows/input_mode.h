@@ -1,6 +1,7 @@
 #pragma once
 #include "module.h"
 #include "nskkzime/engine.h"
+#include "tool_launcher.h"
 #include <ctfutb.h>
 #include <ctffunc.h>
 #include <wrl/client.h>
@@ -8,7 +9,12 @@
 #include <functional>
 
 namespace nskkzime::windows {
-struct ModeActions { std::function<void(Mode)> change; };
+struct ModeActions {
+    std::function<void(Mode)> change;
+    std::function<HRESULT(ImeTool)> open_tool;
+    std::array<bool, 2> tools_available{};
+};
+inline constexpr UINT settings_menu_id = 10, dictionary_menu_id = 11;
 inline constexpr GUID toggle_mode_key = {0xbddfce88,0xaad3,0x4b89,{0x98,0xef,0x76,0x88,0x67,0x6b,0x0f,0x16}};
 inline constexpr GUID kanji_mode_key = {0x8a52ae66,0xd4ae,0x49cd,{0x95,0xbe,0xa3,0xf3,0xcb,0xd8,0xb6,0x29}};
 inline constexpr std::array<TF_PRESERVEDKEY, 2> mode_keys{{{VK_SPACE, TF_MOD_CONTROL}, {VK_KANJI, 0}}};

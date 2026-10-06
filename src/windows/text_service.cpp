@@ -230,6 +230,7 @@ public:
             try {
                 dictionary_ = runtime_dictionary();
                 engine_ = Engine(dictionary_, true, runtime_romaji_rules());
+                tool_commands_ = current_tool_commands();
                 dictionary_loaded_ = true;
             }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
@@ -256,6 +257,9 @@ public:
             try {
                 mode_actions_ = std::make_shared<ModeActions>();
                 mode_actions_->change = [this](Mode mode) { change_mode(mode); };
+                tool_launcher_ = std::make_shared<ToolLauncher>(tool_commands_);
+                mode_actions_->tools_available = {tool_launcher_->available(ImeTool::Settings), tool_launcher_->available(ImeTool::Dictionary)};
+                mode_actions_->open_tool = [launcher = tool_launcher_](ImeTool tool) { return launcher->open(tool); };
                 input_mode_.Attach(new InputMode);
                 input_mode_->connect(manager_.Get(), client_, mode_actions_, engine_.mode());
                 for (std::size_t i = 0; i < mode_keys.size(); ++i) {
@@ -275,6 +279,7 @@ public:
         return hr;
     }
     HRESULT STDMETHODCALLTYPE Deactivate() override {
+        if (tool_launcher_) { tool_launcher_->close(); tool_launcher_.reset(); }
         mode_actions_.reset();
         auto mode = std::move(input_mode_); if (mode) mode->disconnect();
         for (std::size_t i = 0; i < mode_keys.size(); ++i) {
@@ -772,6 +777,8 @@ private:
     CandidatePresenter candidates_;
     ComPtr<InputMode> input_mode_;
     std::shared_ptr<ModeActions> mode_actions_;
+    std::array<ToolCommand, 2> tool_commands_;
+    std::shared_ptr<ToolLauncher> tool_launcher_;
     std::array<bool, 2> preserved_{};
     std::shared_ptr<CandidateActions> candidate_actions_;
     std::uint64_t selection_request_ = 0;
