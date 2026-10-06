@@ -4,6 +4,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 using namespace nskkzime;
 using namespace nskkzime::windows;
@@ -216,9 +217,17 @@ int wmain(int argc, wchar_t **argv) {
              const auto root = files.directory(L"locked"), ready = files.path(L"lock-ready.txt");
              Child child(self, source, root, ready, false, true);
              const auto deadline = GetTickCount64() + 3000;
-             while (!std::filesystem::exists(ready) && GetTickCount64() < deadline)
+             std::optional<int> ready_value;
+             // Existence alone does not guarantee the file can yet be opened
+             // and parsed as the child's complete readiness message.
+             // Wait for the complete message, but fail promptly if the child exits.
+             while (!ready_value && GetTickCount64() < deadline) {
+                 try { ready_value = number(ready); } catch (const std::exception&) {}
+                 if (ready_value) break;
+                 check(WaitForSingleObject(child.handle.get(), 0) == WAIT_TIMEOUT, "lock child exited before readiness");
                  Sleep(10);
-             check(number(ready) == 0, "builder did not take lock");
+             }
+             check(ready_value && *ready_value == 0, "builder did not report its acquired lock");
              const auto before = GetTickCount64();
              const auto fallback = load_cached_dictionary(source, root);
              check_word(fallback);
