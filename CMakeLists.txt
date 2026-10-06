@@ -169,6 +169,14 @@ if(WIN32)
     find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
     add_test(NAME evaluation COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/evaluation_tests.py $<TARGET_FILE:nskkzime_eval_core>)
     set_tests_properties(evaluation PROPERTIES TIMEOUT 30)
+    set(NSKKZIME_PACKAGE_TEST_ARGS)
+    if(NSKKZIME_WITH_ZENZ)
+      list(APPEND NSKKZIME_PACKAGE_TEST_ARGS -Zenz)
+    endif()
+    add_test(NAME package COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/package_tests.ps1
+      -PackageScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/package.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR}
+      -Configuration $<CONFIG> ${NSKKZIME_PACKAGE_TEST_ARGS})
+    set_tests_properties(package PROPERTIES TIMEOUT 90)
     add_test(NAME ddskk_contract COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare-ddskk.ps1
       -CoreOnly -Trace $<TARGET_FILE:skk_trace> -OutputRoot ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(ddskk_contract PROPERTIES TIMEOUT 60)
