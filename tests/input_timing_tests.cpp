@@ -2,6 +2,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 
@@ -54,9 +55,39 @@ int main() {
         std::thread other([&] { isolated = !input_timing_snapshot().enabled; enable_input_timing(true); KeyTiming key; });
         other.join();
         check(isolated && !input_timing_snapshot().key.total, "thread diagnostics leaked across threads");
+        const auto phase_count = [](InputTimingPhase phase) {
+            return input_timing_snapshot().phases[static_cast<std::size_t>(phase)].total;
+        };
+        { InputPhaseTiming asynchronous(InputTimingPhase::Core); }
+        check(phase_count(InputTimingPhase::Core) == 0, "operation outside a key callback counted");
+        {
+            KeyTiming outer;
+            InputPhaseTiming request(InputTimingPhase::EditRequest);
+            {
+                InputPhaseTiming core(InputTimingPhase::Core);
+                core.finish(); core.finish();
+            }
+            { KeyTiming inner; InputPhaseTiming nested(InputTimingPhase::Core); }
+        }
+        check(phase_count(InputTimingPhase::Core) == 2 && phase_count(InputTimingPhase::EditRequest) == 1,
+              "reentrant operation lost parent or counted explicit finish twice");
+        check(input_timing_status().find(L"入力コア: n=2") != std::wstring::npos, "operation diagnostics absent");
+        std::optional<InputPhaseTiming> late;
+        { KeyTiming key; late.emplace(InputTimingPhase::Selection); }
+        late.reset();
+        check(phase_count(InputTimingPhase::Selection) == 0, "operation outliving its key counted");
+        {
+            KeyTiming key;
+            InputPhaseTiming invalid(InputTimingPhase::Count);
+            InputPhaseTiming old(InputTimingPhase::Core);
+            enable_input_timing(false); enable_input_timing(true);
+        }
+        check(phase_count(InputTimingPhase::Core) == 0 && !input_timing_snapshot().key.total,
+              "operation survived a reset");
         enable_input_timing(false);
+        { KeyTiming key; InputPhaseTiming disabled(InputTimingPhase::Core); }
         check(!input_timing_snapshot().enabled && input_timing_status().find(L"オフ") != std::wstring::npos, "disable retained data");
-        std::cout << "PASS bounded percentiles, opt-in timing, deferred paints, replacement/reset and thread isolation\n";
+        std::cout << "PASS bounded percentiles, opt-in key/operation timing, deferred paints, reentry/reset and thread isolation\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }
 }

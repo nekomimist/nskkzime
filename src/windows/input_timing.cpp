@@ -13,6 +13,7 @@ struct State {
     std::uint64_t epoch = 0, next = 0, pending = 0, discarded = 0;
     InputTimingToken active;
     TimingSamples key, paint;
+    std::array<TimingSamples, input_timing_phase_count> phases;
 };
 // An app may have many threads. Allocate the arrays only on explicit opt-in,
 // never in a key callback or for every thread which loads this DLL.
@@ -50,7 +51,9 @@ bool enable_input_timing(bool enabled) noexcept {
 }
 InputTimingSnapshot input_timing_snapshot() {
     if (!state) return {};
-    return {true, state->key.summary(), state->paint.summary(), state->pending, state->discarded};
+    InputTimingSnapshot result{true, state->key.summary(), state->paint.summary(), state->pending, state->discarded};
+    for (std::size_t i = 0; i < result.phases.size(); ++i) result.phases[i] = state->phases[i].summary();
+    return result;
 }
 KeyTiming::KeyTiming() noexcept {
     if (!state) return;
@@ -62,6 +65,16 @@ KeyTiming::~KeyTiming() {
     if (!valid(token_)) return;
     state->key.add(elapsed(token_));
     state->active = previous_;
+}
+InputPhaseTiming::InputPhaseTiming(InputTimingPhase phase) noexcept : phase_(phase) {
+    if (!state || !valid(state->active) || static_cast<std::size_t>(phase) >= input_timing_phase_count) return;
+    key_ = state->active; start_ = now();
+}
+InputPhaseTiming::~InputPhaseTiming() { finish(); }
+void InputPhaseTiming::finish() noexcept {
+    if (valid(key_) && state->active == key_)
+        state->phases[static_cast<std::size_t>(phase_)].add(static_cast<double>(now() - start_) / 1000000.0);
+    key_ = {};
 }
 void discard_candidate_timing(InputTimingToken& token) noexcept {
     if (valid(token)) { --state->pending; ++state->discarded; }
@@ -89,6 +102,11 @@ std::wstring input_timing_status() {
     line(L"同キー開始→候補WM_PAINT終了", data.candidate_paint);
     out << L"\r\n描画待ち=" << data.pending_paints << L"  描画前の破棄=" << data.discarded_paints
         << L"  各直近2048件・OSキー配送/画面提示は対象外";
+    constexpr std::array<const wchar_t*, input_timing_phase_count> labels{
+        L"受付判定", L"編集要求（コールバックを含む）", L"編集コールバック", L"既存compositionの照合",
+        L"入力コア", L"TSF本文編集", L"SetText/InsertText", L"表示属性", L"選択位置", L"候補更新", L"モード同期"};
+    out << L"\r\n処理内訳: 呼出し単位・内側を含むため合算不可";
+    for (std::size_t i = 0; i < data.phases.size(); ++i) { out << L"\r\n"; line(labels[i], data.phases[i]); }
     return out.str();
 }
 } // namespace nskkzime::windows

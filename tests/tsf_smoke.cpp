@@ -510,6 +510,9 @@ int wmain(int argc, wchar_t** argv) {
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
         check(timing_text().find(L"TSF OnKeyDown: n=0") == std::wstring::npos, "DLL key timing did not collect callbacks");
+        check(timing_text().find(L"TSF本文編集: n=0") == std::wstring::npos &&
+              timing_text().find(L"入力コア: n=0") == std::wstring::npos,
+              "DLL operation timing did not collect synchronous edits");
         succeeded(enable_timing(FALSE), "timing disable failed");
         check(timing_text().find(L"オフ") != std::wstring::npos, "timing disable did not clear state");
         std::cout << "PASS COM exports/identity/unload, real TSF manager startup, "

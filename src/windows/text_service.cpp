@@ -145,6 +145,7 @@ bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCo
 }
 
 HRESULT select_end(ITfContext* context, TfEditCookie cookie, ITfRange* range) {
+    const InputPhaseTiming timing(InputTimingPhase::Selection);
     ComPtr<ITfRange> caret;
     auto hr = range->Clone(&caret);
     if (FAILED(hr)) return hr;
@@ -328,6 +329,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
         const KeyTiming timing;
+        InputPhaseTiming setup(InputTimingPhase::KeySetup);
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
@@ -338,12 +340,15 @@ public:
         if (composition_context_ && composition_context_.Get() != context) finish_composition();
         const auto key = translate_key(code, parameter);
         if (!key || !engine_.would_handle(*key)) return S_OK;
+        setup.finish();
         try {
             const ComPtr<TextService> self(this);
             const ComPtr<ITfContext> target(context);
             bool applied = false;
+            InputPhaseTiming request(InputTimingPhase::EditRequest);
             const auto hr = request_edit(context, client_, TF_ES_SYNC | TF_ES_READWRITE,
                 [self, target, key, &applied](TfEditCookie cookie) {
+                    const InputPhaseTiming callback(InputTimingPhase::EditCallback);
                     for (const auto& pending : self->pending_) {
                         if (!pending->done && pending->context.Get() == target.Get()) {
                             const auto status = pending->finish(cookie);
@@ -356,6 +361,7 @@ public:
                     }
                     return self->apply_key(target.Get(), cookie, self->candidates_.selection_key(*key, self->engine_), applied);
                 });
+            request.finish();
             // A refused synchronous session leaves both the key and engine untouched.
             if (SUCCEEDED(hr) && applied) {
                 *eaten = TRUE;
@@ -553,8 +559,10 @@ private:
         const auto binding = input_mode_; if (binding) binding->publish(engine_.mode());
     }
     HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied) {
+        InputPhaseTiming core(InputTimingPhase::Core);
         auto next = engine_;
         const auto result = next.handle(key);
+        core.finish();
         if (!result.consumed) return S_OK;
         const auto revision = engine_.revision();
         const auto current = composition_;
@@ -598,7 +606,10 @@ private:
             // Inner registration input has its own modes. Keep Windows open
             // until the outer editor is completed or explicitly abandoned.
             const auto binding = input_mode_;
-            if (binding && !engine_.registering()) binding->publish(engine_.mode());
+            if (binding && !engine_.registering()) {
+                const InputPhaseTiming mode(InputTimingPhase::ModeSync);
+                binding->publish(engine_.mode());
+            }
             if (inference_text && inference_ && composition_ && !engine_.registering()) {
                 try {
                     const auto id = ++inference_sequence_;
@@ -636,6 +647,7 @@ private:
         } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
     }
     void refresh_candidates(TfEditCookie cookie) noexcept {
+        const InputPhaseTiming timing(InputTimingPhase::Candidates);
         candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_);
         candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
         if (engine_.forgetting() && !candidates_.presentation_available()) {
@@ -648,6 +660,7 @@ private:
         }
     }
     bool composition_valid(TfEditCookie cookie) const {
+        const InputPhaseTiming timing(InputTimingPhase::CompositionCheck);
         ComPtr<ITfRange> range;
         return composition_ && SUCCEEDED(composition_->GetRange(&range)) && range &&
             range_matches(range.Get(), cookie, expected_text_) && selection_at_end(composition_context_.Get(), cookie, range.Get());
@@ -679,6 +692,7 @@ private:
         detach_composition(); engine_.reset();
     }
     HRESULT apply(ITfContext* context, TfEditCookie cookie, std::u32string_view committed, Engine& next) {
+        const InputPhaseTiming timing(InputTimingPhase::TextEdit);
         const auto preedit = next.composition_text();
         // An empty reading (notably just after '/') still owns an input range.
         // Track it so moving the caret or focus cannot carry its mode elsewhere.
@@ -697,7 +711,10 @@ private:
                 ComPtr<ITfInsertAtSelection> insert;
                 hr = context->QueryInterface(IID_PPV_ARGS(&insert));
                 if (FAILED(hr)) return hr;
-                hr = insert->InsertTextAtSelection(cookie, 0, text.c_str(), static_cast<LONG>(text.size()), &range);
+                {
+                    const InputPhaseTiming write(InputTimingPhase::SetText);
+                    hr = insert->InsertTextAtSelection(cookie, 0, text.c_str(), static_cast<LONG>(text.size()), &range);
+                }
                 if (FAILED(hr)) return hr;
                 // The insertion succeeded; do not pass this key through on caret failure.
                 select_end(context, cookie, range.Get());
@@ -724,7 +741,10 @@ private:
             if (FAILED(hr) || !composition_) { detach_composition(); return FAILED(hr) ? hr : E_FAIL; }
             created = true;
         }
-        hr = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
+        {
+            const InputPhaseTiming write(InputTimingPhase::SetText);
+            hr = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
+        }
         if (FAILED(hr)) {
             if (created) {
                 ending_ = true; composition_->EndComposition(cookie); ending_ = false;

@@ -1,4 +1,5 @@
 #include "display_attributes.h"
+#include "input_timing.h"
 #include <wrl/client.h>
 #include <new>
 
@@ -107,12 +108,14 @@ HRESULT display_attribute_atoms(TfGuidAtom& input, TfGuidAtom& converted) noexce
     return hr;
 }
 void set_display_attribute(ITfContext* context, TfEditCookie cookie, ITfRange* range, TfGuidAtom atom) noexcept {
+    const InputPhaseTiming timing(InputTimingPhase::DisplayAttribute);
     Microsoft::WRL::ComPtr<ITfProperty> property;
     if (!range || !atom || FAILED(context->GetProperty(GUID_PROP_ATTRIBUTE, &property)) || !property) return;
     VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = static_cast<LONG>(atom);
     property->SetValue(cookie, range, &value);
 }
 void clear_display_attribute(ITfContext* context, TfEditCookie cookie, ITfRange* range) noexcept {
+    const InputPhaseTiming timing(InputTimingPhase::DisplayAttribute);
     Microsoft::WRL::ComPtr<ITfProperty> property;
     if (range && SUCCEEDED(context->GetProperty(GUID_PROP_ATTRIBUTE, &property)) && property) property->Clear(cookie, range);
 }
