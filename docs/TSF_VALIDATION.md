@@ -1,5 +1,7 @@
 # TSFの検証
 
+OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIBILITY.md) を参照。
+
 ## 自動確認済みの範囲
 
 `tsf_smoke` はDLLを直接LoadLibraryし、WindowsのIME設定には登録しない。
