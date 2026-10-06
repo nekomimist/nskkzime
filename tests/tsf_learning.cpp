@@ -80,6 +80,13 @@ int wmain(int argc, wchar_t** argv) {
         }
         context.Attach(new test_host::Context); context->unknown_scope = true;
         type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_RETURN);
+        for (const bool unknown : {false, true}) {
+            context.Attach(new test_host::Context); context->unknown_scope = unknown;
+            if (!unknown) context->input_scope = IS_PRIVATE;
+            const auto origin = test_host::transitory_context(context.Get());
+            type(keys.Get(), origin.Get(), "Kanji"); key(keys.Get(), origin.Get(), VK_SPACE); key(keys.Get(), origin.Get(), VK_RETURN);
+            check(context->composition->ended && origin->doc->text.empty(), "parent learning check did not edit the parent");
+        }
         for (const auto status : {E_FAIL, S_FALSE}) { // Failure, absent scope, or mixed values must never permit persistence.
             context.Attach(new test_host::Context); context->scope_value_status = status;
             type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_RETURN);

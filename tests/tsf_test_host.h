@@ -204,20 +204,54 @@ public:
     UNUSED_METHOD(ShiftEnd, TfEditCookie, ITfRange*)
 };
 
-class DocumentManager final : public ITfDocumentMgr {
+class ParentCompartment final : public ITfCompartment {
 public:
+    ComPtr<IUnknown> parent;
+    HRESULT result = S_OK;
+    VARTYPE type = VT_UNKNOWN;
+    TEST_REFS(ParentCompartment);
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        *out = nullptr; if (iid != IID_IUnknown && iid != IID_ITfCompartment) return E_NOINTERFACE;
+        *out = static_cast<ITfCompartment*>(this); AddRef(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetValue(VARIANT* out) override {
+        VariantInit(out); if (result != S_OK) return result;
+        out->vt = type;
+        if (type == VT_UNKNOWN) return parent.CopyTo(&out->punkVal);
+        return S_OK;
+    }
+    UNUSED_METHOD(SetValue, TfClientId, const VARIANT*)
+};
+class DocumentManager final : public ITfDocumentMgr, public ITfCompartmentMgr {
+public:
+    // Context owns this manager. The non-owning top avoids a fixture cycle.
+    ITfContext* top = nullptr;
+    HRESULT top_status = S_OK;
+    ComPtr<ITfCompartment> transitory_parent;
     TEST_REFS(DocumentManager);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         *out = nullptr;
-        if (iid != IID_IUnknown && iid != IID_ITfDocumentMgr) return E_NOINTERFACE;
-        *out = static_cast<ITfDocumentMgr*>(this); AddRef(); return S_OK;
+        if (iid == IID_IUnknown || iid == IID_ITfDocumentMgr) *out = static_cast<ITfDocumentMgr*>(this);
+        else if (iid == IID_ITfCompartmentMgr) *out = static_cast<ITfCompartmentMgr*>(this);
+        else return E_NOINTERFACE;
+        AddRef(); return S_OK;
     }
     UNUSED_METHOD(CreateContext, TfClientId, DWORD, IUnknown*, ITfContext**, TfEditCookie*)
     UNUSED_METHOD(Push, ITfContext*)
     UNUSED_METHOD(Pop, DWORD)
-    UNUSED_METHOD(GetTop, ITfContext**)
+    HRESULT STDMETHODCALLTYPE GetTop(ITfContext** out) override {
+        *out = nullptr; if (FAILED(top_status)) return top_status;
+        *out = top; if (top) top->AddRef(); return top_status;
+    }
     UNUSED_METHOD(GetBase, ITfContext**)
     UNUSED_METHOD(EnumContexts, IEnumTfContexts**)
+    HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID id, ITfCompartment** out) override {
+        *out = nullptr;
+        if (id != GUID_COMPARTMENT_TRANSITORYEXTENSION_PARENT || !transitory_parent) return E_FAIL;
+        return transitory_parent.CopyTo(out);
+    }
+    UNUSED_METHOD(ClearCompartment, TfClientId, REFGUID)
+    UNUSED_METHOD(EnumCompartments, IEnumGUID**)
 };
 class InputScopeValue final : public ITfInputScope {
 public:
@@ -263,7 +297,9 @@ public:
 };
 class Context final : public ITfContext, public ITfContextComposition, public ITfInsertAtSelection, public ITfSource {
 public:
-    Context() { document_manager.Attach(new DocumentManager); }
+    Context() {
+        auto* manager = new DocumentManager; manager->top = this; document_manager.Attach(manager);
+    }
     std::shared_ptr<Document> doc = std::make_shared<Document>();
     bool reject_session = false;
     bool defer_optional_session = false;
@@ -271,6 +307,8 @@ public:
     bool reject_selection_read = false, interim_selection = false;
     unsigned selection_writes = 0;
     bool readonly = false;
+    DWORD static_flags = 0;
+    HRESULT status_result = S_OK;
     bool unknown_scope = false;
     HRESULT scope_value_status = S_OK;
     bool scope_requires_text_range = false;
@@ -333,7 +371,9 @@ public:
         interim_selection = selection->style.fInterimChar != FALSE;
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE GetStatus(TF_STATUS* status) override { *status = {readonly ? static_cast<DWORD>(TF_SD_READONLY) : 0UL, 0}; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetStatus(TF_STATUS* status) override {
+        *status = {readonly ? static_cast<DWORD>(TF_SD_READONLY) : 0UL, static_flags}; return status_result;
+    }
     HRESULT STDMETHODCALLTYPE StartComposition(TfEditCookie, ITfRange* input, ITfCompositionSink* sink, ITfComposition** out) override {
         *out = nullptr;
         if (reject_composition) return S_OK;
@@ -374,6 +414,13 @@ public:
     UNUSED_METHOD(TakeOwnership, TfEditCookie, ITfCompositionView*, ITfCompositionSink*, ITfComposition**)
     UNUSED_METHOD(InsertEmbeddedAtSelection, TfEditCookie, DWORD, IDataObject*, ITfRange**)
 };
+inline ComPtr<Context> transitory_context(Context* parent) {
+    ComPtr<Context> origin; origin.Attach(new Context); origin->static_flags = TF_SS_TRANSITORY;
+    ComPtr<ParentCompartment> link; link.Attach(new ParentCompartment);
+    link->parent = parent->document_manager;
+    static_cast<DocumentManager*>(origin->document_manager.Get())->transitory_parent = link;
+    return origin;
+}
 #undef TEST_REFS
 #undef UNUSED_METHOD
 } // namespace test_host

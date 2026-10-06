@@ -24,6 +24,28 @@ namespace nskkzime::windows {
 namespace {
 using Microsoft::WRL::ComPtr;
 
+// Common controls can expose their full text store through a transitory
+// extension's parent document. Composing there keeps edits and selection
+// notifications on the same document, without queued IMM result characters.
+// A transitory flag alone is insufficient: native TSF hosts can set it too.
+ComPtr<ITfContext> editing_context(ITfContext* context) {
+    ComPtr<ITfContext> result(context);
+    TF_STATUS flags{};
+    if (!context || FAILED(context->GetStatus(&flags)) || !(flags.dwStaticFlags & TF_SS_TRANSITORY)) return result;
+    ComPtr<ITfDocumentMgr> document; ComPtr<ITfCompartmentMgr> compartments;
+    ComPtr<ITfCompartment> compartment;
+    if (FAILED(context->GetDocumentMgr(&document)) || !document || FAILED(document.As(&compartments)) ||
+        FAILED(compartments->GetCompartment(GUID_COMPARTMENT_TRANSITORYEXTENSION_PARENT, &compartment)) || !compartment) return result;
+    VARIANT value; VariantInit(&value);
+    if (compartment->GetValue(&value) == S_OK && value.vt == VT_UNKNOWN && value.punkVal) {
+        ComPtr<ITfDocumentMgr> parent; ComPtr<ITfContext> top;
+        if (SUCCEEDED(value.punkVal->QueryInterface(IID_PPV_ARGS(&parent))) && SUCCEEDED(parent->GetTop(&top)) && top &&
+            SUCCEEDED(top->GetStatus(&flags)) && !(flags.dwStaticFlags & TF_SS_TRANSITORY)) result = top;
+    }
+    VariantClear(&value);
+    return result;
+}
+
 std::wstring utf16(std::u32string_view text) {
     std::wstring result;
     for (auto ch : text) {
@@ -313,6 +335,9 @@ public:
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        const auto target = editing_context(context);
+        if (target.Get() != context && !editable(target.Get())) return S_OK;
+        context = target.Get();
         if (mode_key(code, engine_.outer_mode())) { *eaten = TRUE; return S_OK; }
         const auto key = translate_key(code, parameter);
         if (key) {
@@ -336,6 +361,10 @@ public:
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        const ComPtr<ITfContext> origin(context);
+        const auto resolved = editing_context(context);
+        if (resolved.Get() != context && !editable(resolved.Get())) return S_OK;
+        context = resolved.Get();
         if (const auto mode = mode_key(code, engine_.outer_mode())) {
             if (!(parameter & (static_cast<LPARAM>(1) << 30))) change_mode(*mode);
             *eaten = TRUE; if (code < eaten_keys_.size()) eaten_keys_.set(code); return S_OK;
@@ -367,6 +396,7 @@ public:
             request.finish();
             // A refused synchronous session leaves both the key and engine untouched.
             if (SUCCEEDED(hr) && applied) {
+                if (composition_ && composition_context_.Get() == context) composition_origin_ = origin;
                 *eaten = TRUE;
                 if (code < eaten_keys_.size()) eaten_keys_.set(code);
             }
@@ -387,6 +417,8 @@ public:
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        const auto target = editing_context(context);
+        if (target.Get() != context && !editable(target.Get())) return S_OK;
         for (std::size_t i = 0; i < mode_keys.size(); ++i) if (preserved_[i] && guid == mode_key_ids[i]) {
             change_mode(engine_.outer_mode() == Mode::Latin ? Mode::Hiragana : Mode::Latin);
             *eaten = TRUE; break;
@@ -463,24 +495,28 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr* document) override {
-        if (composition_context_) {
+        for (const auto& context : {composition_context_, composition_origin_}) {
+            if (!context) continue;
             ComPtr<ITfDocumentMgr> owner;
-            if (SUCCEEDED(composition_context_->GetDocumentMgr(&owner)) && owner.Get() == document) finish_composition();
+            if (SUCCEEDED(context->GetDocumentMgr(&owner)) && owner.Get() == document) { finish_composition(); break; }
         }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* document, ITfDocumentMgr*) override {
         ComPtr<ITfContext> context;
         if (document) document->GetTop(&context);
+        context = editing_context(context.Get());
         if (composition_context_ && composition_context_.Get() != context.Get()) finish_composition();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
+        const auto parent = editing_context(context); context = parent.Get();
         if (composition_context_ && composition_context_.Get() != context) finish_composition();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
-        if (composition_context_.Get() == context) finish_composition();
+        // The parent compartment can already be gone when the origin is popped.
+        if (composition_context_.Get() == context || composition_origin_.Get() == context) finish_composition();
         return S_OK;
     }
 private:
@@ -684,7 +720,7 @@ private:
             if (SUCCEEDED(composition_context_.As(&source))) source->UnadviseSink(edit_sink_cookie_);
         }
         edit_sink_cookie_ = TF_INVALID_COOKIE;
-        composition_.Reset(); composition_context_.Reset(); expected_text_.clear();
+        composition_.Reset(); composition_context_.Reset(); composition_origin_.Reset(); expected_text_.clear();
     }
     void end_composition(TfEditCookie cookie) noexcept {
         if (composition_) {
@@ -812,6 +848,7 @@ private:
     DWORD layout_sink_cookie_ = TF_INVALID_COOKIE;
     ComPtr<ITfComposition> composition_;
     ComPtr<ITfContext> composition_context_;
+    ComPtr<ITfContext> composition_origin_;
     Engine engine_;
     std::shared_ptr<const Dictionary> dictionary_;
     std::wstring expected_text_;

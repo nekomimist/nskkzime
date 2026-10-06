@@ -17,17 +17,19 @@ namespace {
 void check(bool value,const char* message) { if(!value)throw std::runtime_error(message); }
 void messages() { MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) {TranslateMessage(&msg);DispatchMessageW(&msg);} }
 struct Session {
-    ComPtr<test_host::Manager> host; ComPtr<test_host::Context> context; ComPtr<ITfTextInputProcessorEx> service; ComPtr<ITfKeyEventSink> keys;
+    ComPtr<test_host::Manager> host; ComPtr<test_host::Context> context, origin; ComPtr<ITfTextInputProcessorEx> service; ComPtr<ITfKeyEventSink> keys;
     explicit Session(const wchar_t* prefix=L"前") {
         host.Attach(new test_host::Manager); context.Attach(new test_host::Context); context->doc->text=std::wstring(prefix)+L"後"; context->doc->caret=static_cast<LONG>(wcslen(prefix));
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))),"create"); service.As(&keys); check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"activate"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
     }
     ~Session() {service->Deactivate();context->pump();}
+    void transitory() { origin = test_host::transitory_context(context.Get()); }
     void key(WPARAM code,bool shift=false) {
         BYTE state[256]{}; if(shift)state[VK_SHIFT]=state[VK_LSHIFT]=0x80; SetKeyboardState(state);
         const auto param=static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code),MAPVK_VK_TO_VSC))<<16;
-        BOOL eaten=FALSE; keys->OnTestKeyDown(context.Get(),code,param,&eaten); check(eaten,"preflight");
-        keys->OnKeyDown(context.Get(),code,param,&eaten); check(eaten,"key"); keys->OnKeyUp(context.Get(),code,param,&eaten);
+        auto* input = origin ? origin.Get() : context.Get();
+        BOOL eaten=FALSE; keys->OnTestKeyDown(input,code,param,&eaten); check(eaten,"preflight");
+        keys->OnKeyDown(input,code,param,&eaten); check(eaten,"key"); keys->OnKeyUp(input,code,param,&eaten);
     }
     void type(std::string_view text) {for(const auto ch:text) {const auto vk=VkKeyScanExW(ch,GetKeyboardLayout(0));key(LOBYTE(vk),(HIBYTE(vk)&1)!=0);}}
     void start(std::string_view text="Kaitou") {type(text);const auto time=GetTickCount64();key(VK_SPACE);check(GetTickCount64()-time<150,"key blocked on scoring");}
@@ -65,6 +67,12 @@ int wmain(int argc,wchar_t** argv) {
         for(;;) try {inference_exchange(token,{1,U"あ"},ready,stop.get());break;} catch(const InferenceFailure& failure) {if(failure.status!=InferenceStatus::Unavailable||GetTickCount64()>=ready)throw;Sleep(10);}
         {Session s;s.start();check(s.context->doc->text==L"前回答後","dictionary was not shown immediately");s.complete();check(s.context->doc->text==L"前解答後","score promotion not applied");
          BSTR text=nullptr;s.list()->GetString(1,&text);check(text&&std::wstring_view(text)==L"回答","remaining dictionary order changed");SysFreeString(text);}
+        {Session s;s.transitory();s.start();s.complete();
+         check(s.context->doc->text==L"前解答後"&&s.origin->doc->text.empty(),"transitory score did not update the parent");
+         const std::lock_guard lock(mutex);const auto& request=requests.back();
+         check(request.left==U"前"&&request.right==U"後","transitory score lost full surrounding text");}
+        {Session s;s.transitory();s.start();s.queued();s.context->move_selection(0,0);s.context->pump();s.wait(50);
+         check(s.context->doc->text==L"前回答後"&&!s.host->ui,"parent selection change applied a stale score");}
         {Session s(L"絵を");s.type("KaKu");check(s.context->doc->text==L"絵を書く後","initial okuri");s.complete();check(s.context->doc->text==L"絵を描く後","okuri score not applied");
          const std::lock_guard lock(mutex);const auto& request=requests.back();check(request.reading==U"かく"&&request.candidates==std::vector<std::u32string>{U"書く",U"描く"}&&request.left==U"絵を"&&request.right==U"後","okuri or surrounding context mixed");}
         {Session s;s.start("Arigatougozaimasu");check(s.context->doc->text==L"前元一後","long reading blocked dictionary");s.complete();
@@ -105,6 +113,15 @@ int wmain(int argc,wchar_t** argv) {
         for (const auto scope : {IS_PASSWORD, IS_PRIVATE, IS_NUMERIC_PIN}) {
             Session s(L"保存禁止"); s.context->input_scope = scope; s.start(); s.wait();
         }
+        for (const bool unknown : {false,true}) {
+            Session s(L"親文書保護");s.transitory();s.context->unknown_scope=unknown;
+            if (!unknown) s.context->input_scope=IS_PRIVATE;
+            const auto before=count.load();s.start();s.wait();
+            check(count==before,"private or unknown parent context was sent to inference");
+        }
+        {Session s(L"親文書途中保護");s.transitory();s.start();s.queued();
+         s.context->input_scope=IS_PRIVATE;s.context->notify();s.context->pump();s.wait(50);
+         check(s.context->doc->text==L"親文書途中保護回答後","private parent accepted a late response");}
         {Session s(L"属性不明"); s.context->unknown_scope = true; s.start(); s.wait();}
         {Session s(L"途中保護"); s.start(); s.context->input_scope = IS_PRIVATE; s.context->notify(); s.wait();}
         {Session s(L"取消応答"); s.start(); s.queued(); s.key(VK_ESCAPE); s.context->pump(); s.wait(50);}

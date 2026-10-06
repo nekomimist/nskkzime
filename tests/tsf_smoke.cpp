@@ -134,6 +134,84 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     context->pump(); next->pump();
     check(!host->keys && !host->events, "adapter test leaked a sink");
 }
+void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+    KeyboardState keyboard;
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "transitory activate failed"); wait_for_dictionary();
+    auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    {
+        auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
+        parent->doc->text = L"前後"; parent->doc->caret = 1;
+        type(keys, origin.Get(), "Ka");
+        check(parent->doc->text == L"前か後" && origin->doc->text.empty() && parent->edits && !origin->edits,
+              "transitory input did not use the full parent's text and notifications");
+        host->events->OnSetFocus(origin->document_manager.Get(), nullptr);
+        host->events->OnPushContext(origin.Get());
+        check(parent->queued.empty() && !parent->composition->ended, "origin focus prematurely ended parent composition");
+        check(!key(keys, origin.Get(), VK_LEFT) && parent->composition->ended && parent->queued.empty(),
+              "navigation did not end parent composition before returning the key");
+        parent->move_selection(1, 1); // Host processes the declined Left on the already inserted text.
+        type(keys, origin.Get(), "aKanji"); key(keys, origin.Get(), VK_SPACE);
+        check(parent->doc->text == L"前あ漢字か後" && host->ui, "parent candidate conversion failed");
+        parent->move_selection(0, 0);
+        check(!host->ui && parent->queued.size() == 1, "parent selection change did not detach composition");
+        parent->pump(); type(keys, origin.Get(), "a");
+        check(parent->doc->text == L"あ前あ漢字か後" && origin->doc->text.empty(), "click moved or overwrote old conversion");
+        type(keys, origin.Get(), "Ka");
+        // Disconnecting the extension can clear its parent link before OnPopContext.
+        static_cast<test_host::DocumentManager*>(origin->document_manager.Get())->transitory_parent.Reset();
+        host->events->OnPopContext(origin.Get()); parent->pump();
+        check(parent->composition->ended && !parent->edits && !parent->layout, "origin pop retained parent composition");
+    }
+    for (const bool source_document : {false, true}) {
+        auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
+        type(keys, origin.Get(), "Ka");
+        host->events->OnUninitDocumentMgr(source_document ? origin->document_manager.Get() : parent->document_manager.Get());
+        parent->pump(); check(parent->composition->ended, "document teardown retained parent composition");
+    }
+    {
+        auto first = fresh(), second = fresh(); auto origin = test_host::transitory_context(first.Get());
+        type(keys, origin.Get(), "Ka");
+        auto* manager = static_cast<test_host::DocumentManager*>(origin->document_manager.Get());
+        static_cast<test_host::ParentCompartment*>(manager->transitory_parent.Get())->parent = second->document_manager;
+        host->events->OnSetFocus(origin->document_manager.Get(), nullptr);
+        type(keys, origin.Get(), "a"); first->pump();
+        check(first->doc->text == L"か" && first->composition->ended && second->doc->text == L"あ",
+              "reused transitory document mixed fields or delayed cleanup");
+    }
+    for (const bool source_readonly : {false, true}) {
+        auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
+        (source_readonly ? origin : parent)->readonly = true;
+        check(!key(keys, origin.Get(), 'A') && parent->doc->text.empty() && origin->doc->text.empty(),
+              "context redirection bypassed read-only input");
+    }
+    for (int failure = 0; failure != 9; ++failure) {
+        auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
+        auto* source = static_cast<test_host::DocumentManager*>(origin->document_manager.Get());
+        auto* owner = static_cast<test_host::DocumentManager*>(parent->document_manager.Get());
+        auto* link = static_cast<test_host::ParentCompartment*>(source->transitory_parent.Get());
+        switch (failure) {
+        case 0: source->transitory_parent.Reset(); break;
+        case 1: link->type = VT_I4; break;
+        case 2: link->parent.Reset(); break;
+        case 3: link->result = E_FAIL; break;
+        case 4: link->result = S_FALSE; break;
+        case 5: owner->top_status = E_FAIL; break;
+        case 6: owner->top = nullptr; break;
+        case 7: parent->status_result = E_FAIL; break;
+        case 8: parent->static_flags = TF_SS_TRANSITORY; break;
+        }
+        type(keys, origin.Get(), "Ka"); key(keys, origin.Get(), VK_RETURN);
+        check(origin->doc->text == L"か" && parent->doc->text.empty(), "unavailable parent broke original context input");
+    }
+    {
+        auto parent = fresh(); auto native = test_host::transitory_context(parent.Get()); native->static_flags = 0;
+        type(keys, native.Get(), "Ka"); key(keys, native.Get(), VK_RETURN);
+        check(native->doc->text == L"か" && parent->doc->text.empty(), "nontransitory native context was redirected");
+    }
+    succeeded(service->Deactivate(), "transitory deactivate failed");
+    check(!host->keys && !host->events && !host->ui, "transitory test leaked subscriptions");
+}
 void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
@@ -527,7 +605,7 @@ int wmain(int argc, wchar_t** argv) {
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
             attribute_tests(service.Get());
             if (empty) missing_dictionary_tests(service.Get(), keys.Get());
-            else { adapter_tests(service.Get(), keys.Get(), argc >= 3); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
+            else { adapter_tests(service.Get(), keys.Get(), argc >= 3); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
             const auto status = status_text();
             check(status.find(L"まだ読み込んでいません") == status.npos, "activation failed to update status");
             if (!empty) check(status.find(L"読み込み済み") != status.npos, "loaded dictionary invisible");
