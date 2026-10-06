@@ -99,6 +99,7 @@ int run(const std::vector<std::string>& arguments) {
             }
             const auto result = engine.handle(key);
             if (result.registration && result.learning) engine.remember_registration(*result.learning); // CLI session only; no disk writes.
+            if (result.forgetting) engine.forget_registration(*result.forgetting);
             document += result.committed;
             if (!result.consumed) {
                 if (key.code == nskkzime::KeyCode::Character) document += static_cast<unsigned char>(key.character);
@@ -115,6 +116,7 @@ int run(const std::vector<std::string>& arguments) {
                       << ",\"registration_depth\":" << engine.registration_depth()
                       << ",\"registered\":" << (result.registration ? "true" : "false")
                       << ",\"registration_limit\":" << (result.registration_limit ? "true" : "false")
+                      << ",\"forgetting\":" << (engine.forgetting() ? "true" : "false")
                       << ",\"candidate_index\":" << engine.candidate_index() << ",\"candidates\":[";
             bool first = true;
             for (const auto& item : engine.candidates()) {
@@ -133,6 +135,13 @@ int run(const std::vector<std::string>& arguments) {
                           << ",\"text\":" << json_string(event.candidate.text)
                           << ",\"annotation\":" << json_string(event.candidate.annotation)
                           << ",\"source\":" << json_string(source) << '}';
+            } else std::cout << "null";
+            std::cout << ",\"forgotten\":";
+            if (result.forgetting) {
+                const auto& event = *result.forgetting;
+                std::cout << "{\"reading\":" << json_string(event.key.reading)
+                          << ",\"okuri_letter\":" << json_string(event.key.okuri ? nskkzime::ascii(std::string(1, event.key.okuri)) : U"")
+                          << ",\"okuri\":" << json_string(event.okuri) << ",\"text\":" << json_string(event.candidate.text) << '}';
             } else std::cout << "null";
             std::cout << "}\n";
         }

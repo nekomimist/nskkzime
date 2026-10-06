@@ -155,6 +155,51 @@ int wmain(int argc, wchar_t** argv) {
         key(keys.Get(), context.Get(), VK_RETURN); type(keys.Get(), context.Get(), "a");
         check(context->doc->text == L"no-uiあ", "invisible registration consumed more input");
         host->reject_ui = false;
+        const auto open_forget = [&] {
+            context.Attach(new test_host::Context);
+            type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
+            check(context->doc->text == L"感じ", "learned deletion target not selected");
+            type(keys.Get(), context.Get(), "X");
+            check(host->ui && host->ui.As(&list) == E_NOINTERFACE, "deletion prompt exposed candidate shortcuts");
+            BSTR prompt = nullptr; host->ui->GetDescription(&prompt);
+            const auto shown = prompt && std::wstring_view(prompt).find(L"学習語の削除") != std::wstring_view::npos &&
+                std::wstring_view(prompt).find(L"感じ") != std::wstring_view::npos;
+            SysFreeString(prompt); check(shown && context->doc->text == L"感じ", "deletion prompt missing or leaked into document");
+        };
+        open_forget(); type(keys.Get(), context.Get(), "no"); key(keys.Get(), context.Get(), VK_RETURN);
+        check(context->doc->text == L"感じ" && host->ui && SUCCEEDED(host->ui.As(&list)), "cancel lost selected candidate");
+        list.Reset(); key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        open_forget(); type(keys.Get(), context.Get(), "yes"); context->input_scope = IS_PRIVATE;
+        key(keys.Get(), context.Get(), VK_RETURN); key(keys.Get(), context.Get(), VK_ESCAPE);
+        open_forget(); type(keys.Get(), context.Get(), "yes"); host->events->OnSetFocus(nullptr, nullptr); context->pump();
+        check(!host->ui && context->doc->text == L"感じ", "focus loss retained prompt or inserted answer");
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "a");
+        check(context->doc->text == L"あ", "deletion confirmation followed input focus");
+        for (const bool unknown : {false, true}) {
+            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE; context->unknown_scope = unknown;
+            type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); type(keys.Get(), context.Get(), "X");
+            check(host->ui && SUCCEEDED(host->ui.As(&list)), "private/unknown field opened deletion prompt");
+            list.Reset(); key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        }
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
+        host->reject_ui = true; type(keys.Get(), context.Get(), "X"); host->reject_ui = false;
+        check(!host->ui && context->doc->text == L"感じ", "unavailable deletion UI changed text");
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        open_forget(); type(keys.Get(), context.Get(), "yes"); context->doc->reject_write = true;
+        check(!key(keys.Get(), context.Get(), VK_RETURN) && context->doc->text == L"感じ", "failed deletion edit consumed Enter");
+        Sleep(300); check(read_user_dictionary(file).revision() == 3, "canceled, private, focus-lost or failed deletion persisted");
+        context->doc->reject_write = false; check(key(keys.Get(), context.Get(), VK_RETURN), "deletion retry failed");
+        check(context->doc->text == L"かんじ", "approved deletion did not restore reading");
+        key(keys.Get(), context.Get(), VK_SPACE); check(context->doc->text == L"漢字", "pending deletion kept learned priority");
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        until([&] { return read_user_dictionary(file).revision() == 4; });
+        check(read_user_dictionary(file).lookup({U"かんじ"}).empty(), "deletion did not reach durable store");
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "Michi"); key(keys.Get(), context.Get(), VK_SPACE);
+        type(keys.Get(), context.Get(), "Xyes"); key(keys.Get(), context.Get(), VK_RETURN); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"みち" && host->ui && host->ui.As(&list) == E_NOINTERFACE, "deleted registration resurrected from cache");
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        until([&] { return read_user_dictionary(file).revision() == 5; });
+        check(read_user_dictionary(file).lookup({U"みち"}).empty(), "registered word deletion not durable");
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
         std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private scopes, focus/UI failure\n";
         result = 0;

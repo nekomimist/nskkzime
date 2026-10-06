@@ -37,6 +37,20 @@ struct LearningDictionary::State {
     bool stop = false;
     std::wstring report = L"学習: 接続待ち";
     std::wstring skipped;
+    // Call with mutex held. Replay only this small scope, never copy the whole
+    // user dictionary on the key path. Pending forgets must not resurrect words.
+    std::vector<Candidate> scope(const LookupKey& key, std::u32string_view okuri) const {
+        auto result = snapshot.load()->lookup_scope(key, okuri);
+        for (const auto& request : queue) {
+            if (request.event.key != key || request.event.okuri != okuri) continue;
+            std::erase_if(result, [&](const Candidate& item) { return item.text == request.event.candidate.text; });
+            if (request.action == DictionaryAction::Learn) {
+                result.insert(result.begin(), request.event.candidate);
+                if (result.size() > 32) result.resize(32);
+            }
+        }
+        return result;
+    }
     void update_status(std::wstring value) { const std::lock_guard lock(mutex); report = std::move(value); }
     void run() noexcept {
         try {
@@ -56,14 +70,19 @@ struct LearningDictionary::State {
                         if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
                     }
                     const auto response = learning_exchange(file, snapshot_request(revision));
+                    std::shared_ptr<UserDictionary> next;
                     if (response.starts_with("DATA")) {
-                        auto next = std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
-                        revision = next->revision(); snapshot.store(std::move(next));
+                        next = std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
+                        revision = next->revision();
                     } else if (response != "SAME") throw std::runtime_error("dictionary snapshot rejected");
                     // Keep the event pending until its acknowledged generation
                     // has been published. Engine caches can then safely retire,
                     // even if the word was deleted before the next lookup.
-                    if (request) { const std::lock_guard lock(mutex); queue.pop_front(); }
+                    {
+                        const std::lock_guard lock(mutex);
+                        if (next) snapshot.store(std::move(next));
+                        if (request) queue.pop_front();
+                    }
                     update_status(L"学習: 保存済み・同期済み（世代 " + std::to_wstring(revision) + L"）");
                 } catch (const std::exception&) {
                     update_status(L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）");
@@ -106,25 +125,50 @@ LearningDictionary::~LearningDictionary() {
     SetEvent(state_->wake.get()); // No join in a TSF callback or DLL unload.
 }
 std::vector<Candidate> LearningDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
-    const auto snapshot = state_->snapshot.load();
-    return DictionarySet({snapshot, state_->base}).lookup(key, okuri);
+    std::vector<Candidate> result;
+    const auto append = [&](const std::vector<Candidate>& items) {
+        for (const auto& candidate : items)
+            if (std::none_of(result.begin(), result.end(), [&](const Candidate& old) { return old.text == candidate.text; }))
+                result.push_back(candidate);
+    };
+    {
+        const std::lock_guard lock(state_->mutex);
+        result = state_->scope(key, okuri);
+        if (key.okuri && !okuri.empty()) append(state_->scope(key, {}));
+    }
+    append(state_->base->lookup(key, okuri));
+    return result;
+}
+std::optional<LearningEvent> LearningDictionary::forget_target(const LookupKey& key, std::u32string_view okuri, std::u32string_view text) const {
+    const std::lock_guard lock(state_->mutex);
+    for (const auto& candidate : state_->scope(key, okuri))
+        if (candidate.text == text) return LearningEvent{key, std::u32string(okuri), candidate};
+    if (key.okuri && !okuri.empty())
+        for (const auto& candidate : state_->scope(key, {}))
+            if (candidate.text == text) return LearningEvent{key, {}, candidate};
+    return {};
 }
 bool LearningDictionary::registration_pending(const LearningEvent& event) const {
     const std::lock_guard lock(state_->mutex);
-    return std::any_of(state_->queue.begin(), state_->queue.end(), [&](const LearningRequest& request) {
-        return request.event.key == event.key && request.event.okuri == event.okuri && request.event.candidate.text == event.candidate.text;
-    });
+    for (auto it = state_->queue.rbegin(); it != state_->queue.rend(); ++it)
+        if (it->event.key == event.key && it->event.okuri == event.okuri && it->event.candidate.text == event.candidate.text)
+            return it->action == DictionaryAction::Learn;
+    return false;
 }
-void LearningDictionary::learn(const LearningEvent& event) const noexcept {
+bool LearningDictionary::enqueue(const LearningEvent& event, bool forget) const noexcept {
     try {
         const std::lock_guard lock(state_->mutex);
-        if (state_->queue.size() >= 128) { ++state_->dropped; return; }
-        LearningRequest request{state_->client, state_->sequence + 1, event}; validate_learning(request);
+        if (state_->queue.size() >= 128) { ++state_->dropped; return false; }
+        LearningRequest request{state_->client, state_->sequence + 1, event, forget ? DictionaryAction::Forget : DictionaryAction::Learn}; validate_learning(request);
         state_->queue.push_back(std::move(request)); ++state_->sequence;
         state_->skipped.clear();
         SetEvent(state_->wake.get());
+        return true;
     } catch (...) { ++state_->dropped; /* Never turn an applied key into a failed key. */ }
+    return false;
 }
+void LearningDictionary::learn(const LearningEvent& event) const noexcept { enqueue(event, false); }
+bool LearningDictionary::forget(const LearningEvent& event) const noexcept { return enqueue(event, true); }
 void LearningDictionary::skipped(std::wstring reason) const noexcept {
     try { const std::lock_guard lock(state_->mutex); state_->skipped = std::move(reason); } catch (...) {}
 }

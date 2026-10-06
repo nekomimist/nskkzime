@@ -537,11 +537,13 @@ private:
         const bool was_pending = inference_pending_.has_value();
         std::wstring learning_reason;
         const bool starting_registration = next.registration_depth() > engine_.registration_depth();
-        const bool persistence_allowed = (result.learning || starting_registration) &&
+        const bool starting_forget = next.forgetting() && !engine_.forgetting() && next.forget_target().has_value();
+        const bool persistence_allowed = (result.learning || result.forgetting || starting_registration || starting_forget) &&
             learning_allowed(target, current.Get(), cookie, learning_reason);
         // Property callbacks can end or replace the composition while answering.
         if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
         if (starting_registration && !persistence_allowed) next.abandon_registration();
+        if (starting_forget && !persistence_allowed) next.cancel_forgetting();
         std::optional<SurroundingText> inference_text;
         auto plan = inference_ && !was_pending ? plan_inference(engine_,next,result,inference_policy_) : std::nullopt;
         if (plan) {
@@ -560,10 +562,12 @@ private:
         if (SUCCEEDED(status)) {
             cancel_inference();
             engine_ = std::move(next); applied = true;
+            if (result.forgetting && persistence_allowed && publish_runtime_forgetting(dictionary_, *result.forgetting))
+                engine_.forget_registration(*result.forgetting);
             if (result.learning && persistence_allowed) {
                 publish_runtime_learning(dictionary_, *result.learning);
                 if (result.registration) engine_.remember_registration(*result.learning);
-            } else if (result.learning || (starting_registration && !persistence_allowed)) {
+            } else if (result.learning || ((result.forgetting || starting_registration || starting_forget) && !persistence_allowed)) {
                 skip_runtime_learning(dictionary_, std::move(learning_reason));
             }
             refresh_candidates(cookie);
@@ -585,7 +589,7 @@ private:
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
         if (selection_pending_ || !manager_ || !composition_ || !composition_context_ ||
-            engine_.revision() != revision || engine_.input_stage() != Stage::Selecting || index >= engine_.candidates().size()) return;
+            engine_.revision() != revision || engine_.forgetting() || engine_.input_stage() != Stage::Selecting || index >= engine_.candidates().size()) return;
         cancel_inference();
         const auto request = ++selection_request_;
         selection_pending_ = true;
@@ -610,6 +614,9 @@ private:
     void refresh_candidates(TfEditCookie cookie) noexcept {
         candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_);
         candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
+        if (engine_.forgetting() && !candidates_.presentation_available()) {
+            engine_.cancel_forgetting(); candidates_.close();
+        }
         if (engine_.registering() && !candidates_.presentation_available()) {
             // The host text is still the outer reading. Never capture more keys
             // in an editor the user cannot see, even when popup creation fails.

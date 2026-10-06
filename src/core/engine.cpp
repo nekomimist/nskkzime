@@ -26,6 +26,7 @@ Engine::Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_e
     input_.romaji = Romaji(rules_);
 }
 void Engine::clear_composition() {
+    forget_.reset();
     input_.stage = Stage::Direct;
     input_.abbrev = false;
     input_.romaji.clear(); input_.reading.clear(); input_.okuri.clear(); input_.okuri_letter = 0;
@@ -39,6 +40,7 @@ void Engine::reset() {
 }
 void Engine::set_mode(Mode mode) { reset(); input_.mode = mode; }
 std::u32string Engine::inference_reading(bool include_okuri) const {
+    if (forgetting()) return {};
     if (registrations_.size() > 1) return {};
     const auto& input = registering() ? registrations_.front().original : input_;
     if (input.abbrev || (input.okuri_letter && !include_okuri) || !input.romaji.pending().empty() ||
@@ -49,7 +51,7 @@ std::u32string Engine::scoring_text(std::size_t index) const {
     return !registering() && index < input_.candidates.size() ? input_.candidates[index].text + input_.okuri : std::u32string{};
 }
 bool Engine::can_reorder_candidates() const {
-    return !registering() && input_.stage == Stage::Selecting && !input_.candidates_touched && input_.candidate_index == 0;
+    return !forgetting() && !registering() && input_.stage == Stage::Selecting && !input_.candidates_touched && input_.candidate_index == 0;
 }
 bool Engine::generation_attempted() const {
     return registering() ? registrations_.front().original.generation_attempted : input_.generation_attempted;
@@ -127,6 +129,7 @@ std::u32string Engine::registration_text() const {
     return registering() ? registrations_.back().draft + input_preedit() : std::u32string{};
 }
 std::u32string Engine::preedit() const {
+    if (forgetting()) return U"[削除確認: " + forget_answer() + U"]";
     return registering() ? U"[登録 " + registration_reading() + U": " + registration_text() + U"]" : input_preedit();
 }
 std::u32string Engine::composition_text() const {
@@ -193,6 +196,19 @@ Result Engine::handle(Key key) {
     result.consumed = true;
     ++revision_;
     registration_limit_ = false;
+    if (forgetting()) return handle_forgetting(key);
+    if (input_.stage == Stage::Selecting && key.code == KeyCode::Character && key.character == 'X') {
+        input_.candidates_touched = true;
+        const auto& candidate = input_.candidates[input_.candidate_index];
+        auto target = dictionary_->forget_target({input_.reading, input_.okuri_letter}, input_.okuri, candidate.text);
+        if (!target) {
+            for (const auto& item : registered_)
+                if (item.key == LookupKey{input_.reading, input_.okuri_letter} && item.okuri == input_.okuri &&
+                    item.candidate.text == candidate.text && dictionary_->registration_pending(item)) { target = item; break; }
+        }
+        forget_ = Forget{std::move(target), {}};
+        return result;
+    }
     if (!registering()) return handle_input(key);
     // Keep an oversized edit transactional, including an attempted nested registration.
     const auto old_input = input_;
@@ -221,6 +237,7 @@ void Engine::cancel_registration() {
     input_.candidates.clear(); input_.candidate_index = 0;
 }
 void Engine::abandon_registration() {
+    forget_.reset();
     if (!registering()) return;
     input_ = std::move(registrations_.front().original); registrations_.clear();
     input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
@@ -236,6 +253,36 @@ void Engine::remember_registration(const LearningEvent& event) noexcept {
         if (next.size() > 128) next.resize(128);
         registered_ = std::move(next);
     } catch (...) { /* The durable dictionary can supply it after synchronization. */ }
+}
+void Engine::forget_registration(const LearningEvent& event) noexcept {
+    std::erase_if(registered_, [&](const LearningEvent& item) {
+        return item.key == event.key && item.okuri == event.okuri && item.candidate.text == event.candidate.text;
+    });
+}
+const std::optional<LearningEvent>& Engine::forget_target() const {
+    static const std::optional<LearningEvent> none;
+    return forget_ ? forget_->target : none;
+}
+std::u32string Engine::forget_answer() const { return forget_ ? forget_->answer : std::u32string{}; }
+void Engine::cancel_forgetting() { if (forget_) { forget_.reset(); ++revision_; } }
+Result Engine::handle_forgetting(Key key) {
+    Result result; result.consumed = true;
+    if (key.code == KeyCode::Cancel || key.code == KeyCode::Hiragana) { cancel_forgetting(); return result; }
+    if (key.code == KeyCode::Enter) {
+        if (forget_->target && forget_->answer == U"yes") {
+            result.forgetting = forget_->target;
+            input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
+            input_.candidates.clear(); input_.candidate_index = 0;
+        }
+        cancel_forgetting();
+    } else if (key.code == KeyCode::Backspace) {
+        if (!forget_->answer.empty()) forget_->answer.pop_back();
+    } else if (key.code == KeyCode::Character && forget_->target && forget_->answer.size() < 16) {
+        forget_->answer += static_cast<unsigned char>(key.character);
+    } else if (key.code == KeyCode::Space && forget_->target && forget_->answer.size() < 16) {
+        forget_->answer += U' ';
+    }
+    return result;
 }
 Result Engine::handle_registration(Key key) {
     Result result; result.consumed = true;

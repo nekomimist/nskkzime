@@ -73,6 +73,16 @@ void RuntimeDictionary::learn(const LearningEvent& event) const noexcept {
     const auto snapshot = state_->snapshot.load();
     if (snapshot && snapshot->registration) publish_learning(snapshot->dictionary,event);
 }
+std::optional<LearningEvent> RuntimeDictionary::forget_target(const LookupKey& key, std::u32string_view okuri, std::u32string_view text) const {
+    const auto snapshot = state_->snapshot.load();
+    return snapshot && snapshot->registration ? snapshot->dictionary->forget_target(key, okuri, text) : std::nullopt;
+}
+bool RuntimeDictionary::forget(const LearningEvent& event) const noexcept {
+    const auto snapshot = state_->snapshot.load();
+    if (snapshot && snapshot->registration)
+        if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) return learning->forget(event);
+    return false;
+}
 void RuntimeDictionary::skipped(std::wstring reason) const noexcept {
     const auto snapshot = state_->snapshot.load();
     if (snapshot) if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) learning->skipped(std::move(reason));
@@ -150,5 +160,9 @@ void publish_runtime_learning(const std::shared_ptr<const Dictionary>& dictionar
 }
 void skip_runtime_learning(const std::shared_ptr<const Dictionary>& dictionary, std::wstring reason) noexcept {
     if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->skipped(std::move(reason));
+}
+bool publish_runtime_forgetting(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
+    if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) return runtime->forget(event);
+    return false;
 }
 }

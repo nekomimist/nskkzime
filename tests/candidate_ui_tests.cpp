@@ -124,6 +124,18 @@ int main() {
             popup->close(); element->Show(TRUE); BOOL shown = TRUE; element->IsShown(&shown);
             check(!shown, "retained registration element reopened");
         }
+        {
+            Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space}); type(engine, "X");
+            unsigned selections = 0;
+            auto actions = std::make_shared<CandidateActions>(); actions->select = [&](std::size_t, std::uint64_t) { ++selections; };
+            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(true, actions)); popup->update(engine, nullptr);
+            UINT count = 99; popup->GetCount(&count); popup->request_selection(0);
+            ComPtr<ITfCandidateListUIElement> list;
+            check(count == 0 && !selections && popup.As(&list) == E_NOINTERFACE, "deletion prompt exposed actionable candidates");
+            BSTR description = nullptr; popup->GetDescription(&description);
+            const bool unavailable = description && std::wstring_view(description).find(L"削除できる学習語がありません") != std::wstring_view::npos;
+            SysFreeString(description); check(unavailable, "read-only deletion explanation unavailable to host");
+        }
         check(module_objects == 0, "candidate COM object leaked");
         std::cout << "PASS candidate text/okuri, 7-row pages, host pagination, bounds, update flags, retained UI lifetime\n";
         return 0;

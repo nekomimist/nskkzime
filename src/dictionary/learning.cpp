@@ -133,9 +133,18 @@ bool UserDictionary::apply(const LearningRequest& request) {
     }
     clients_[request.client] = request.sequence; ++revision_; return true;
 }
-std::vector<Candidate> UserDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
+std::vector<Candidate> UserDictionary::lookup_scope(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find({key, std::u32string(okuri)});
-    auto result = found == entries_.end() ? std::vector<Candidate>{} : found->second;
+    return found == entries_.end() ? std::vector<Candidate>{} : found->second;
+}
+std::optional<LearningEvent> UserDictionary::forget_target(const LookupKey& key, std::u32string_view okuri, std::u32string_view text) const {
+    for (const auto& candidate : lookup_scope(key, okuri))
+        if (candidate.text == text) return LearningEvent{key, std::u32string(okuri), candidate};
+    if (key.okuri && !okuri.empty()) return forget_target(key, {}, text);
+    return {};
+}
+std::vector<Candidate> UserDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
+    auto result = lookup_scope(key, okuri);
     if (key.okuri && !okuri.empty()) {
         if (const auto generic = entries_.find({key,{}}); generic != entries_.end())
             for (const auto& candidate : generic->second)

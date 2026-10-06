@@ -29,6 +29,8 @@ public:
     bool apply(const LearningRequest&); // false for an already acknowledged sequence
     bool apply(const ImportRequest&); // Atomic append; never evicts or reranks existing entries.
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
+    std::vector<Candidate> lookup_scope(const LookupKey&, std::u32string_view okuri) const;
+    std::optional<LearningEvent> forget_target(const LookupKey&, std::u32string_view, std::u32string_view) const override;
     std::string serialize() const;
     std::vector<LearningEvent> entries() const; // Key order, then candidate priority.
     std::string export_skk() const; // UTF-8; throws if a key cannot be represented losslessly.

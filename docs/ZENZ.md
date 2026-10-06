@@ -55,7 +55,7 @@ $model = (Resolve-Path '.\out\models\zenz-v3.2-small\ggml-model-Q5_K_M.gguf').Pa
 
 ## 検証と計測
 
-2026-10-06に、モデル入りRelease版のCTest 40件をスキップなしで通過した。
+2026-10-06に、モデル入りRelease版のCTest 41件をスキップなしで通過した。
 移植元のprompt/modelテストに加え、実パイプの並行採点、切断後の復帰、取消可能なモデル待ち、
 CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空白を含むモデルパスを確認した。
 `tsf_zenz` は保存設定からビルドしたDLLを実際に読み込み、自動起動・文脈付き変換・確定後の入力・
@@ -64,7 +64,7 @@ CLIと標準入出力のJSON Lines、異常行の後の復帰、日本語・空�
 `inference_policy` は11ケースで候補統合・採点・学習の規則を、`tsf_inference_policy` は遅延する実パイプで
 キー／クリック操作・期限切れ・編集拒否後の候補保持・送り仮名と文脈・短い生成語の永続化を検査する。
 これはテスト用TSFホストによる検証で、実アプリのキー配送や表示をすべて再現するものではない。
-通常版Debug／Releaseの35件も成功している。
+通常版Debug／Releaseの36件も検証した。Releaseのキャッシュ試験は準備完了待ちを修正し、該当試験の5回連続成功を確認した。
 
 ```powershell
 .\scripts\bench-zenz.ps1 -Rounds 30 -Output out/zenz-benchmark.json

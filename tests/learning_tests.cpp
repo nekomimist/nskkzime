@@ -1,6 +1,7 @@
 #include "learning_ipc.h"
 #include "learning_client.h"
 #include "local_storage.h"
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -25,7 +26,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -198,7 +199,38 @@ int wmain(int argc, wchar_t** argv) {
         {"client/unavailable-server-keeps-base-conversion", [&] {
             LearningDictionary client(demo_dictionary(), files.root / L"absent" / L"dictionary.nskkdb", files.root / L"not-installed.exe");
             const auto start = GetTickCount64(); client.learn(update().event);
-            check(client.lookup({U"かんじ"})[0].text == U"漢字" && GetTickCount64() - start < 500, "failed helper blocked conversion");
+            const auto candidates = client.lookup({U"かんじ"});
+            check(candidates[0].text == U"感じ" && std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.text == U"漢字"; }) &&
+                GetTickCount64() - start < 500, "failed helper blocked conversion or lost base candidate");
+        }},
+        {"client/pending-forget-scope-and-learn-order-survive-save-failure", [&] {
+            const auto isolated = files.root / L"queued.nskkdb";
+            UserDictionary initial;
+            const LearningEvent common{{U"か", 'k'}, {}, {"common", U"描", U"共通"}};
+            auto exact = common; exact.okuri = U"く"; exact.candidate.annotation = U"個別";
+            auto other = exact; other.okuri = U"け";
+            initial.apply(ImportRequest{std::string(32, 'a'), 1, {common, exact, other}});
+            write_file_atomic(isolated, initial.serialize());
+            Child helper{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
+            auto client = std::make_shared<LearningDictionary>(demo_dictionary(), isolated, server);
+            until([&] { return client->forget_target(common.key, U"く", U"描").has_value(); });
+            {
+                NativeHandle lock(CreateFileW(isolated.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
+                check(lock.valid(), "cannot hold queued-save fixture");
+                check(client->forget(exact), "cannot enqueue exact deletion");
+                check(client->forget_target(common.key, U"く", U"描")->okuri.empty(), "pending deletion still resolves exact scope");
+                check(client->forget(common), "cannot enqueue generic deletion");
+                check(!client->forget_target(common.key, U"く", U"描") && client->forget_target(common.key, U"け", U"描")->okuri == U"け", "pending delete affected another scope");
+                check(client->lookup(common.key, U"く")[0].text == U"書", "forget hid base dictionary or kept learned priority");
+                client->learn(exact);
+                check(client->forget_target(common.key, U"く", U"描")->okuri == U"く" && client->registration_pending(exact), "later learning did not supersede delete");
+                check(client->forget(exact) && !client->registration_pending(exact), "latest deletion left a registration pending");
+                Sleep(350); check(read_user_dictionary(isolated).revision() == 1, "locked file was changed");
+            }
+            until([&] { return read_user_dictionary(isolated).revision() == 5 && !client->forget_target(common.key, U"く", U"描"); });
+            const auto saved = read_user_dictionary(isolated);
+            check(saved.lookup_scope(common.key, U"く").empty() && saved.lookup_scope(common.key, {}).empty() && saved.lookup_scope(common.key, U"け").size() == 1,
+                "queued retry changed unrelated scope or resurrected deletion");
         }},
         {"store/corrupt-file-is-not-overwritten", [&] {
             const auto broken = files.root / L"broken.nskkdb"; write_file_atomic(broken, "broken user data");

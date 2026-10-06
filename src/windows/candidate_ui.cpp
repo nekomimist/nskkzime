@@ -143,10 +143,20 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     if (engine.candidates().size() > std::numeric_limits<UINT>::max()) throw std::length_error("too many candidates");
     std::vector<Row> rows;
     rows.reserve(engine.candidates().size());
-    for (std::size_t i = 0; i < engine.candidates().size(); ++i)
+    for (std::size_t i = 0; !engine.forgetting() && i < engine.candidates().size(); ++i)
         rows.push_back({wide(engine.candidate_text(i)), wide(engine.candidates()[i].annotation)});
     updated_ = 0;
-    if (registration_) {
+    if (engine.forgetting()) {
+        const auto& target = engine.forget_target();
+        const auto heading = target ? L"学習語の削除  「" + wide(target->candidate.text) + L"」" : L"削除できる学習語がありません";
+        const auto scope = target ? L"読み: " + wide(target->key.reading) + (target->key.okuri ?
+            L" / 送り: " + (target->okuri.empty() ? std::wstring(L"共通") : wide(target->okuri)) : L" / 送りなし") :
+            std::wstring(L"学習が無効、未同期、または読み取り専用の候補です");
+        const auto draft = scope + (target ? L"    確認: " + wide(engine.forget_answer()) : L"");
+        const std::wstring hint = target ? L"yes + Enter: この登録を削除  Esc / no + Enter: 取消" : L"Enter / Esc: 候補へ戻る";
+        if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
+        heading_ = heading; draft_ = draft; hint_ = hint;
+    } else if (registration_) {
         const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
         const auto draft = wide(engine.registration_text());
         const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
@@ -245,7 +255,7 @@ void CandidateList::render() noexcept {
 }
 std::wstring CandidateList::footer() const {
     return registration_ ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
-        L"   クリック/1〜7: 選択  Space/x: 次/前  PgDn/PgUp: 7件  Enter: 確定";
+        L"   1〜7: 選択  Space/x: 次/前  PgDn/PgUp: 7件  X: 削除";
 }
 void CandidateList::paint(HDC dc) const {
     RECT area{}; GetClientRect(window_, &area);
@@ -327,13 +337,14 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
 }
 void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions) noexcept {
     if (!engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close(); return; }
-    if (list_ && list_->registration() != engine.registering()) close();
+    const bool editor = engine.registering() || engine.forgetting();
+    if (list_ && list_->registration() != editor) close();
     try {
         ComPtr<ITfDocumentMgr> document;
         if (!context || FAILED(context->GetDocumentMgr(&document)) || !document) { close(); return; }
         if (!list_) {
             if (!thread || FAILED(thread->QueryInterface(IID_PPV_ARGS(&manager_)))) return;
-            list_.Attach(new CandidateList(engine.registering(), std::move(actions)));
+            list_.Attach(new CandidateList(editor, std::move(actions)));
             list_->update(engine, document.Get());
             BOOL show = TRUE;
             const auto list = list_; const auto manager = manager_;
@@ -372,7 +383,7 @@ void CandidatePresenter::locate(ITfContext* context, ITfComposition* composition
 }
 void CandidatePresenter::hide() noexcept { if (list_) list_->locate(nullptr, nullptr); }
 Key CandidatePresenter::selection_key(Key key, const Engine& engine) const noexcept {
-    if (list_ && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character &&
+    if (list_ && !engine.forgetting() && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character &&
         key.character >= '1' && key.character <= '7')
         return {KeyCode::SelectCandidate, 0, list_->shortcut_index(static_cast<std::size_t>(key.character - '1'))};
     return key;

@@ -18,6 +18,8 @@ public:
     bool ready() const override;
     bool registration_allowed() const override;
     bool registration_pending(const LearningEvent&) const override;
+    std::optional<LearningEvent> forget_target(const LookupKey&, std::u32string_view, std::u32string_view) const override;
+    bool forget(const LearningEvent&) const noexcept;
     void learn(const LearningEvent&) const noexcept;
     void skipped(std::wstring reason) const noexcept;
     std::wstring status() const;
@@ -31,5 +33,6 @@ std::shared_ptr<const Dictionary> runtime_dictionary();
 std::wstring runtime_dictionary_status();
 bool runtime_dictionary_ready();
 void publish_runtime_learning(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
+bool publish_runtime_forgetting(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
 void skip_runtime_learning(const std::shared_ptr<const Dictionary>&, std::wstring reason) noexcept;
 }
