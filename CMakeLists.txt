@@ -115,6 +115,9 @@ if(WIN32)
   target_include_directories(nskkzime_tsf PRIVATE src/windows)
   target_link_libraries(nskkzime_tsf PRIVATE nskkzime_inference ole32 oleaut32 advapi32 uuid user32 gdi32)
   add_dependencies(nskkzime_tsf nskkzime_dictionary_server nkkz-ime-server nskkzime_settings nskkzime_dictionary_gui)
+  if(MSVC)
+    include(cmake/build_metadata.cmake)
+  endif()
   # Same native controls/TSF profile, but activate this build's COM DLL only
   # inside the probe. Normal applications continue to use the registered DLL.
   add_executable(ime_probe_local WIN32 src/tools/ime_probe.cpp src/tools/ime_probe_local.manifest)
@@ -185,6 +188,9 @@ if(WIN32)
       -PackageScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/package.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR}
       -Configuration $<CONFIG> ${NSKKZIME_PACKAGE_TEST_ARGS})
     set_tests_properties(package PROPERTIES TIMEOUT 90)
+    add_test(NAME build_metadata COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/build_metadata_tests.ps1
+      -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(build_metadata PROPERTIES TIMEOUT 45)
     if(NSKKZIME_WITH_ZENZ)
       add_test(NAME installation COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/installation_tests.ps1
         -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR} -Configuration $<CONFIG>)

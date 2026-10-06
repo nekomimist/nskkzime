@@ -32,6 +32,25 @@ function Rewrite-Zip([string]$InputZip, [string]$OutputZip, [string]$Mode) {
                 $document.files[1] = $document.files[0]
                 $bytes = [Text.Encoding]::UTF8.GetBytes(($document | ConvertTo-Json -Depth 8))
             }
+            if ($Mode -eq 'metadata-mismatch' -and $entry.FullName -eq 'manifest.json') {
+                $document = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+                $document.binary_build_revision = '0' * 40
+                $bytes = [Text.Encoding]::UTF8.GetBytes(($document | ConvertTo-Json -Depth 8))
+            }
+            if ($Mode -in @('legacy-metadata', 'reordered-metadata') -and $entry.FullName -eq 'manifest.json') {
+                $document = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+                if ($Mode -eq 'legacy-metadata') {
+                    $document.PSObject.Properties.Remove('binary_build_metadata')
+                    $document.binary_build_revision = $null
+                } else {
+                    $reordered = [ordered]@{}
+                    foreach ($property in $document.binary_build_metadata.PSObject.Properties | Sort-Object Name -Descending) {
+                        $reordered[$property.Name] = $property.Value
+                    }
+                    $document.binary_build_metadata = $reordered
+                }
+                $bytes = [Text.Encoding]::UTF8.GetBytes(($document | ConvertTo-Json -Depth 8))
+            }
             $copy = $outputArchive.CreateEntry($entry.FullName).Open()
             try { $copy.Write($bytes, 0, $bytes.Length) } finally { $copy.Dispose() }
         }
@@ -62,16 +81,26 @@ try {
     $repeat = & $PackageScript @arguments
     Assert-Package ($repeat.SHA256 -eq $created.SHA256) 'Identical inputs did not reproduce ZIP bytes.'
     $failures = [ordered]@{ corrupt = 'ハッシュまたは長さ'; missing = 'ファイル一覧'; 'missing-server' = 'ファイル一覧'; 'manifest-duplicate' = '不足・余分・重複';
-        duplicate = '不正または重複'; 'case-duplicate' = '不正または重複'; traversal = '不正または重複'; extra = 'ファイル一覧' }
+        duplicate = '不正または重複'; 'case-duplicate' = '不正または重複'; traversal = '不正または重複'; extra = 'ファイル一覧'; 'metadata-mismatch' = 'ビルド情報が一致しません' }
     foreach ($mode in $failures.Keys) {
         $bad = Join-Path $fixture ($mode + '.zip')
         Rewrite-Zip $created.Path $bad $mode
         Expect-Failure { & $PackageScript -Verify $bad } $failures[$mode]
     }
+    foreach ($mode in @('legacy-metadata', 'reordered-metadata')) {
+        $compatible = Join-Path $fixture ($mode + '.zip')
+        Rewrite-Zip $created.Path $compatible $mode
+        Assert-Package ((& $PackageScript -Verify $compatible).Verified) "Rejected compatible $mode manifest."
+    }
     $expanded = Join-Path $fixture 'expanded'
     [IO.Compression.ZipFile]::ExtractToDirectory($created.Path, $expanded)
     $directoryResult = & $PackageScript -VerifyDirectory $expanded
     Assert-Package ($directoryResult.Verified -and $directoryResult.FormatVersion -eq 2 -and $directoryResult.Paths.Count -eq 17) 'Expanded package verification failed.'
+    $manifest = Get-Content -LiteralPath (Join-Path $expanded 'manifest.json') -Raw | ConvertFrom-Json
+    Assert-Package ($manifest.binary_build_revision -match '^[a-f0-9]{40}$' -and
+        $manifest.binary_build_revision -eq $manifest.binary_build_metadata.source_revision -and
+        $manifest.binary_build_metadata.source_sha256 -match '^[a-f0-9]{64}$' -and
+        $manifest.binary_build_metadata.llama_source_sha256 -match '^[a-f0-9]{64}$') 'Missing embedded build provenance.'
     $directoryReadme = Join-Path $expanded 'README.md'
     $originalReadme = [IO.File]::ReadAllBytes($directoryReadme)
     [IO.File]::AppendAllText($directoryReadme, 'corrupt')
@@ -110,10 +139,54 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
     Expect-Failure { & $PackageScript @arguments } '未確認の依存DLL'
     Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'Unknown dependency was packaged.'
+    # Real images with deliberately damaged provenance; no build output is modified.
+    $original = [IO.File]::ReadAllBytes((Join-Path $source 'ime_probe.exe'))
+    $sectionName = [Text.Encoding]::Latin1.GetString($original).IndexOf('.nskkz' + [char]0, [StringComparison]::Ordinal)
+    Assert-Package ($sectionName -ge 0) 'Image has no metadata section.'
+    $bytes = $original.Clone()
+    $bytes[$sectionName + 1] = [byte][char]'x'
+    [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
+    Expect-Failure { & $PackageScript @arguments } 'ビルド情報が不正または不足'
+    $bytes = $original.Clone()
+    [BitConverter]::GetBytes([uint32]($bytes.Length - 1)).CopyTo($bytes, $sectionName + 20)
+    [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
+    Expect-Failure { & $PackageScript @arguments } 'ビルド情報が不正または不足'
+    $bytes = $original.Clone()
+    # Locate through Latin1, whose character offsets equal byte offsets even in a PE image.
+    $targetOffset = [Text.Encoding]::Latin1.GetString($bytes).IndexOf('"binary":"ime_probe.exe"', [StringComparison]::Ordinal)
+    Assert-Package ($targetOffset -ge 0) 'Missing image identity.'
+    [Text.Encoding]::ASCII.GetBytes('"binary":"ime_wrong.exe"').CopyTo($bytes, $targetOffset)
+    [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
+    Expect-Failure { & $PackageScript @arguments } 'ビルド情報が不正または不足'
+    # Reject duplicate JSON fields and values with the wrong type.
+    $sectionOffset = [BitConverter]::ToUInt32($original, $sectionName + 20)
+    $sectionSize = [BitConverter]::ToUInt32($original, $sectionName + 16)
+    $jsonLength = [Array]::IndexOf($original, [byte]0, [int]$sectionOffset, [int]$sectionSize) - $sectionOffset
+    $json = [Text.Encoding]::UTF8.GetString($original, $sectionOffset, $jsonLength)
+    foreach ($changedJson in @(('{"binary":"ime_probe.exe",' + $json.Substring(1)), $json.Replace('"format_version":1', '"format_version":"1"'))) {
+        $changedBytes = [Text.Encoding]::UTF8.GetBytes($changedJson)
+        Assert-Package ($changedBytes.Length -lt $sectionSize) 'Modified JSON exceeds fixture section.'
+        $bytes = $original.Clone()
+        [Array]::Clear($bytes, [int]$sectionOffset, [int]$sectionSize)
+        $changedBytes.CopyTo($bytes, $sectionOffset)
+        [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
+        Expect-Failure { & $PackageScript @arguments } 'ビルド情報が不正または不足'
+    }
+    foreach ($file in Get-ChildItem -LiteralPath $source -File | Where-Object { $_.Extension -in @('.exe', '.dll') }) {
+        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $fake $file.Name) -Force
+    }
+    $bytes = $original.Clone()
+    $hashMarker = '"source_sha256":"'
+    $hashOffset = [Text.Encoding]::Latin1.GetString($bytes).IndexOf($hashMarker, [StringComparison]::Ordinal) + $hashMarker.Length
+    Assert-Package ($hashOffset -ge $hashMarker.Length) 'Missing source fingerprint.'
+    $bytes[$hashOffset] = if ($bytes[$hashOffset] -eq [byte][char]'a') { [byte][char]'b' } else { [byte][char]'a' }
+    [IO.File]::WriteAllBytes((Join-Path $fake 'ime_probe.exe'), $bytes)
+    Expect-Failure { & $PackageScript @arguments } '異なるビルド'
+    Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'Mixed build was packaged.'
     [IO.File]::WriteAllText((Join-Path $fixture 'CMakeCache.txt'), "CMAKE_GENERATOR_PLATFORM:INTERNAL=x64`nNSKKZIME_WITH_ZENZ:BOOL=OFF`n")
     Expect-Failure { & $PackageScript @arguments } 'テスト専用ビルドは配布できません'
     Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'A test-only build was packaged.'
-    Write-Output 'PASS zenz-only package, required server, Unicode paths, reproducible bytes, no overwrite, corruption, missing/duplicate/traversing/extra files, wrong architecture, unknown dependency and test-only rejection'
+    Write-Output 'PASS zenz-only package, required server, Unicode paths, reproducible bytes, no overwrite, corruption, missing/duplicate/traversing/extra files, wrong architecture, unknown dependency, embedded provenance, mixed-build and test-only rejection'
 } finally {
     # Only this uniquely named workspace fixture may be recursively removed.
     $absolute = [IO.Path]::GetFullPath($fixture)

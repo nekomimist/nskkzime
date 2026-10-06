@@ -17,6 +17,68 @@ $zenzLicenses = @('licenses/skk-zenz-MIT.txt', 'licenses/llama-MIT.txt')
 function Get-Digest([byte[]]$Bytes) {
     [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
+function Get-BuildMetadata([byte[]]$Bytes, [string]$Name) {
+    # Parse the dedicated read-only PE data section. Never load/execute an image.
+    $invalid = "ビルド情報が不正または不足しています: $Name"
+    if ($Bytes.Length -lt 64 -or [BitConverter]::ToUInt16($Bytes, 0) -ne 0x5a4d) { throw $invalid }
+    $pe = [long][BitConverter]::ToUInt32($Bytes, 60)
+    if ($pe -gt $Bytes.Length - 24 -or [BitConverter]::ToUInt32($Bytes, $pe) -ne 0x4550) { throw $invalid }
+    $count = [BitConverter]::ToUInt16($Bytes, $pe + 6)
+    $table = $pe + 24 + [BitConverter]::ToUInt16($Bytes, $pe + 20)
+    if ($count -lt 1 -or $count -gt 96 -or $table + 40L * $count -gt $Bytes.Length) { throw $invalid }
+    $found = $null
+    for ($index = 0; $index -lt $count; ++$index) {
+        $section = $table + 40L * $index
+        if ([Text.Encoding]::ASCII.GetString($Bytes, $section, 8).TrimEnd([char]0) -cne '.nskkz') { continue }
+        if ($null -ne $found) { throw $invalid }
+        $size = [long][BitConverter]::ToUInt32($Bytes, $section + 16)
+        $offset = [long][BitConverter]::ToUInt32($Bytes, $section + 20)
+        $flags = [BitConverter]::ToUInt32($Bytes, $section + 36)
+        if ($size -lt 2 -or $size -gt 8192 -or $offset -lt $table + 40L * $count -or $offset + $size -gt $Bytes.Length -or
+            ($flags -band 0xE0000000L) -ne 0x40000000L) { throw $invalid }
+        $length = [Array]::IndexOf($Bytes, [byte]0, [int]$offset, [int]$size) - $offset
+        if ($length -lt 2 -or $length -gt 4096) { throw $invalid }
+        try {
+            $json = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes, $offset, $length)
+            $document = [Text.Json.JsonDocument]::Parse($json)
+            try {
+                if ($document.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw $invalid }
+                $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                foreach ($property in $document.RootElement.EnumerateObject()) {
+                    if (-not $keys.Add($property.Name)) { throw $invalid }
+                }
+            } finally { $document.Dispose() }
+            $found = $json | ConvertFrom-Json -AsHashtable
+        }
+        catch { throw $invalid }
+    }
+    $required = @('format_version', 'source_revision', 'source_sha256', 'source_modified', 'configuration', 'compiler',
+        'variant', 'cmake_cache_sha256', 'llama_revision', 'llama_source_sha256', 'binary')
+    if ($found -isnot [Collections.IDictionary] -or $found.Count -ne $required.Count) { throw $invalid }
+    foreach ($key in $required) { if (-not $found.Contains($key)) { throw $invalid } }
+    foreach ($key in $required | Where-Object { $_ -notin @('format_version', 'source_modified') }) {
+        if ($found[$key] -isnot [string]) { throw $invalid }
+    }
+    if ($found.format_version -isnot [long] -or $found.format_version -ne 1 -or
+        $found.source_revision -cnotmatch '^([a-f0-9]{40}|[a-f0-9]{64})$' -or
+        $found.source_sha256 -cnotmatch '^[a-f0-9]{64}$' -or $found.cmake_cache_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $found.source_modified -isnot [bool] -or $found.configuration -cne 'Release' -or
+        $found.variant -cne 'zenz-cpu' -or $found.compiler -cnotmatch '^MSVC [0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' -or
+        $found.llama_revision -cnotmatch '^[a-f0-9]{40}$' -or $found.llama_source_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $found.binary -cne [IO.Path]::GetFileName($Name)) { throw $invalid }
+    $null = $found.Remove('binary')
+    return $found
+}
+function Get-MetadataIdentity($Metadata) {
+    # Compare values independently of JSON property order.
+    $ordered = [ordered]@{}
+    if ($Metadata -is [Collections.IDictionary]) {
+        foreach ($key in @($Metadata.Keys | Sort-Object -CaseSensitive)) { $ordered[$key] = $Metadata[$key] }
+    } elseif ($Metadata -is [pscustomobject]) {
+        foreach ($property in @($Metadata.PSObject.Properties | Sort-Object -Property Name -CaseSensitive)) { $ordered[$property.Name] = $property.Value }
+    } else { throw 'マニフェストのビルド情報が一致しません。' }
+    ConvertTo-Json -InputObject $ordered -Compress -Depth 4
+}
 function Get-PackageNames([bool]$WithZenz, [int]$Format = 2) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
@@ -45,6 +107,19 @@ function Test-PackageContents($Contents) {
         if ($file.size -ne $Contents[$file.path].Length -or $file.sha256 -cne (Get-Digest $Contents[$file.path])) {
             throw "ハッシュまたは長さが一致しません: $($file.path)"
         }
+    }
+    # Older development archives remain inspectable. New archives always carry
+    # metadata, and when present it must agree with every embedded image.
+    if ($manifest.PSObject.Properties.Name -contains 'binary_build_metadata') {
+        $common = $null
+        foreach ($name in $names | Where-Object { $_.StartsWith('bin/') }) {
+            $embedded = Get-BuildMetadata $Contents[$name] $name
+            $identity = Get-MetadataIdentity $embedded
+            if ($null -ne $common -and $common -cne $identity) { throw '異なるビルドのバイナリーが混在しています。' }
+            $common = $identity
+        }
+        if ($common -cne (Get-MetadataIdentity $manifest.binary_build_metadata) -or
+            $manifest.binary_build_revision -cne $manifest.binary_build_metadata.source_revision) { throw 'マニフェストのビルド情報が一致しません。' }
     }
     return $manifest
 }
@@ -166,6 +241,7 @@ $sources['licenses/skk-zenz-MIT.txt'] = Join-Path $repository 'third_party/skk-z
 $sources['licenses/llama-MIT.txt'] = Join-Path $repository 'third_party/llama.LICENSE'
 $payload = [ordered]@{}
 $files = @()
+$buildMetadata = $null
 foreach ($name in @(Get-PackageNames $true)) {
     $path = $sources[$name]
     $bytes = [IO.File]::ReadAllBytes($path)
@@ -179,6 +255,7 @@ foreach ($name in @(Get-PackageNames $true)) {
             [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664 -or [BitConverter]::ToUInt16($bytes, $pe + 24) -ne 0x20b) {
             throw "x64 PE32+ではありません: $name"
         }
+        $embedded = Get-BuildMetadata $bytes $name
         $dump = & $dumpbin /nologo /dependents $path 2>&1
         if ($LASTEXITCODE -ne 0) { throw "依存DLLを調べられません: $name" }
         $imports = @($dump | ForEach-Object { if ($_ -match '^\s+([A-Za-z0-9_.-]+\.dll)\s*$') { $Matches[1].ToLowerInvariant() } } | Sort-Object -Unique)
@@ -192,6 +269,10 @@ foreach ($name in @(Get-PackageNames $true)) {
         $record['imports'] = $imports
         $record['authenticode_status'] = (Get-AuthenticodeSignature -LiteralPath $path).Status.ToString()
         if ((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $record.sha256) { throw "検査中にファイルが変更されました: $name" }
+        if ($null -ne $buildMetadata -and (Get-MetadataIdentity $buildMetadata) -cne (Get-MetadataIdentity $embedded)) {
+            throw '異なるビルドのバイナリーが混在しています。全対象を再ビルドしてください。'
+        }
+        $buildMetadata = $embedded
     }
     $payload[$name] = $bytes
     $files += [pscustomobject]$record
@@ -205,8 +286,9 @@ $manifest = [ordered]@{
     format_version = 2; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
-    binary_build_revision = $null
-    provenance_note = 'The packaging revision is not a proof of which source produced existing binaries.'
+    binary_build_revision = $buildMetadata.source_revision
+    binary_build_metadata = $buildMetadata
+    provenance_note = 'Build metadata is embedded during compilation; it is not signed attestation or publisher authentication. Modified source is identified separately from its base revision.'
     cpu_requirement = 'zenz-msvc-avx2-v1: native x64; SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT/AVX/AVX2/FMA/F16C/BMI1/BMI2/LZCNT; XSAVE/OSXSAVE and OS XMM/YMM state'
     runtime_requirement = 'Microsoft Visual C++ v14 Redistributable x64, at least the toolset version used to build'
     inspected_with_msvc_tools = $toolset

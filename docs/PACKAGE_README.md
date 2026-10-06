@@ -9,7 +9,9 @@ Windows / x64用の開発中のSKK風IMEです。検証用ZIPに導入・更新�
 `bin/` にIME DLL、辞書補助プロセス、設定GUI、辞書管理GUI、設定CLI、辞書管理CLI、入力検証アプリを収めています。
 実モデル用の `nkkz-ime-server.exe` を必ず含む、zenz CPUの単一構成です。
 `manifest.json` に構成（`zenz-cpu`）、各ファイルのSHA-256・サイズ・依存DLL・署名検査結果を記録しています。
-記録したソースrevisionは梱包時点のもので、既存バイナリーのビルド元を証明するものではありません。
+`binary_build_revision` と `binary_build_metadata` は各バイナリーに埋め込んだビルド元・内容ハッシュ・
+構成です。ZIPと展開先の検査では全バイナリーとの一致も確認します。梱包時点のrevisionは別に記録します。
+これらはビルド追跡のための自己記載情報で、署名や提供者の認証にはなりません。
 
 - Windows x64、Microsoft Visual C++ v14 Redistributable **x64** が必要です。
   ビルドに使ったツールセット以上の版を、[Microsoft公式配布ページ](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)から取得してください。
