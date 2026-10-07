@@ -70,6 +70,7 @@ int wmain(int argc, wchar_t** argv) {
              settings.zenz.timeout_ms = 42;
              settings.zenz.log_input = true;
              settings.zenz.log_directory = files.root;
+             settings.zenz.allow_unknown_context = true;
              auto& policy = settings.zenz.policy;
              policy.long_min_length = 15;
              policy.rerank = true;

@@ -75,10 +75,14 @@ std::wstring display(std::u32string_view text) {
     return result;
 }
 }
-SurroundingText surrounding_text(ITfContext* context, ITfRange* target, TfEditCookie cookie) {
+SurroundingText surrounding_text(ITfContext* context, ITfRange* target, TfEditCookie cookie, bool allow_unknown_scope) {
     SurroundingText result;
     result.permission = input_permission(context, target, cookie);
-    if (result.permission != InputPermission::Allowed) return result;
+    const auto permitted = [allow_unknown_scope](InputPermission permission) {
+        return permission == InputPermission::Allowed || (allow_unknown_scope && permission == InputPermission::Unknown);
+    };
+    if (!context || !target || !permitted(result.permission)) return result;
+    result.contains_unknown_scope = result.permission == InputPermission::Unknown;
     std::array<ComPtr<ITfRange>, 2> ranges;
     std::array<LONG, 2> lengths{};
     for (std::size_t i = 0; i < ranges.size(); ++i) {
@@ -90,7 +94,11 @@ SurroundingText surrounding_text(ITfContext* context, ITfRange* target, TfEditCo
         if (FAILED(hr) || (i == 0 && (shifted > 0 || shifted < -units)) || (i == 1 && (shifted < 0 || shifted > units))) return result;
         lengths[i] = i == 0 ? -shifted : shifted;
         // Empty ranges at document/region boundaries need no text access.
-        if (lengths[i] && input_permission(context, range.Get(), cookie) != InputPermission::Allowed) return result;
+        if (lengths[i]) {
+            const auto permission = input_permission(context, range.Get(), cookie);
+            if (!permitted(permission)) return result;
+            result.contains_unknown_scope |= permission == InputPermission::Unknown;
+        }
     }
     std::array<std::u32string, 2> text;
     for (std::size_t i = 0; i < ranges.size(); ++i) {
@@ -118,7 +126,7 @@ std::wstring context_preview_status() {
     if (!preview.owner) return L"文脈確認: オン。入力欄でSpace変換すると前後の文脈を表示します。";
     const auto& text = preview.text;
     if (text.permission == InputPermission::Restricted) return L"文脈確認: 保護された入力欄のため取得しません。";
-    if (text.permission == InputPermission::Unknown) return L"文脈確認: 入力属性が不明なため取得しません。";
+    if (text.permission == InputPermission::Unknown && !text.available) return L"文脈確認: 入力属性が不明、または周辺範囲を取得できないため文脈なしで動作します。";
     if (!text.available) return L"文脈確認: 周辺範囲を安全に取得できません。文脈なしで動作します。";
     return L"文脈確認: 前 " + std::to_wstring(text.before.size()) + L"文字／後 " + std::to_wstring(text.after.size()) +
         L"文字\r\n前: 「" + display(text.before) + L"」\r\n後: 「" + display(text.after) + L"」";

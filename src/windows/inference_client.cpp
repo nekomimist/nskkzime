@@ -183,6 +183,7 @@ std::optional<InferenceConfig> current_inference_config() {
         config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
         config.policy = settings.policy;
         config.log_input = settings.log_input; config.log_directory = settings.log_directory;
+        config.allow_unknown_context = settings.allow_unknown_context;
     }
     for (const auto item : {std::pair{L"NSKKZIME_INFERENCE_DELAY_MS",&config.delay_ms},std::pair{L"NSKKZIME_INFERENCE_TIMEOUT_MS",&config.timeout_ms}})
         if (const auto value = environment_value(item.first)) {

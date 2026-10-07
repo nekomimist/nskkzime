@@ -21,7 +21,7 @@ struct Field {
         context.Attach(new test_host::Context); context->doc->text = std::move(text);
         target.Attach(new test_host::Range(context->doc, start, end));
     }
-    SurroundingText capture() { return surrounding_text(context.Get(), target.Get(), 1); }
+    SurroundingText capture(bool allow_unknown = false) { return surrounding_text(context.Get(), target.Get(), 1, allow_unknown); }
 };
 void capture_tests() {
     {
@@ -79,6 +79,46 @@ void capture_tests() {
         check(!v.available && v.before.empty() && v.after.empty(), "invalid text exposed partial context");
     }
     check(surrounding_text(nullptr, nullptr, 0).permission == InputPermission::Unknown, "missing target");
+    check(!surrounding_text(nullptr,nullptr,0,true).available,"opt-in accepted a missing target");
+    for (const auto status : {S_OK,S_FALSE,E_FAIL}) {
+        Field f(L"前😀対象後🍣",3,5);
+        f.context->unknown_scope=status==S_OK;f.context->scope_value_status=status;
+        const auto value=f.capture(true);
+        check(value.available&&value.permission==InputPermission::Unknown&&value.contains_unknown_scope&&
+              value.before==U"前😀"&&value.after==U"後🍣","opt-in failed to preserve actual scope or exclude the target");
+        f.context->doc->reads=0;
+        check(!f.capture().available&&!f.context->doc->reads,"context opt-in persisted outside its request");
+    }
+    for (const bool target_unknown : {false,true}) {
+        for (const auto scope : {IS_PASSWORD,IS_PRIVATE,IS_NUMERIC_PASSWORD,IS_NUMERIC_PIN,IS_ALPHANUMERIC_PIN,IS_ALPHANUMERIC_PIN_SET}) {
+            Field f(L"前語後",1,2);
+            f.context->scope_query=[=](ITfRange* range,InputScope& value) {
+                const auto r=static_cast<test_host::Range*>(range);
+                if (target_unknown && r->start==1 && r->end==2) return E_FAIL;
+                value=scope;return S_OK;
+            };
+            check(!f.capture(true).available&&!f.context->doc->reads,"context opt-in read an explicitly protected range");
+        }
+    }
+    for (const bool before : {false,true}) {
+        Field f(L"前語後",1,2);
+        f.context->scope_query=[=](ITfRange* range,InputScope&) {
+            const auto r=static_cast<test_host::Range*>(range);
+            return (before ? r->start==0 : r->end==3) ? S_FALSE : S_OK;
+        };
+        check(!f.capture().available&&!f.context->doc->reads,"unknown adjacent scope read without opt-in");
+        const auto value=f.capture(true);
+        check(value.available&&value.permission==InputPermission::Allowed&&value.contains_unknown_scope&&
+              value.before==U"前"&&value.after==U"後","unknown adjacent scope lost persistence restriction");
+    }
+    {
+        Field f(std::wstring(90,L'前')+L"語"+std::wstring(90,L'後'),90,91);f.context->unknown_scope=true;
+        const auto value=f.capture(true);
+        check(value.before.size()==40&&value.after.size()==40,"unknown context exceeded bounds");
+        f.context->doc->reject_read=true;
+        const auto rejected=f.capture(true);
+        check(!rejected.available&&rejected.before.empty()&&rejected.after.empty(),"opt-in bypassed text validation");
+    }
 }
 struct Session {
     ComPtr<test_host::Manager> host;

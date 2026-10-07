@@ -24,7 +24,7 @@ struct Editor {
     std::filesystem::path file;
     SettingsDocument document;
     std::vector<std::filesystem::path> dictionaries;
-    std::array<HWND, 5> pages{};
+    std::array<HWND, 6> pages{};
     HWND window = nullptr;
     bool valid = false, loading = false, dirty = false, confirming_close = false;
     std::shared_ptr<Work> work;
@@ -58,6 +58,7 @@ void update_enabled(Editor& editor) {
     enabled(romaji, IDC_ROMAJI_BROWSE, checked(romaji, IDC_CUSTOM_ROMAJI));
     for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_SERVER, IDC_SERVER_BROWSE, IDC_RERANK, IDC_LEARN_GENERATED})
         enabled(inference, id, checked(inference, IDC_ZENZ));
+    enabled(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, checked(inference, IDC_ZENZ));
     for (const auto id : {IDC_LOG_DIRECTORY, IDC_LOG_BROWSE})
         enabled(editor.pages[4], id, checked(editor.pages[4], IDC_INPUT_LOG));
     const auto selection = SendDlgItemMessageW(editor.pages[0], IDC_DICTIONARIES, LB_GETCURSEL, 0, 0);
@@ -103,6 +104,7 @@ void reload(Editor& editor) {
         set(editor.pages[2], IDC_SERVER, zenz.server.native());
         check(editor.pages[2], IDC_RERANK, zenz.policy.rerank);
         check(editor.pages[2], IDC_LEARN_GENERATED, zenz.policy.learn_fallback);
+        check(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, zenz.allow_unknown_context);
         const auto advanced = editor.pages[3];
         set(advanced, IDC_THREADS, std::to_wstring(zenz.threads));
         set(advanced, IDC_TIMEOUT, std::to_wstring(zenz.timeout_ms));
@@ -155,6 +157,7 @@ DictionarySettings draft(Editor& editor) {
     zenz.server = get(editor.pages[2], IDC_SERVER);
     zenz.policy.rerank = checked(editor.pages[2], IDC_RERANK);
     zenz.policy.learn_fallback = checked(editor.pages[2], IDC_LEARN_GENERATED);
+    zenz.allow_unknown_context = checked(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT);
     const auto page = editor.pages[3];
     zenz.threads = number<unsigned>(page, IDC_THREADS, L"スレッド数", 1, 64);
     zenz.timeout_ms = number<unsigned>(page, IDC_TIMEOUT, L"生成の期限", 1, 10000);
@@ -322,7 +325,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SetWindowLongPtrW(window, DWLP_USER, lparam);
             set(window, IDC_FILE, L"保存先: " + editor->file.native());
             SendDlgItemMessageW(window, IDC_REPORT, EM_SETLIMITTEXT, 65535, 0);
-            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断"};
+            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈"};
             for (std::size_t i = 0; i < editor->pages.size(); ++i) {
                 TCITEMW item{};
                 item.mask = TCIF_TEXT;
@@ -387,7 +390,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     reorder(*editor, id);
                 else if (id == IDC_DICTIONARIES && notification == LBN_SELCHANGE)
                     update_enabled(*editor);
-                else if (id >= IDC_LEARNING && id <= IDC_LOG_DIRECTORY &&
+                else if (id >= IDC_LEARNING && id <= IDC_ALLOW_UNKNOWN_CONTEXT &&
                          (notification == BN_CLICKED || notification == EN_CHANGE)) {
                     editor->dirty = true;
                     update_enabled(*editor);

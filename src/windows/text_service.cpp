@@ -297,6 +297,7 @@ public:
                     if (const auto config = current_inference_config()) {
                         inference_dummy_ = config->model.empty();
                         inference_policy_ = config->policy;
+                        allow_unknown_context_ = config->allow_unknown_context;
                         inference_ = std::make_unique<InferenceClient>(*config,[this](InferenceCompletion result) { receive_inference(std::move(result)); });
                         set_inference_status(this,inference_dummy_ ? L"推論: ダミーサーバーを使用（辞書候補の枯渇時）" : L"推論: zenzを使用");
                     }
@@ -317,6 +318,7 @@ public:
         candidate_actions_.reset();
         finish_composition();
         inference_.reset(); clear_inference_status(this);
+        allow_unknown_context_ = false;
         if (keys_) keys_->UnadviseKeyEventSink(client_);
         if (manager_ && sink_cookie_ != TF_INVALID_COOKIE) {
             ComPtr<ITfSource> source;
@@ -448,7 +450,7 @@ public:
                 const bool preview = context_preview_enabled() && (engine_.stage() == Stage::Selecting || engine_.registering());
                 clear_context_preview(this);
                 if ((pending || preview) && SUCCEEDED(current->GetRange(&range)) && range) {
-                    auto text = surrounding_text(context, range.Get(), cookie);
+                    auto text = surrounding_text(context, range.Get(), cookie, allow_unknown_context_);
                     // Property callbacks may deactivate or replace the composition.
                     if (composition_.Get() == current.Get() && composition_context_.Get() == context && engine_.revision() == revision) {
                         if (pending && inference_pending_ && pending->id == inference_pending_->id && text != pending->text) cancel_inference();
@@ -548,7 +550,7 @@ private:
                     if (!editable(pending.context.Get()) || !self->composition_valid(cookie)) { self->cancel_inference(); return S_OK; }
                     ComPtr<ITfRange> range;
                     if (FAILED(pending.composition->GetRange(&range)) || !range) { self->cancel_inference(); return S_OK; }
-                    const auto text = surrounding_text(pending.context.Get(),range.Get(),cookie);
+                    const auto text = surrounding_text(pending.context.Get(),range.Get(),cookie,self->allow_unknown_context_);
                     if (!self->matches(pending)) return S_OK;
                     if (text != pending.text || text.permission == InputPermission::Restricted) { self->cancel_inference(); return S_OK; }
                     auto next = self->engine_; bool adjusted = false;
@@ -565,7 +567,7 @@ private:
                         return S_OK;
                     }
                     if (changed) { self->engine_ = std::move(next); self->refresh_candidates(cookie); }
-                    try { if (self->inference_ && self->inference_->input_log_enabled() && self->composition_context_.Get() == pending.context.Get()) {
+                    try { if (self->inference_ && self->inference_->input_log_enabled() && !pending.text.contains_unknown_scope && self->composition_context_.Get() == pending.context.Get()) {
                         // Applying text/UI can re-enter the host. Recheck privacy
                         // and identity after it, before queuing any text for disk.
                         const auto current = self->composition_;
@@ -619,12 +621,11 @@ private:
         if (plan) {
             ComPtr<ITfRange> range;
             if (current && SUCCEEDED(current->GetRange(&range)) && range) {
-                auto text = surrounding_text(target,range.Get(),cookie);
+                auto text = surrounding_text(target,range.Get(),cookie,allow_unknown_context_);
                 // Some hosts (including Office) expose no usable input scope.
-                // surrounding_text leaves both contexts empty in that case.
-                // Allow local conversion of our own reading, while context
-                // access, learning, registration and input logging still need
-                // an explicitly Allowed scope. Restricted fields stay blocked.
+                // Context requires a separate opt-in for unknown scopes.
+                // Actual permission remains Unknown, so local inference never
+                // grants learning, registration or input-log permission.
                 if (text.permission != InputPermission::Restricted) {
                     inference_text = std::move(text); next.defer_registration();
                     if (plan->purpose != InferencePurpose::Rerank) next.note_generation_attempt();
@@ -660,7 +661,8 @@ private:
                     plan->request.id = id; plan->request.left = inference_text->before; plan->request.right = inference_text->after;
                     const auto deadline = inference_->submit(plan->request,plan->purpose == InferencePurpose::Rerank ? inference_policy_.score_timeout_ms : 0);
                     inference_pending_ = PendingInference{id,engine_.revision(),composition_session_,context_generation_,deadline,composition_context_,composition_,std::move(*inference_text),std::move(*plan)};
-                    set_inference_status(this,L"推論: 応答待ち（入力は継続できます）");
+                    set_inference_status(this,inference_pending_->text.before.empty() && inference_pending_->text.after.empty()
+                        ? L"推論: 応答待ち（周辺本文なし）" : L"推論: 応答待ち（周辺本文あり）");
                 } catch (...) { set_inference_status(this,L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
             }
         }
@@ -891,6 +893,7 @@ private:
     std::unique_ptr<InferenceClient> inference_;
     bool inference_dummy_ = false;
     InferencePolicy inference_policy_;
+    bool allow_unknown_context_ = false;
     std::optional<PendingInference> inference_pending_;
     std::uint64_t inference_sequence_ = 0, composition_session_ = 0, context_generation_ = 0;
 };

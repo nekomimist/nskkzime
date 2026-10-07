@@ -32,6 +32,7 @@ std::string serialize(const DictionarySettings& settings) {
         bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
     }
     validate_zenz_settings(settings.zenz);
+    if (settings.zenz.allow_unknown_context) bytes += "zenz-unknown-context=on\n";
     if (settings.zenz.log_input || !settings.zenz.log_directory.empty()) {
         bytes += settings.zenz.log_input ? "input-log=on\n" : "input-log=off\n";
         if (!settings.zenz.log_directory.empty()) bytes += "input-log-directory=" + utf8_message(settings.zenz.log_directory.native()) + "\n";
@@ -95,12 +96,13 @@ void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     }
 }
 std::wstring zenz_settings_status(const ZenzSettings& settings) {
+    const auto context = std::wstring(L"\r\n属性不明の周辺本文: ") + (settings.allow_unknown_context ? L"ローカル推論に利用（学習・入力ログの許可とは独立）" : L"取得しない");
     const auto logging = settings.log_input ? L"\r\n入力ログ: オン（読み・周辺本文・候補を保存） / 保存先: " + settings.log_directory.native() : std::wstring(L"\r\n入力ログ: オフ");
-    if (!settings.enabled) return L"推論設定: オフ（入力ログも動作しません）" + logging;
+    if (!settings.enabled) return L"推論設定: オフ（入力ログも動作しません）" + context + logging;
     return L"推論設定: zenz / モデル: " + settings.model.native() + L"\r\nサーバー: " + settings.server.native() +
         L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms"+
         L"\r\n長い読みの生成: "+std::to_wstring(settings.policy.long_min_length)+L"文字（0は無効） / 候補採点: "+(settings.policy.rerank ? L"on" : L"off")+
-        L" / 短い生成候補の学習: "+(settings.policy.learn_fallback ? L"on" : L"off") + logging;
+        L" / 短い生成候補の学習: "+(settings.policy.learn_fallback ? L"on" : L"off") + context + logging;
 }
 std::wstring wide_message(std::string_view text) {
     if (text.empty()) return {};
@@ -166,11 +168,14 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
         } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms" ||
             key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
-            key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory") {
+            key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" || key == "zenz-unknown-context") {
             if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
             if (key == "inference") {
                 if (value != "zenz" && value != "off") throw std::invalid_argument("inference must equal zenz or off");
                 settings.zenz.enabled = value == "zenz";
+            } else if (key == "zenz-unknown-context") {
+                if (value != "on" && value != "off") throw std::invalid_argument("zenz-unknown-context must equal on or off");
+                settings.zenz.allow_unknown_context = value == "on";
             } else if (key == "input-log") {
                 if (value != "on" && value != "off") throw std::invalid_argument("input-log must equal on or off");
                 settings.zenz.log_input = value == "on";

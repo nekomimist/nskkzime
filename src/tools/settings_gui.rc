@@ -79,6 +79,17 @@ BEGIN
     EDITTEXT IDC_MAX_GAP, 258, 155, 120, 15, ES_AUTOHSCROLL
 END
 
+IDD_CONTEXT DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    AUTOCHECKBOX "入力属性が不明でも周辺本文を利用する(&C)", IDC_ALLOW_UNKNOWN_CONTEXT, 5, 5, 378, 15
+    LTEXT "Wordなど、入力欄の属性を取得できないアプリでも文脈を使って変換します。\n変換対象を除く前後各40文字までを、このPC内のzenzに渡します。", -1, 5, 31, 378, 29
+    LTEXT "パスワード・private・PINの属性を確認できた範囲は読みません。\n属性を提供しない保護入力と通常入力は、区別できない場合があります。", -1, 5, 75, 378, 29
+    LTEXT "属性不明の欄では、この設定をオンにしても学習・単語登録・入力ログは行いません。\nオフの場合も、読みだけの変換は利用できます。", -1, 5, 119, 378, 29
+    LTEXT "変更を保存した後、IMEを使うアプリを起動し直してください。", -1, 5, 163, 378, 13
+END
+
 IDD_DIAGNOSTICS DIALOGEX 0, 0, 388, 187
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Yu Gothic UI"

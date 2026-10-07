@@ -10,12 +10,14 @@ InputPermission input_permission(ITfContext*, ITfRange*, TfEditCookie);
 struct SurroundingText {
     InputPermission permission = InputPermission::Unknown;
     bool available = false;
+    bool contains_unknown_scope = false; // Never grants permission to persist text.
     std::u32string before, after;
     bool operator==(const SurroundingText&) const = default;
 };
 // Excludes the target range. At most 40 Unicode scalar values on either side.
-// No GetText call before checking the target and both surrounding ranges.
-SurroundingText surrounding_text(ITfContext*, ITfRange* target, TfEditCookie);
+// Check target and both surrounding ranges before GetText. Explicit opt-in
+// permits missing scopes, never a known protected scope. Retain actual scope.
+SurroundingText surrounding_text(ITfContext*, ITfRange* target, TfEditCookie, bool allow_unknown_scope = false);
 
 // Opt-in, thread-local development preview; no files or logs. Cleared on
 // composition end, deactivation, or disabling the preview.

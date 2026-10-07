@@ -72,6 +72,19 @@ int main() {
                  "input-log-directory=relative", "input-log-directory=\\\\server\\share", "input-log-directory=C:\\a\ninput-log-directory=C:\\b"})
                 rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
         }},
+        {"settings/unknown-context-is-explicit-and-independent", [&] {
+            auto settings = parse_dictionary_settings("version=1\n");
+            require(!settings.zenz.allow_unknown_context,"old settings enabled unknown context");
+            settings.zenz.allow_unknown_context = true;
+            const auto file = files.path(L"unknown-context.ini"); save_dictionary_settings(file,settings);
+            const auto loaded=read_dictionary_settings(file);
+            require(loaded.zenz.allow_unknown_context && !loaded.zenz.log_input && !loaded.zenz.policy.learn_fallback,"context opt-in changed persistence");
+            settings.zenz.allow_unknown_context=false; save_dictionary_settings(file,settings);
+            require(!read_dictionary_settings(file).zenz.allow_unknown_context,"context opt-out lost");
+            require(!parse_dictionary_settings("version=1\nzenz-unknown-context=off\n").zenz.allow_unknown_context,"explicit off lost");
+            for(const auto invalid:{"zenz-unknown-context=yes","zenz-unknown-context=on\nzenz-unknown-context=off"})
+                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
+        }},
         {"settings/zenz-policy-roundtrip-and-bounds", [&] {
             const auto text = "version=1\nzenz-min-length=12\nzenz-rerank=on\nzenz-learn-fallback=on\nzenz-rerank-limit=8\nzenz-score-timeout-ms=250\nzenz-promote-threshold=1.5\nzenz-max-score-gap=7.5\n";
             const auto settings=parse_dictionary_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_dictionary_settings(file,settings);

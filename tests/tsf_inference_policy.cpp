@@ -134,6 +134,32 @@ int wmain(int argc,wchar_t** argv) {
             const std::lock_guard lock(mutex);const auto& request=requests.back();
             check(request.reading==U"みかん"&&request.left.empty()&&request.right.empty(),"unknown field exposed context instead of reading only");
         }
+        settings.zenz.allow_unknown_context=true;save_dictionary_settings(config,settings);
+        for (const bool parent : {false,true}) {
+            Session s(L"許可前😀");if(parent)s.transitory();s.context->unknown_scope=true;
+            s.start("Mikan");s.complete();s.wait(50);
+            check(s.context->doc->text==L"許可前😀蜜柑後","unknown context opt-in did not apply generation");
+            const std::lock_guard lock(mutex);const auto& request=requests.back();
+            check(request.reading==U"みかん"&&request.left==U"許可前😀"&&request.right==U"後","context setting not propagated through TSF");
+        }
+        {Session s(L"未知の隣接文脈");s.context->scope_query=[](ITfRange* range,InputScope&) {
+            return static_cast<test_host::Range*>(range)->start==0 ? S_FALSE : S_OK;
+         };s.start();s.complete();s.wait(50);
+         const std::lock_guard lock(mutex);check(requests.back().left==U"未知の隣接文脈","unknown adjacent context missing");}
+        {Session s(L"変更前");s.context->unknown_scope=true;s.start();s.queued();
+         s.context->host_replace(0,1,L"別");s.context->pump();
+         check(s.context->doc->text==L"別更前回答後","unknown context accepted a stale surrounding-text response");}
+        {Session s;s.context->unknown_scope=true;s.start();s.queued();
+         s.context->unknown_scope=false;s.context->input_scope=IS_PRIVATE;s.context->notify();s.context->pump();
+         check(s.context->doc->text==L"前回答後","unknown-context opt-in ignored a later protected scope");}
+        for (const auto scope : {IS_PASSWORD,IS_PRIVATE,IS_NUMERIC_PIN}) {
+            Session s;const auto before=count.load();s.context->input_scope=scope;s.start();s.wait();
+            check(count==before,"unknown-context opt-in sent a protected reading");
+        }
+        check(log_files().size()==1,"context permission enabled input logging");
+        settings.zenz.allow_unknown_context=false;save_dictionary_settings(config,settings);
+        {Session s;s.context->unknown_scope=true;s.start();s.complete();
+         const std::lock_guard lock(mutex);check(requests.back().left.empty()&&requests.back().right.empty(),"new activation ignored context opt-out");}
         {Session s(L"途中保護"); s.start(); s.context->input_scope = IS_PRIVATE; s.context->notify(); s.wait();}
         {Session s(L"取消応答"); s.start(); s.queued(); s.key(VK_ESCAPE); s.context->pump(); s.wait(50);}
         {Session s(L"編集拒否"); s.start(); s.queued(); s.context->doc->reject_write = true; s.context->pump(); s.wait(50);}
@@ -149,7 +175,9 @@ int wmain(int argc,wchar_t** argv) {
         check(log_files().size() == 1, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
         settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"1");
-        {Session s;s.context->unknown_scope=true;s.start("Mikan");s.complete();s.key(VK_RETURN);s.wait(250);
+        for(const bool allow_context:{false,true}) {
+         settings.zenz.allow_unknown_context=allow_context;save_dictionary_settings(config,settings);
+         Session s;s.context->unknown_scope=true;s.start("Mikan");s.complete();s.key(VK_RETURN);s.wait(250);
          check(!std::filesystem::exists(user)||read_user_dictionary(user).lookup({U"みかん"}).empty(),"unknown field persisted a generated candidate");}
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"みかん"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"short fallback did not persist");}

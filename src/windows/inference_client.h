@@ -16,6 +16,7 @@ struct InferenceConfig {
     InferencePolicy policy;
     bool log_input = false;
     std::filesystem::path log_directory;
+    bool allow_unknown_context = false;
 };
 struct InferenceCompletion {
     InferenceStatus status = InferenceStatus::Unavailable;

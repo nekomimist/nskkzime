@@ -26,6 +26,7 @@ void help() {
         "  --set-zenz-min-length N   Prefer generation for N or more kana (0 disables)\n"
         "  --set-zenz-rerank on|off  Promote the best dictionary candidate when confident\n"
         "  --set-zenz-learning on|off Learn short fallback generations after successful commit\n"
+        "  --set-zenz-unknown-context on|off  Allow local context use when input scope is unknown\n"
         "  --enable-input-log DIR    Save readings, surrounding text and candidates for diagnosis\n"
         "  --disable-input-log       Stop logging after restarting the target applications\n"
         "  --help                    Show this help\n"
@@ -51,7 +52,7 @@ int wmain(int argc, wchar_t** argv) {
             if (!explicit_file->is_absolute()) throw std::invalid_argument("--config requires an absolute path");
         }
         const std::wstring_view action(argv[index++]);
-        const bool policy = action == L"--set-zenz-min-length" || action == L"--set-zenz-rerank" || action == L"--set-zenz-learning";
+        const bool policy = action == L"--set-zenz-min-length" || action == L"--set-zenz-rerank" || action == L"--set-zenz-learning" || action == L"--set-zenz-unknown-context";
         const bool enable_log = action == L"--enable-input-log", disable_log = action == L"--disable-input-log";
         if (!policy && !enable_log && !disable_log && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
             help(); return 2;
@@ -84,7 +85,8 @@ int wmain(int argc, wchar_t** argv) {
                     const auto parsed = std::stoul(value); if (parsed > 1024) throw std::invalid_argument("minimum length must be 0..1024"); settings.zenz.policy.long_min_length = parsed;
                 } else {
                     if (value != L"on" && value != L"off") throw std::invalid_argument("zenz toggle must equal on or off");
-                    (action == L"--set-zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == L"on";
+                    if (action == L"--set-zenz-unknown-context") settings.zenz.allow_unknown_context = value == L"on";
+                    else (action == L"--set-zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == L"on";
                 }
             }
             validate_zenz_settings(settings.zenz,zenz || enable_log); save_dictionary_settings(file,settings);

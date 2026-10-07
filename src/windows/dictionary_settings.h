@@ -11,6 +11,7 @@ struct ZenzSettings {
     InferencePolicy policy;
     bool log_input = false;
     std::filesystem::path log_directory;
+    bool allow_unknown_context = false;
 };
 struct DictionarySettings {
     std::vector<std::filesystem::path> dictionaries; // Highest priority first.
