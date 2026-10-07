@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <string_view>
 #include <olectl.h>
+#include <memory>
+#include <type_traits>
 
 namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
@@ -28,8 +30,29 @@ void write(ITfCompartment* compartment, TfClientId client, LONG value) {
     VARIANT item; VariantInit(&item); item.vt = VT_I4; item.lVal = value;
     compartment->SetValue(client, &item);
 }
+struct MenuDeleter { void operator()(HMENU menu) const noexcept { DestroyMenu(menu); } };
+using UniqueMenu = std::unique_ptr<std::remove_pointer_t<HMENU>, MenuDeleter>;
+UINT show_menu(HMENU menu, POINT point, const RECT* area) {
+    // Use an IME-owned window so host WM_INITMENUPOPUP/WM_MENUSELECT handlers
+    // cannot interpret our command IDs. The standard class needs no DLL WndProc.
+    const auto previous = GetActiveWindow();
+    const auto owner = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"nskkzime 入力モード",
+        WS_POPUP, point.x, point.y, 0, 0, previous, nullptr, module_instance, nullptr);
+    if (!owner) return 0;
+    ShowWindow(owner, SW_SHOWNOACTIVATE);
+    SetForegroundWindow(owner);
+    TPMPARAMS parameters{sizeof(TPMPARAMS), area ? *area : RECT{point.x, point.y, point.x, point.y}};
+    const UINT alignment = GetSystemMetrics(SM_MENUDROPALIGNMENT) ? TPM_RIGHTALIGN : TPM_LEFTALIGN;
+    const auto selected = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | alignment,
+        point.x, point.y, owner, &parameters);
+    // Never take focus back from another app chosen while the menu was open.
+    if (GetForegroundWindow() == owner && previous && IsWindow(previous)) SetForegroundWindow(previous);
+    DestroyWindow(owner);
+    return static_cast<UINT>(selected);
 }
-ModeButton::ModeButton(std::weak_ptr<ModeActions> actions) : actions_(std::move(actions)) { ++module_objects; }
+}
+ModeButton::ModeButton(std::weak_ptr<ModeActions> actions, MenuRunner menu_runner)
+    : actions_(std::move(actions)), menu_runner_(menu_runner ? std::move(menu_runner) : show_menu) { ++module_objects; }
 ModeButton::~ModeButton() { --module_objects; }
 HRESULT ModeButton::QueryInterface(REFIID iid, void** out) {
     if (!out) return E_POINTER;
@@ -43,7 +66,7 @@ ULONG ModeButton::AddRef() { return ++refs_; }
 ULONG ModeButton::Release() { const auto refs = --refs_; if (!refs) delete this; return refs; }
 HRESULT ModeButton::GetInfo(TF_LANGBARITEMINFO* out) {
     if (!out) return E_POINTER;
-    *out = {service_clsid, GUID_LBI_INPUTMODE, TF_LBI_STYLE_BTN_MENU | TF_LBI_STYLE_SHOWNINTRAY | TF_LBI_STYLE_TEXTCOLORICON, 0, {}};
+    *out = {service_clsid, GUID_LBI_INPUTMODE, TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY | TF_LBI_STYLE_TEXTCOLORICON, 0, {}};
     wcscpy_s(out->szDescription, L"nskkzime 入力モード"); return S_OK;
 }
 HRESULT ModeButton::GetStatus(DWORD* out) { if (!out) return E_POINTER; *out = status_; return S_OK; }
@@ -59,8 +82,38 @@ HRESULT ModeButton::select(Mode mode) noexcept {
     if (!actions || !actions->change) return S_FALSE;
     try { actions->change(mode); return S_OK; } catch (...) { return E_FAIL; }
 }
-HRESULT ModeButton::OnClick(TfLBIClick click, POINT, const RECT*) {
-    return click == TF_LBI_CLK_LEFT ? select(mode_ == Mode::Latin ? Mode::Hiragana : Mode::Latin) : S_OK;
+HRESULT ModeButton::OnClick(TfLBIClick click, POINT point, const RECT* area) {
+    if (click == TF_LBI_CLK_RIGHT) return popup(point, area);
+    return click == TF_LBI_CLK_LEFT ? select(mode_ == Mode::Latin ? Mode::Hiragana : Mode::Latin) : E_INVALIDARG;
+}
+HRESULT ModeButton::popup(POINT point, const RECT* area) noexcept {
+    if ((status_ & (TF_LBI_STATUS_DISABLED | TF_LBI_STATUS_HIDDEN)) || actions_.expired() || menu_open_) return S_FALSE;
+    // TrackPopupMenu pumps messages: Deactivate may release the language bar
+    // reference or another click may arrive before the menu returns.
+    const ComPtr<ModeButton> keep_alive(this);
+    menu_open_ = true;
+    struct Reset { bool& value; ~Reset() { value = false; } } reset{menu_open_};
+    try {
+        const UniqueMenu menu(CreatePopupMenu());
+        if (!menu) return E_OUTOFMEMORY;
+        constexpr std::array<const wchar_t*, 3> names{{L"ひらがな", L"カタカナ", L"英数（IMEオフ）"}};
+        for (UINT i = 0; i < modes.size(); ++i) {
+            if (!AppendMenuW(menu.get(), MF_STRING | (modes[i] == mode_ ? MF_CHECKED : 0), i + 1, names[i])) return E_FAIL;
+        }
+        if (!AppendMenuW(menu.get(), MF_SEPARATOR, 0, nullptr)) return E_FAIL;
+        {
+            const auto actions = actions_.lock();
+            constexpr std::array<const wchar_t*, 2> tools{{L"設定…", L"学習辞書の管理…"}};
+            for (UINT i = 0; i < tools.size(); ++i) {
+                const bool enabled = actions && actions->open_tool && actions->tools_available[i];
+                if (!AppendMenuW(menu.get(), MF_STRING | (enabled ? 0 : MF_GRAYED), settings_menu_id + i, tools[i])) return E_FAIL;
+            }
+        }
+        const auto selected = menu_runner_(menu.get(), point, area);
+        if (status_ & (TF_LBI_STATUS_DISABLED | TF_LBI_STATUS_HIDDEN)) return S_FALSE;
+        return selected ? OnMenuSelect(selected) : S_OK;
+    } catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+    catch (...) { return E_FAIL; }
 }
 HRESULT ModeButton::InitMenu(ITfMenu* menu) {
     if (!menu) return E_POINTER;

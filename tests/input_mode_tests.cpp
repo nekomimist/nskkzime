@@ -102,6 +102,50 @@ int wmain(int argc, wchar_t** argv) {
             button->close(); check(button->OnMenuSelect(settings_menu_id) == S_FALSE && opened.size() == 2, "closed menu launched GUI");
         }
         {
+            auto actions = std::make_shared<ModeActions>();
+            unsigned mode_changes = 0, menus = 0;
+            std::vector<ImeTool> opened;
+            actions->change = [&](Mode) { ++mode_changes; };
+            actions->tools_available = {true, false};
+            actions->open_tool = [&](ImeTool tool) { opened.push_back(tool); return S_OK; };
+            UINT chosen = settings_menu_id;
+            bool retire = false, hide = false;
+            ComPtr<ModeButton> button;
+            HMENU last_menu = nullptr;
+            button.Attach(new ModeButton(actions, [&](HMENU menu, POINT point, const RECT* area) -> UINT {
+                ++menus; last_menu = menu;
+                check(point.x == -20 && point.y == 30 && area && area->left == -25, "menu anchor lost");
+                check(GetMenuItemCount(menu) == 6 && GetMenuItemID(menu, 4) == settings_menu_id &&
+                    GetMenuItemID(menu, 5) == dictionary_menu_id, "native menu commands missing");
+                check((GetMenuState(menu, 1, MF_BYCOMMAND) & MF_CHECKED) &&
+                    (GetMenuState(menu, dictionary_menu_id, MF_BYCOMMAND) & MF_GRAYED), "native menu state wrong");
+                wchar_t label[32]{}; GetMenuStringW(menu, settings_menu_id, label, ARRAYSIZE(label), MF_BYCOMMAND);
+                check(std::wstring_view(label) == L"設定…", "native settings label wrong");
+                check(button->OnClick(TF_LBI_CLK_RIGHT, point, area) == S_FALSE, "recursive menu opened");
+                if (retire) button->close();
+                if (hide) button->Show(FALSE);
+                return chosen;
+            }));
+            TF_LANGBARITEMINFO info{}; button->GetInfo(&info);
+            check((info.dwStyle & TF_LBI_STYLE_BTN_BUTTON) && !(info.dwStyle & TF_LBI_STYLE_BTN_MENU), "click notification style missing");
+            const POINT point{-20, 30}; const RECT area{-25, 20, 0, 40};
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_OK && menus == 1 &&
+                opened == std::vector<ImeTool>{ImeTool::Settings} && !mode_changes, "right click did not open settings or toggled mode");
+            check(!IsMenu(last_menu), "popup menu handle leaked");
+            chosen = 0;
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_OK && opened.size() == 1 && !mode_changes, "cancel activated a command");
+            chosen = dictionary_menu_id;
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_FALSE && opened.size() == 1, "disabled popup command executed");
+            chosen = 2;
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_OK && mode_changes == 1, "popup mode selection lost");
+            hide = true; chosen = settings_menu_id;
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_FALSE && opened.size() == 1, "hidden popup dispatched stale selection");
+            hide = false; button->Show(TRUE); retire = true;
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_FALSE && opened.size() == 1, "retired popup dispatched stale selection");
+            const auto count = menus;
+            check(button->OnClick(TF_LBI_CLK_RIGHT, point, &area) == S_FALSE && menus == count, "retired button displayed popup");
+        }
+        {
             Session s; check(s.label() == L"あ" && s.host->open->value == 1, "initial hiragana");
             TF_LANGBARITEMINFO info{}; s.button()->GetInfo(&info); check(info.guidItem == GUID_LBI_INPUTMODE, "shell item id");
             HICON icon = nullptr; check(SUCCEEDED(s.button()->GetIcon(&icon)) && icon, "mode icon"); DestroyIcon(icon);

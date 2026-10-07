@@ -6,6 +6,7 @@
 #include <ctffunc.h>
 #include <filesystem>
 #include <string>
+#include <windowsx.h>
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -193,6 +194,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     }
     case WM_TIMER:
         if (wparam == mode_id) { probe->update_mode(); probe->update_preview(); probe->update_timing(); return 0; } break;
+    case WM_CONTEXTMENU:
+        if (reinterpret_cast<HWND>(wparam) == probe->mode) {
+            RECT area{}; GetWindowRect(probe->mode, &area);
+            POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            if (point.x == -1 && point.y == -1) point = {area.left, area.bottom};
+            if (const auto button = probe->mode_button()) button->OnClick(TF_LBI_CLK_RIGHT, point, &area);
+            probe->update_mode(); return 0;
+        }
+        break;
     case WM_COMMAND:
         if (HIWORD(wparam) == EN_SETFOCUS && (LOWORD(wparam) == 201 || LOWORD(wparam) == 202)) {
             probe->last_edit = reinterpret_cast<HWND>(lparam); return 0;

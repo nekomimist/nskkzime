@@ -22,7 +22,8 @@ inline constexpr std::array<GUID, 2> mode_key_ids{{toggle_mode_key, kanji_mode_k
 
 class ModeButton final : public ITfLangBarItemButton, public ITfSource {
 public:
-    explicit ModeButton(std::weak_ptr<ModeActions> actions);
+    using MenuRunner = std::function<UINT(HMENU, POINT, const RECT*)>;
+    explicit ModeButton(std::weak_ptr<ModeActions> actions, MenuRunner menu_runner = {});
     ~ModeButton();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -42,11 +43,14 @@ public:
     void close() noexcept;
 private:
     HRESULT select(Mode) noexcept;
+    HRESULT popup(POINT, const RECT*) noexcept;
     std::atomic<ULONG> refs_{1};
     std::weak_ptr<ModeActions> actions_;
     Microsoft::WRL::ComPtr<ITfLangBarItemSink> sink_;
     Mode mode_ = Mode::Hiragana;
     DWORD status_ = 0;
+    MenuRunner menu_runner_;
+    bool menu_open_ = false;
 };
 
 // Owns the thread-local Windows state and language bar binding. Disconnect
