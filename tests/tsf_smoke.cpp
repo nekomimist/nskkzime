@@ -56,7 +56,7 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
         succeeded(service->Deactivate(), "test-host deactivate failed");
         check(!host->keys && !host->events, "deactivation leaked a sink");
     }
-    succeeded(service->ActivateEx(host.Get(), 1, 0), "test-host activate failed"); wait_for_dictionary();
+    succeeded(service->ActivateEx(host.Get(), 1, TF_TMF_IMMERSIVEMODE), "desktop immersive activate failed"); wait_for_dictionary();
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
     check(context->doc->text == L"かんじ", "reading was not composed");

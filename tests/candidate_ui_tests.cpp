@@ -1,4 +1,5 @@
 #include "candidate_ui.h"
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -19,9 +20,44 @@ std::wstring text(ITfCandidateListUIElement* list, UINT index) {
     check(list->GetString(index, &value) == S_OK, "candidate text unavailable");
     const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
 }
+std::vector<DWORD> ime_events;
+void CALLBACK ime_event(HWINEVENTHOOK, DWORD event, HWND, LONG object, LONG child, DWORD, DWORD) {
+    if (object == OBJID_CLIENT && child == CHILDID_SELF) ime_events.push_back(event);
+}
+void drain_events() {
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
+}
+void popup_events() {
+    struct Hook {
+        HWINEVENTHOOK value = SetWinEventHook(EVENT_OBJECT_IME_SHOW, EVENT_OBJECT_IME_CHANGE, nullptr,
+            ime_event, GetCurrentProcessId(), GetCurrentThreadId(), WINEVENT_OUTOFCONTEXT);
+        ~Hook() { if (value) UnhookWinEvent(value); }
+    } hook;
+    check(hook.value != nullptr, "IME event hook unavailable");
+    Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});
+    ComPtr<CandidateList> popup; popup.Attach(new CandidateList);
+    popup->update(engine, nullptr);
+    RECT anchor{100, 100, 110, 120}; popup->locate(nullptr, &anchor);
+    popup->Show(TRUE); drain_events();
+    check(!ime_events.empty() && ime_events.front() == EVENT_OBJECT_IME_SHOW, "visible popup did not notify IME show");
+    ime_events.clear();
+    OffsetRect(&anchor, 20, 20); popup->locate(nullptr, &anchor); drain_events();
+    check(std::find(ime_events.begin(), ime_events.end(), DWORD{EVENT_OBJECT_IME_CHANGE}) != ime_events.end(), "popup relocation did not notify IME change");
+    ime_events.clear(); popup->Show(FALSE); drain_events();
+    check(ime_events == std::vector<DWORD>{EVENT_OBJECT_IME_HIDE}, "popup hiding did not notify exactly once");
+    ime_events.clear(); popup->Show(FALSE); drain_events();
+    check(ime_events.empty(), "already-hidden popup notified again");
+    popup->Show(TRUE); drain_events(); ime_events.clear();
+    popup->close(); drain_events();
+    check(ime_events == std::vector<DWORD>{EVENT_OBJECT_IME_HIDE}, "closing visible popup lost IME hide");
+    ime_events.clear(); popup->close(); popup->Show(TRUE); drain_events();
+    check(ime_events.empty(), "closed popup emitted visible IME events");
+}
 }
 int main() {
     try {
+        popup_events();
         {
             enable_input_timing(true);
             Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});

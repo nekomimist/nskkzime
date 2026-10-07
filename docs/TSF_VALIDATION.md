@@ -2,6 +2,37 @@
 
 OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIBILITY.md) を参照。
 
+## 2026-10-08: Windows TerminalでIMEが有効にならない
+
+ユーザーから、TerminalではCtrl+J・入力モードアイコンのクリックで「あ」にならず、右クリックも反応しないとの報告。
+調査時の通常版 `1.24.12741.0` とPreview版 `1.26.2734.0` のプロセスには、旧版を含めnskkzimeのDLLが読み込まれていなかった。
+登録先は右クリック修正版の `310da9af...` で、保留中の更新もなかった。
+
+Windows SDKのXAML初期化だけを加えた独立した診断プロセスで、次を再現した。
+辞書・設定はテスト専用、プロファイル切替は `TF_IPPMF_FORPROCESS` のみで、終了時に復帰する。
+
+| 診断条件 | `GetActiveFlags` | プロファイル有効化 | DLL読み込み |
+|---|---|---|---|
+| 通常のTSF | `0x80000000` | `S_OK` | あり |
+| `WindowsXamlManager::InitializeForCurrentThread` 後 | `0xc0000000` | `S_OK` | なし |
+
+XAML Islandsは通常のデスクトッププロセスでも `TF_TMF_IMMERSIVEMODE` を有効にする。
+既存の4カテゴリーに `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT` がないことが、上記のロード抑止につながる。
+両版の[TerminalのTSF実装](https://github.com/microsoft/terminal/blob/v1.26.2734.0/src/tsf/Implementation.cpp)も確認し、
+Terminal自身は `TF_TMAE_UIELEMENTENABLEDONLY` を指定していないことを確認した。
+
+修正ではimmersive互換性のカテゴリーを追加する。ただしAppContainerを対応済みとはしない。
+有効化時に実際のプロセストークンを確認し、AppContainerまたは判定失敗なら、辞書・設定・IPCの初期化前に失敗を返す。
+候補UIには所有ウィンドウ取得失敗時の `GetFocus` フォールバックと、表示・非表示・位置変更のIMEイベント通知を追加する。
+カテゴリーの追加・解除・失敗時の巻き戻しと、desktop immersiveフラグでの入力を既存テストへ含める。
+[MicrosoftのIME要件](https://learn.microsoft.com/en-us/windows/apps/develop/input/input-method-editor-requirements)と
+[カテゴリー定義](https://learn.microsoft.com/en-us/windows/win32/tsf/predefined-category-values)を参照。
+診断ソース・ログは `out/terminal-20261008/`。Terminal自体のキー入力・変換成功は、このロード診断とは区別する。
+
+Releaseの52/52テストが成功（181.08秒）。その後、候補窓自身の表示・移動・非表示・破棄を
+同一プロセスのWinEvent hookで検査するテストを追加し、`candidate_ui_tests` を再ビルドして成功した。
+既に非表示の窓や終了済みUIから重複通知・再表示通知が出ないことも確認した。
+
 ## 2026-10-07: 入力モードアイコンの右クリック
 
 ユーザーから右クリックが反応しないと報告があり、`ModeButton::OnClick` が右クリックを何もせず返す実装だった。
@@ -16,8 +47,9 @@ Releaseの52/52テストが成功（182.15秒）。右クリックから設定�
 入力検証アプリのモードボタンにも右クリックの通知経路を追加し、実画面でメニュー表示、
 「設定…」から隔離設定を引き継ぐGUI起動、メニュー外クリックによる取消、左クリックの「あ→A」を確認した。
 検証用の辞書・設定のみを使用し、日常用の辞書を読み取っていない。
-記録は `out/mode-menu-20261007/`。タスクバーはComputer Useの対象ウィンドウとして取得できず、
-タスクバーからの通知そのものは未実測。検証アプリでの成功と区別する。
+記録は `out/mode-menu-20261007/`。タスクバーはComputer Useの対象ウィンドウとして取得できなかったが、
+更新後にユーザーから「右クリックに反応するようになった」との確認を得た。
+これはユーザーの実環境での確認であり、こちらの検証アプリでの成功と区別する。
 
 旧登録版の設定GUIは通常デスクトップ側から直接起動し、ユーザーが「文脈」の設定を完了した。
 修正コミット `6b19198` から全配布バイナリを再ビルドし、ソース変更なしのメタデータと16ファイルの整合性を確認した。

@@ -351,6 +351,19 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
         else discard_candidate_timing(self->paint_timing_);
         return 0;
     }
+    // Let XAML light-dismiss surfaces track our non-activating IME popups.
+    // Use the actual window transitions, including host/owner-driven hiding.
+    if (message == WM_WINDOWPOSCHANGED && self) {
+        const bool visible = IsWindowVisible(window) != FALSE;
+        const bool was_visible = std::exchange(self->ime_visible_, visible);
+        const auto position = reinterpret_cast<const WINDOWPOS*>(lparam);
+        if (visible != was_visible)
+            NotifyWinEvent(visible ? EVENT_OBJECT_IME_SHOW : EVENT_OBJECT_IME_HIDE, window, OBJID_CLIENT, CHILDID_SELF);
+        else if (visible && position && (position->flags & (SWP_NOMOVE | SWP_NOSIZE)) != (SWP_NOMOVE | SWP_NOSIZE))
+            NotifyWinEvent(EVENT_OBJECT_IME_CHANGE, window, OBJID_CLIENT, CHILDID_SELF);
+    }
+    if (message == WM_DESTROY && self && std::exchange(self->ime_visible_, false))
+        NotifyWinEvent(EVENT_OBJECT_IME_HIDE, window, OBJID_CLIENT, CHILDID_SELF);
     if (message == WM_NCDESTROY && self) { self->window_ = nullptr; SetWindowLongPtrW(window, GWLP_USERDATA, 0); }
     return DefWindowProcW(window, message, wparam, lparam);
 }
@@ -397,7 +410,7 @@ void CandidatePresenter::locate(ITfContext* context, ITfComposition* composition
     auto hr = caret->Collapse(cookie, TF_ANCHOR_START);
     if (SUCCEEDED(hr)) hr = view->GetTextExt(cookie, caret.Get(), &rect, &clipped);
     if (FAILED(hr) || rect.bottom <= rect.top) hr = view->GetTextExt(cookie, range.Get(), &rect, &clipped);
-    view->GetWnd(&owner);
+    if (FAILED(view->GetWnd(&owner)) || !owner) owner = GetFocus();
     if (FAILED(hr) || clipped || rect.bottom <= rect.top) { list->locate(nullptr, nullptr); return; }
     if (list_.Get() == list.Get()) list->locate(owner, &rect);
 }

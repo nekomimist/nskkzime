@@ -77,7 +77,7 @@ private:
     std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
-    bool requested_visible_ = false, located_ = false, closed_ = false;
+    bool requested_visible_ = false, located_ = false, closed_ = false, ime_visible_ = false;
     HWND window_ = nullptr, owner_ = nullptr;
     HFONT font_ = nullptr;
     RECT anchor_{};

@@ -24,6 +24,19 @@ namespace nskkzime::windows {
 namespace {
 using Microsoft::WRL::ComPtr;
 
+HRESULT desktop_activation_allowed() noexcept {
+    // Immersive TSF also occurs in full-trust XAML desktop hosts. Do not infer
+    // AppContainer from that flag or try desktop file/IPC access in a container.
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return HRESULT_FROM_WIN32(GetLastError());
+    DWORD app_container = 0, size = 0;
+    const auto queried = GetTokenInformation(token, TokenIsAppContainer, &app_container, sizeof(app_container), &size);
+    const auto error = queried ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(token);
+    if (!queried) return HRESULT_FROM_WIN32(error);
+    return app_container ? E_ACCESSDENIED : S_OK;
+}
+
 // Common controls can expose their full text store through a transitory
 // extension's parent document. Composing there keeps edits and selection
 // notifications on the same document, without queued IMM result characters.
@@ -252,6 +265,8 @@ public:
     HRESULT STDMETHODCALLTYPE ActivateEx(ITfThreadMgr* manager, TfClientId client, DWORD) override {
         if (!manager || client == TF_CLIENTID_NULL) return E_INVALIDARG;
         if (manager_) return E_UNEXPECTED;
+        const auto permission = desktop_activation_allowed();
+        if (FAILED(permission)) return permission;
         if (!dictionary_loaded_) {
             // Display-attribute-only COM instances never load a dictionary.
             try {

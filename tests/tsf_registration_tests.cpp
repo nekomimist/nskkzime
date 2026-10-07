@@ -59,11 +59,12 @@ struct Fixture {
         return value.data();
     }
 };
-const std::array<const GUID*, 4> ids{
+const std::array<const GUID*, 5> ids{
     &GUID_TFCAT_TIP_KEYBOARD, &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-    &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT};
+    &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT};
 struct FakeTsf : TsfRegistration {
-    std::array<bool, 4> categories{};
+    std::array<bool, ids.size()> categories{};
     bool processor = false, profile = false, enabled = false;
     int fail_at = -1, cleanup_fail_at = -1;
     std::vector<int> calls;
@@ -76,7 +77,7 @@ struct FakeTsf : TsfRegistration {
     HRESULT initialize() noexcept override { return result(0); }
     HRESULT register_processor() noexcept override { processor = true; return result(1); }
     HRESULT add_profile(const std::wstring& path) noexcept override { profile = true; profile_dll = path; return result(2); }
-    HRESULT enable_profile() noexcept override { enabled = true; return result(7); }
+    HRESULT enable_profile() noexcept override { enabled = true; return result(8); }
     size_t index(REFGUID id) noexcept {
         for (size_t i = 0; i < ids.size(); ++i) if (*ids[i] == id) return i;
         std::terminate();
@@ -93,7 +94,7 @@ struct FakeTsf : TsfRegistration {
         return existed ? S_OK : S_FALSE;
     }
     HRESULT unregister_processor() noexcept override {
-        const auto hr = result(14);
+        const auto hr = result(15);
         if (FAILED(hr)) return hr;
         if (replace_owner_on_remove) replace_owner_on_remove->owner(other);
         const bool existed = processor;
@@ -120,11 +121,11 @@ void successful_lifecycle(Fixture& f) {
     check(unregister_in(f.root.value, dll, tsf) == S_FALSE && tsf.calls.empty(), "repeat unregister touched TSF");
 }
 void registration_failures(Fixture& f) {
-    for (int step = 0; step <= 7; ++step) {
+    for (int step = 0; step <= 8; ++step) {
         FakeTsf tsf; tsf.fail_at = step;
         check(register_in(f.root.value, dll, tsf) == E_ACCESSDENIED, "registration failure not returned");
         check(!f.exists() && tsf.empty(), "registration failure leaked state");
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < static_cast<int>(ids.size()); ++i) {
             const bool attempted = std::find(tsf.calls.begin(), tsf.calls.end(), 3 + i) != tsf.calls.end();
             const bool removed = std::find(tsf.calls.begin(), tsf.calls.end(), 10 + i) != tsf.calls.end();
             check(attempted == removed, "rollback cleaned an unattempted category or missed attempted one");
@@ -133,8 +134,8 @@ void registration_failures(Fixture& f) {
         check(register_in(f.root.value, dll, tsf) == S_OK && unregister_in(f.root.value, dll, tsf) == S_OK,
               "registration retry failed");
     }
-    for (int cleanup_step = 10; cleanup_step <= 14; ++cleanup_step) {
-        FakeTsf tsf; tsf.fail_at = 7; tsf.cleanup_fail_at = cleanup_step;
+    for (int cleanup_step = 10; cleanup_step <= 15; ++cleanup_step) {
+        FakeTsf tsf; tsf.fail_at = 8; tsf.cleanup_fail_at = cleanup_step;
         check(register_in(f.root.value, dll, tsf) == E_ACCESSDENIED && f.read() == dll,
               "failed rollback lost owner path");
         tsf.fail_at = tsf.cleanup_fail_at = -1;
@@ -142,7 +143,7 @@ void registration_failures(Fixture& f) {
     }
 }
 void unregister_failures(Fixture& f) {
-    for (const int step : {0, 10, 11, 12, 13, 14}) {
+    for (const int step : {0, 10, 11, 12, 13, 14, 15}) {
         FakeTsf tsf;
         check(register_in(f.root.value, dll, tsf) == S_OK, "setup unregister failure");
         tsf.fail_at = step;

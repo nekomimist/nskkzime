@@ -16,9 +16,12 @@ std::wstring class_path() {
     StringFromGUID2(service_clsid, guid, 39);
     return std::wstring(L"Software\\Classes\\CLSID\\") + guid;
 }
-const std::array<const GUID*, 4> categories{
+// XAML Islands set TF_TMF_IMMERSIVEMODE even in full-trust desktop apps
+// (including Windows Terminal). Activation separately rejects AppContainer.
+const std::array<const GUID*, 5> categories{
     &GUID_TFCAT_TIP_KEYBOARD, &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-    &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT};
+    &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT};
 LSTATUS set_string(HKEY key, const wchar_t* name, const std::wstring& value) {
     return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
                          static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
