@@ -196,7 +196,22 @@ std::optional<InferenceConfig> current_inference_config() {
     (void)inference_pipe_name(config.token);
     return config;
 }
-void set_inference_status(const void* owner, const wchar_t* text) noexcept { status_owner = owner; status_text = text; }
+void set_inference_status(const void* owner, const wchar_t* text) noexcept {
+    status_owner = owner; status_text = text;
+    // Explicit development-only trace. Contains fixed status messages only,
+    // never a reading, document text, candidates, or model request/response.
+    try {
+        const auto path = environment_value(L"NSKKZIME_STATUS_TRACE");
+        if (!path || !std::filesystem::path(*path).is_absolute()) return;
+        NativeHandle file(CreateFileW(path->c_str(), FILE_APPEND_DATA | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+        LARGE_INTEGER length{};
+        if (!file.valid() || GetFileType(file.get()) != FILE_TYPE_DISK || !GetFileSizeEx(file.get(), &length) || length.QuadPart >= 65536) return;
+        const auto line = utf8_message(std::to_wstring(GetCurrentProcessId()) + L"/" + std::to_wstring(GetCurrentThreadId()) +
+            L" " + std::to_wstring(GetTickCount64()) + L" " + text + L"\n");
+        DWORD written = 0; WriteFile(file.get(), line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    } catch (...) { }
+}
 void clear_inference_status(const void* owner) noexcept { if (status_owner == owner) { status_owner = nullptr; status_text = L"推論: オフ"; } }
 std::wstring inference_status() {
     return std::wstring(status_text) + L"\r\n" + (logging_client ? logging_client->input_log_status() : L"入力ログ: オフ");

@@ -57,7 +57,11 @@ int wmain(int argc,wchar_t** argv) {
           s.context->doc->reject_write=false; s.type("a"); check(s.context->doc->text==L"前みかんあ後","failed response damaged input state"); }
         { Session s; s.start(); s.context->input_scope=IS_PRIVATE; s.context->notify(); s.wait(); check(s.context->doc->text==L"前みかん後","protected context accepted response"); }
         { Session s; s.context->input_scope=IS_PRIVATE; s.start(); s.wait(); check(s.context->doc->text==L"前みかん後"&&!s.registration(),"private field submitted"); }
-        { Session s; s.context->unknown_scope=true; s.start(); s.wait(); check(s.context->doc->text==L"前みかん後","unknown field submitted"); }
+        { Session s; s.context->unknown_scope=true; s.start(); s.queued(); s.context->pump();
+          check(s.context->doc->text==L"前試験〈みかん〉後","unknown field blocked reading-only conversion"); }
+        { Session s; s.context->unknown_scope=true; s.start(); s.queued();
+          s.context->unknown_scope=false; s.context->input_scope=IS_PRIVATE; s.context->notify(); s.context->pump();
+          check(s.context->doc->text==L"前みかん後","newly protected field accepted reading-only response"); }
         { Session s; s.start(); s.queued(); Sleep(1600); s.context->pump(); check(s.context->doc->text==L"前みかん後"&&s.registration(),"late edit did not fall back to registration"); }
         { Session s; s.start(); s.key(VK_SPACE); s.wait(); check(s.registration()&&s.context->doc->text==L"前みかん後","second Space did not interrupt wait"); }
         { Session s; s.type("Kanji"); s.key(VK_SPACE); s.key(VK_SPACE); s.key(VK_SPACE); s.queued(); s.context->pump();

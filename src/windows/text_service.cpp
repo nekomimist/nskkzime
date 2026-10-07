@@ -550,7 +550,7 @@ private:
                     if (FAILED(pending.composition->GetRange(&range)) || !range) { self->cancel_inference(); return S_OK; }
                     const auto text = surrounding_text(pending.context.Get(),range.Get(),cookie);
                     if (!self->matches(pending)) return S_OK;
-                    if (text != pending.text || text.permission != InputPermission::Allowed) { self->cancel_inference(); return S_OK; }
+                    if (text != pending.text || text.permission == InputPermission::Restricted) { self->cancel_inference(); return S_OK; }
                     auto next = self->engine_; bool adjusted = false;
                     const bool timed_out = GetTickCount64() >= pending.deadline || result.status == InferenceStatus::Timeout;
                     if (!timed_out && result.status == InferenceStatus::Ok) {
@@ -620,11 +620,16 @@ private:
             ComPtr<ITfRange> range;
             if (current && SUCCEEDED(current->GetRange(&range)) && range) {
                 auto text = surrounding_text(target,range.Get(),cookie);
-                if (text.permission == InputPermission::Allowed) {
+                // Some hosts (including Office) expose no usable input scope.
+                // surrounding_text leaves both contexts empty in that case.
+                // Allow local conversion of our own reading, while context
+                // access, learning, registration and input logging still need
+                // an explicitly Allowed scope. Restricted fields stay blocked.
+                if (text.permission != InputPermission::Restricted) {
                     inference_text = std::move(text); next.defer_registration();
                     if (plan->purpose != InferencePurpose::Rerank) next.note_generation_attempt();
                 }
-                else set_inference_status(this,L"推論: 保護された、または属性不明の入力欄のため送信しません");
+                else set_inference_status(this,L"推論: 保護された入力欄のため送信しません");
             }
             if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
         }

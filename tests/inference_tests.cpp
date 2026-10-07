@@ -1,5 +1,7 @@
 #include "inference_client.h"
+#include "dictionary_settings.h"
 #include "nskkzime/engine.h"
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <stdexcept>
@@ -9,6 +11,36 @@ namespace {
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 template<class F> void rejected(F fn) { bool failed = false; try { fn(); } catch (...) { failed = true; } check(failed,"invalid input accepted"); }
 std::wstring token() { const auto id = learning_client_id(); return {id.begin(),id.end()}; }
+void status_trace_tests() {
+    const auto previous = environment_value(L"NSKKZIME_STATUS_TRACE");
+    const auto path = std::filesystem::current_path() / (L"status-trace-" + token() + L".log");
+    struct Cleanup {
+        std::optional<std::wstring> previous; std::filesystem::path path;
+        ~Cleanup() {
+            SetEnvironmentVariableW(L"NSKKZIME_STATUS_TRACE", previous ? previous->c_str() : nullptr);
+            std::error_code ignored; std::filesystem::remove(path, ignored);
+        }
+    } cleanup{previous,path};
+    SetEnvironmentVariableW(L"NSKKZIME_STATUS_TRACE", path.filename().c_str());
+    set_inference_status(nullptr,L"推論: 相対パス無効");
+    check(!std::filesystem::exists(path),"relative status trace created a file");
+    SetEnvironmentVariableW(L"NSKKZIME_STATUS_TRACE",path.c_str());
+    set_inference_status(nullptr,L"推論: 試験");
+    { std::ifstream input(path,std::ios::binary);const std::string bytes((std::istreambuf_iterator<char>(input)),{});
+      check(bytes.find("推論: 試験")!=std::string::npos,"explicit status trace lost fixed message"); }
+    const auto length=std::filesystem::file_size(path);
+    SetEnvironmentVariableW(L"NSKKZIME_STATUS_TRACE",nullptr);
+    set_inference_status(nullptr,L"推論: 無効");
+    check(std::filesystem::file_size(path)==length,"disabled status trace appended a message");
+    std::filesystem::resize_file(path,65536);
+    SetEnvironmentVariableW(L"NSKKZIME_STATUS_TRACE",path.c_str());
+    set_inference_status(nullptr,L"推論: 上限");
+    check(std::filesystem::file_size(path)==65536,"status trace exceeded its size threshold");
+    SetEnvironmentVariableW(L"NSKKZIME_STATUS_TRACE",std::filesystem::current_path().c_str());
+    set_inference_status(nullptr,L"推論: 保存不可");
+    check(inference_status().find(L"推論: 保存不可")!=std::wstring::npos,"trace failure prevented status update");
+    clear_inference_status(nullptr);
+}
 void protocol_tests() {
     const InferenceRequest request{42,U"かな",U"前\n\"\\😀",U"後",5};
     const auto decoded = decode_request(encode_request(request));
@@ -115,6 +147,6 @@ void ipc_tests(const std::filesystem::path& server) {
 }
 int wmain(int argc,wchar_t** argv) {
     if (argc!=2) return 2;
-    try { protocol_tests(); core_tests(); ipc_tests(argv[1]); std::cout<<"PASS protocol, core fallback, real pipes, concurrency, cancellation, deadlines and restart\n"; return 0; }
+    try { status_trace_tests(); protocol_tests(); core_tests(); ipc_tests(argv[1]); std::cout<<"PASS status trace, protocol, core fallback, real pipes, concurrency, cancellation, deadlines and restart\n"; return 0; }
     catch (const std::exception& e) { std::cerr<<"FAIL "<<e.what()<<'\n'; return 1; }
 }

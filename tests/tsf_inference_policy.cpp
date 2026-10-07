@@ -116,13 +116,24 @@ int wmain(int argc,wchar_t** argv) {
         for (const bool unknown : {false,true}) {
             Session s(L"親文書保護");s.transitory();s.context->unknown_scope=unknown;
             if (!unknown) s.context->input_scope=IS_PRIVATE;
-            const auto before=count.load();s.start();s.wait();
-            check(count==before,"private or unknown parent context was sent to inference");
+            const auto before=count.load();s.start();
+            if (unknown) {
+                s.complete();
+                check(count==before+1&&s.context->doc->text==L"親文書保護解答後","unknown parent blocked local scoring");
+                const std::lock_guard lock(mutex);const auto& request=requests.back();
+                check(request.left.empty()&&request.right.empty(),"unknown parent exposed surrounding text");
+            } else { s.wait();check(count==before,"private parent was sent to inference"); }
         }
         {Session s(L"親文書途中保護");s.transitory();s.start();s.queued();
          s.context->input_scope=IS_PRIVATE;s.context->notify();s.context->pump();s.wait(50);
          check(s.context->doc->text==L"親文書途中保護回答後","private parent accepted a late response");}
-        {Session s(L"属性不明"); s.context->unknown_scope = true; s.start(); s.wait();}
+        for (const auto status : {S_OK, S_FALSE, E_FAIL}) {
+            Session s(L"属性不明");s.context->unknown_scope=status==S_OK;s.context->scope_value_status=status;
+            s.start("Mikan");s.complete();
+            check(s.context->doc->text==L"属性不明蜜柑後","missing or failed input scope blocked fallback generation");
+            const std::lock_guard lock(mutex);const auto& request=requests.back();
+            check(request.reading==U"みかん"&&request.left.empty()&&request.right.empty(),"unknown field exposed context instead of reading only");
+        }
         {Session s(L"途中保護"); s.start(); s.context->input_scope = IS_PRIVATE; s.context->notify(); s.wait();}
         {Session s(L"取消応答"); s.start(); s.queued(); s.key(VK_ESCAPE); s.context->pump(); s.wait(50);}
         {Session s(L"編集拒否"); s.start(); s.queued(); s.context->doc->reject_write = true; s.context->pump(); s.wait(50);}
@@ -138,6 +149,8 @@ int wmain(int argc,wchar_t** argv) {
         check(log_files().size() == 1, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
         settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"1");
+        {Session s;s.context->unknown_scope=true;s.start("Mikan");s.complete();s.key(VK_RETURN);s.wait(250);
+         check(!std::filesystem::exists(user)||read_user_dictionary(user).lookup({U"みかん"}).empty(),"unknown field persisted a generated candidate");}
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"みかん"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"short fallback did not persist");}
         {Session s;s.start("Arigatougozaimasu");s.complete();s.key(VK_RETURN);s.wait(250);check(read_user_dictionary(user).lookup({U"ありがとうございます"}).empty(),"long generation polluted dictionary");}
