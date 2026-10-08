@@ -21,8 +21,10 @@ std::wstring text(ITfCandidateListUIElement* list, UINT index) {
     const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
 }
 std::vector<DWORD> ime_events;
-void CALLBACK ime_event(HWINEVENTHOOK, DWORD event, HWND, LONG object, LONG child, DWORD, DWORD) {
+bool ime_window_class = false;
+void CALLBACK ime_event(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD) {
     if (object == OBJID_CLIENT && child == CHILDID_SELF) ime_events.push_back(event);
+    if (event == EVENT_OBJECT_IME_SHOW) ime_window_class = (GetClassLongPtrW(window, GCL_STYLE) & CS_IME) != 0;
 }
 void drain_events() {
     MSG message{};
@@ -41,6 +43,7 @@ void popup_events() {
     RECT anchor{100, 100, 110, 120}; popup->locate(nullptr, &anchor);
     popup->Show(TRUE); drain_events();
     check(!ime_events.empty() && ime_events.front() == EVENT_OBJECT_IME_SHOW, "visible popup did not notify IME show");
+    check(ime_window_class, "popup not identified as IME UI to immersive hosts");
     ime_events.clear();
     OffsetRect(&anchor, 20, 20); popup->locate(nullptr, &anchor); drain_events();
     check(std::find(ime_events.begin(), ime_events.end(), DWORD{EVENT_OBJECT_IME_CHANGE}) != ime_events.end(), "popup relocation did not notify IME change");

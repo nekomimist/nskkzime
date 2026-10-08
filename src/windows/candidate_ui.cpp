@@ -211,7 +211,9 @@ void CandidateList::render() noexcept {
             if (!class_name_.empty()) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); }
             wchar_t name[96]{}; swprintf_s(name, L"nskkzime.Candidates.%p", static_cast<void*>(this));
             class_name_ = name;
-            WNDCLASSW cls{}; cls.lpfnWndProc = window_proc; cls.hInstance = module_instance;
+            // Identify the owned popup as IME UI to immersive window hosts.
+            // A normal desktop popup can be hidden by the Store/XAML shell.
+            WNDCLASSW cls{}; cls.style = CS_IME; cls.lpfnWndProc = window_proc; cls.hInstance = module_instance;
             cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = class_name_.c_str();
             cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
             if (!RegisterClassW(&cls)) { class_name_.clear(); return; }

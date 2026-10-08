@@ -99,6 +99,22 @@ int container_test(bool denied, bool real_model) {
     NativeHandle file(CreateFileW(path->c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
     check(!file.valid(), "container unexpectedly reads private settings");
     check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "COM initialization");
+    {
+        // Exercise the actual popup in the restricted process, beyond the
+        // fake TSF host which deliberately suppresses its own candidate UI.
+        Engine engine(demo_dictionary());
+        for (char ch : std::string_view("Kanji")) engine.handle({KeyCode::Character, ch});
+        engine.handle({KeyCode::Space});
+        ComPtr<CandidateList> popup; popup.Attach(new CandidateList);
+        popup->update(engine, nullptr);
+        RECT anchor{100, 100, 110, 120}; popup->locate(nullptr, &anchor);
+        popup->Show(TRUE); messages();
+        BOOL visible = FALSE; popup->IsShown(&visible);
+        check(visible != FALSE, "AppContainer candidate popup not visible");
+        popup->Show(FALSE); popup->IsShown(&visible);
+        check(visible == FALSE, "AppContainer candidate popup not hidden");
+        popup->close();
+    }
     if (real_model) {
         {
             Session session;
