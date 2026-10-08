@@ -24,6 +24,28 @@ Releaseの全54テストが成功（194.50秒）。通常権限・AppContainer�
 仮想化された開発側での `install.ps1 -Action Recover` は、登録変更前のガードで拒否された。
 実アプリでの修正後の確認結果は、以下の過去の確認結果とは区別して追記する。
 
+`4734056` を通常Explorer経由で昇格して登録し、通常側のHKCU Runを読み戻して起動先を確認した。
+仮想化を継承する開発アプリの子として配置版 `ime_probe.exe` を起動し、補助プロセス経由の辞書読み込み・
+zenz採点、Spaceの1～4回目は一覧なし・5回目にASDFJKL一覧が出ることを実画面で確認した。
+ChatGPT本体のUIは操作しておらず、同じ仮想化を継承する検証アプリでの結果。
+
+Storeの変換は復旧したが候補一覧が表示されなかったため、固定数値だけのデバッガー出力で追跡した。
+`BeginUIElement` と位置取得は成功し、`CreateWindowExW` が `ERROR_ACCESS_DENIED` (5) で失敗した。
+TSFのウィンドウを `GA_ROOT` までたどる処理をやめ、提供された所有元をそのまま使用するよう修正した。
+`29dc4e5` の登録後、所有元はStore自身・そのrootは別プロセスであることと、ウィンドウ作成・表示の成功を確認。
+実画面では「かんじ」のSpace変換、PgDn／PgUpによる一覧のページ移動、Sキーで「漢字」の確定まで成功した。
+検索実行はせず、検証用の文字列はクリアした。デバッガーは切断済み。
+関連4テストが13.61秒、デスクトップの候補クリック・TSF UIElementの2テストが13.01秒で成功。
+参照: [Microsoft SampleIMEの所有元取得](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/IME/README.md)。
+
+最後の配置版IDは `8233833a3c721a5b649751f86b6cc613b3d0d84dbfec838f1c52395965258c1c`。
+全17ファイルの検証、通常側Run、新broker、Storeへの実ロード先を照合した。
+旧版を保持していたSearchHostも再起動し、新版DLLの読み込みを確認した。
+スタート検索のウィンドウは依然としてComputer Useの対象に現れず、実キーの変換確認は未完了。
+記録は `install-{shared,owner}.json`、`desktop-install-{shared,owner}.json`、`trace-owner.log`。
+最新版の仮想化された検証アプリの「あ」を右クリックし、設定GUIを起動する経路も確認した。
+設定GUIの親PIDは通常権限brokerで、候補タブには5回目・ASDFJKLが表示された。保存せず終了した。
+
 ## 2026-10-09: スタートメニュー検索とMicrosoft Store検索
 
 ユーザーから両検索欄で日本語入力にならないとの報告。プロセスを変更せず、
