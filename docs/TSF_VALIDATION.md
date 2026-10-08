@@ -31,6 +31,33 @@ AppContainer対応は別途設計・検証する必要があり、この調査�
 Releaseの全54テストが成功（195.78秒）。開発用配置へのbroker追加も専用テストで成功した。
 形式3パッケージの検査、形式2への復帰、起動登録の中断・復帰は隔離したインストーラーテストで確認した。
 
+`0aaa16a` の形式3パッケージをProgram Filesへ配置・登録し、全17ファイル、登録先、
+保留記録なし、公開DLLのAppContainer向けRX、本人のRun登録と通常権限のbroker起動を確認した。
+Microsoft StoreをComputer Useで操作し、新版DLLの実プロセスへの読み込みに加え、
+実キーの `Kanji` による「かんじ」とSpace変換、`Mondainasasou` による
+「もんだいなさそう→問題なさそう」、Spaceでの候補送り、Escapeの取消を確認した。
+検索は実行していない。既存の5回目から一覧・ASDFJKL設定を変更せずに利用する。
+スタート検索はComputer Useの対象ウィンドウに現れなかったため、実画面の入力確認は未完了。
+
+StoreではPgDnで候補は進むが一覧が見えなかったため、Microsoft SampleIMEと同じ
+`CS_IME` を候補・読み・登録ポップアップのウィンドウクラスに指定した。
+AppContainerテストにも実ポップアップの表示・非表示を追加し、候補UIイベントのテストでは
+IMEクラス指定を照合する。修正後の関連3テストは成功（13.68秒）。
+この独立したAppContainerの表示テストだけで、Storeのシェルによる表示を保証するものではない。
+参照: [Microsoft SampleIMEのウィンドウクラス](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/IME/cpp/SampleIME/BaseWindow.cpp)。
+
+`02bcea8` の版ID `666d123e8ddbb12b4a24d1208dab54d74caecacadf307b27b3a4541c01f24711` へ
+登録を更新し、全17ファイル、Run登録、新broker、Storeの実ロード先を再確認した。
+この版でもStoreのPgDnによる候補一覧は見えず、ユーザーの目視でも非表示との回答があった。
+したがって `CS_IME` の追加だけで表示不具合が解消したとは扱わない。
+
+続くソース修正では、UIElementを使うTIPに必要な `GUID_TFCAT_TIPCAP_UIELEMENTENABLED` を追加。
+デバッガー接続時だけ、UI開始結果・位置取得の成功／クリップ有無・表示可否を固定識別子と数値で出す。
+本文・候補・座標・ウィンドウ名は出さない。登録の各失敗・復旧を含む関連4テストは成功（13.61秒）。
+この追加修正は未登録。Computer UseがユーザーのEscapeで停止されたため、以後の画面操作は中止した。
+Storeの候補表示の原因特定と修正版の実画面確認、スタート検索の実入力確認が残る。
+参照: [UIElement対応TIPの登録要件](https://learn.microsoft.com/en-us/windows/win32/tsf/uiless-mode-overview)。
+
 ## 2026-10-08: 候補一覧の表示回数と選択キー
 
 候補一覧を表示する変換回数（1～99）と、数字／ASDFJKLの選択キーを設定GUI・CLIへ追加。

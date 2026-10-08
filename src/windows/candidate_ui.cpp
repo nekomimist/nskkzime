@@ -12,6 +12,14 @@ constexpr DWORD popup_style = WS_POPUP | WS_BORDER;
 constexpr DWORD popup_ex_style = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
 constexpr DWORD all_updates = TF_CLUIE_DOCUMENTMGR | TF_CLUIE_COUNT | TF_CLUIE_SELECTION |
     TF_CLUIE_STRING | TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
+// Debugger-only host diagnostics. Never include text, candidate contents,
+// window titles, coordinates, or document identifiers.
+void trace(const wchar_t* event, long first = 0, long second = 0, long third = 0) noexcept {
+    if (!IsDebuggerPresent()) return;
+    wchar_t line[160]{};
+    swprintf_s(line, L"nskkzime.ui %s %ld %ld %ld\n", event, first, second, third);
+    OutputDebugStringW(line);
+}
 struct SelectedFont {
     HDC dc;
     HGDIOBJ previous;
@@ -202,6 +210,7 @@ void CandidateList::close() noexcept {
 }
 void CandidateList::render() noexcept {
     if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && kind_ == PopupKind::Candidates)) {
+        trace(L"hidden", closed_, located_, requested_visible_);
         cancel_pointer();
         if (window_) ShowWindow(window_, SW_HIDE);
         return;
@@ -216,11 +225,11 @@ void CandidateList::render() noexcept {
             WNDCLASSW cls{}; cls.style = CS_IME; cls.lpfnWndProc = window_proc; cls.hInstance = module_instance;
             cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = class_name_.c_str();
             cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
-            if (!RegisterClassW(&cls)) { class_name_.clear(); return; }
+            if (!RegisterClassW(&cls)) { trace(L"class-failed", GetLastError()); class_name_.clear(); return; }
             window_ = CreateWindowExW(popup_ex_style,
                 class_name_.c_str(), kind_ == PopupKind::Reading ? L"nskkzime 読み" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
                 owner_ ? GetAncestor(owner_, GA_ROOT) : nullptr, nullptr, module_instance, this);
-            if (!window_) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
+            if (!window_) { trace(L"window-failed", GetLastError()); UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
         const auto dpi = owner_ ? GetDpiForWindow(owner_) : 96U;
         if (dpi_ != dpi || !font_) {
@@ -264,7 +273,8 @@ void CandidateList::render() noexcept {
         auto y = anchor_.bottom;
         if (y + height > monitor.rcWork.bottom) y = anchor_.top - height;
         y = std::clamp(y, monitor.rcWork.top, monitor.rcWork.bottom - height);
-        SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        const auto placed = SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        trace(L"placed", placed, IsWindowVisible(window_), placed ? 0 : GetLastError());
         InvalidateRect(window_, nullptr, FALSE);
     } catch (...) { if (window_) ShowWindow(window_, SW_HIDE); }
 }
@@ -387,6 +397,7 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
             const auto list = list_; const auto manager = manager_;
             DWORD id = 0;
             const auto hr = manager->BeginUIElement(list.Get(), &show, &id);
+            trace(L"begin", hr, show);
             if (list_.Get() != list.Get()) { if (SUCCEEDED(hr)) manager->EndUIElement(id); return; }
             if (FAILED(hr)) { close(); return; }
             id_ = id; begun_ = true; list->Show(show);
@@ -409,12 +420,15 @@ void CandidatePresenter::locate(ITfContext* context, ITfComposition* composition
     RECT rect{}; BOOL clipped = FALSE; HWND owner = nullptr;
     if (!target || !current || FAILED(target->GetActiveView(&view)) || !view ||
         FAILED(current->GetRange(&range)) || !range || FAILED(range->Clone(&caret)) || !caret) {
+        trace(L"no-view-or-range");
         list->locate(nullptr, nullptr); return;
     }
     auto hr = caret->Collapse(cookie, TF_ANCHOR_START);
     if (SUCCEEDED(hr)) hr = view->GetTextExt(cookie, caret.Get(), &rect, &clipped);
     if (FAILED(hr) || rect.bottom <= rect.top) hr = view->GetTextExt(cookie, range.Get(), &rect, &clipped);
     if (FAILED(view->GetWnd(&owner)) || !owner) owner = GetFocus();
+    trace(L"anchor", hr, clipped, rect.bottom > rect.top);
+    trace(L"owner", owner != nullptr);
     if (FAILED(hr) || clipped || rect.bottom <= rect.top) { list->locate(nullptr, nullptr); return; }
     if (list_.Get() == list.Get()) list->locate(owner, &rect);
 }

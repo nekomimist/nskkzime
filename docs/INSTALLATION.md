@@ -49,6 +49,18 @@ DebugではReleaseのパッケージがないためこのテストをスキッ�
 クリーンWindows、複数ユーザー、UACで別アカウントを使う構成は未検証。
 「インストールされているアプリ」への登録、GUIインストーラー、自動更新、旧版の自動削除はまだ提供しない。
 
+## 2026-10-09のAppContainer対応版
+
+本人のUAC承認で形式3のbroker同梱版を登録し、候補ウィンドウのクラス指定を加えた
+`02bcea8` へ更新した。現在の配置版IDは
+`666d123e8ddbb12b4a24d1208dab54d74caecacadf307b27b3a4541c01f24711`。
+登録先と保留なし、配置済み17ファイルの検証、HKCU Runの起動先、新brokerの通常権限起動、
+Microsoft Storeへの新版DLL読み込みを確認した。私用ファイルのACL・設定は変更していない。
+DLLのSHA-256は `a58368a2fd4f1672a05e69ff32492faa7d8eb6a48931ea3659165a2b4c5f07ac`。
+記録は `out/appcontainer-20261009/install-popup.json` と `installed-popup.json` に保持する。
+後続のUIElement登録・デバッガー診断のソース修正は未登録。
+候補一覧の表示とスタート検索の確認範囲は [TSF検証](TSF_VALIDATION.md) を参照。
+
 ## 2026-10-07の実OSでの導入・復旧検証
 
 Windows 11 x64の開発端末で、本人のPowerShell 7をUAC承認により昇格して実行した。

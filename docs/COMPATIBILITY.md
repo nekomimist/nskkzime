@@ -16,7 +16,8 @@ zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末�
 | x86アプリ | 現在の配布対象外 | x86用TSF DLLと32ビット側登録を提供していない |
 | Windows on Arm／ARM64アプリ | 現在の配布対象外 | ARM64／ARM64EC成果物を提供せず、x64エミュレーション上のIME・推論も未検証 |
 | その他のAppContainer／UWPの入力先 | 対応対象外 | かな入力は可能でも、補助プロセスの許可対象ではなく設定・辞書・zenzへ接続できない。追加するパッケージごとに検証が必要 |
-| スタートメニュー検索／Microsoft Store検索 | 補助プロセスによる対応を実装 | Windows検索・StoreのパッケージSIDだけを許可。実トークンを持つ隔離AppContainerでTSF・IPCを検証する。実画面の確認範囲は[調査・検証記録](TSF_VALIDATION.md#2026-10-09-スタートメニュー検索とmicrosoft-store検索)を参照 |
+| Microsoft Store検索 | かな入力・変換・zenz生成・候補送りを実画面で確認 | 候補一覧が表示されない問題が残る。`02bcea8` を登録済みで、UIElement登録と診断の追加修正は未登録。[調査・検証記録](TSF_VALIDATION.md#2026-10-09-スタートメニュー検索とmicrosoft-store検索)を参照 |
+| スタートメニュー検索 | 補助プロセスによる対応を実装・配置済み | 検索パッケージを許可し、隔離AppContainerでTSF・IPCを検証済み。実際の検索欄はComputer Useの対象に現れず未確認 |
 | 低整合性のデスクトッププロセス | 未検証 | 同一ユーザーSIDでもIPC接続・サーバー起動・保存の可否は別に確認が必要 |
 | 管理者として実行する入力先／別ユーザー | 未検証 | 通常権限の補助プロセスとの接続、プロファイル、保存先を個別に確認する |
 | DPI変更・複数ディスプレイ・日本語／英語配列 | 実測未完了 | レイアウト・フォーカスの単体確認だけでは代替できない |
@@ -37,6 +38,7 @@ Windows on Armにx64エミュレーションがあっても、それだけでネ
 MicrosoftのIME要件では、IMEは読み込み先アプリのAppContainer制約を受け、互換性の宣言には
 `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT` を使う。XAML Islandsは通常のデスクトッププロセスも
 immersiveモードにするため、nskkzimeは既存の4カテゴリーにこの宣言を追加する。
+UIElement対応の宣言もソースに追加した（この追加分の実OS登録は未完了）。
 `ActivateEx` の先頭で実トークンを確認し、AppContainerでは専用の補助プロセスを利用する。
 トークンを判定できない場合は失敗を返し、デスクトップのファイル・IPC経路へ代替しない。
 [MicrosoftのIME要件](https://learn.microsoft.com/en-us/windows/apps/develop/input/input-method-editor-requirements)を参照。
