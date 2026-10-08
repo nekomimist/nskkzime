@@ -1,6 +1,7 @@
 #include "tool_launcher.h"
 #include "dictionary_settings.h"
 #include "learning_ipc.h"
+#include "container_runtime.h"
 #include <algorithm>
 #include <atomic>
 #include <stdexcept>
@@ -65,6 +66,11 @@ std::wstring tool_command_line(const ToolCommand& command) {
 DWORD launch_tool_process(const ToolCommand& command) noexcept {
     try {
         auto line = tool_command_line(command);
+        if (uses_data_broker()) {
+            NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+            return container_operation("GUI1", command.tool == ImeTool::Settings ? "settings" : "dictionary",
+                GetTickCount64() + 5000, cancel.get()) == "OKAY" ? ERROR_SUCCESS : ERROR_GEN_FAILURE;
+        }
         STARTUPINFOW start{}; start.cb = sizeof(start); start.dwFlags = STARTF_USESHOWWINDOW; start.wShowWindow = SW_SHOWNORMAL;
         PROCESS_INFORMATION child{};
         // Explicit executable and working directory; no shell, PATH search, or

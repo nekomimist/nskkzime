@@ -27,25 +27,31 @@ struct RuntimeDictionary::State {
     const std::shared_ptr<const RuntimeDictionarySnapshot> failure = std::make_shared<const RuntimeDictionarySnapshot>(failed_snapshot());
     std::atomic<std::shared_ptr<const RuntimeDictionarySnapshot>> snapshot;
     std::atomic<bool> abandoned{false};
-    struct Work { std::shared_ptr<State> state; std::function<RuntimeDictionarySnapshot()> loader; HMODULE module; };
+    struct Work { std::shared_ptr<State> state; std::function<RuntimeDictionarySnapshot()> loader; HMODULE module; bool retry; };
     static void CALLBACK callback(PTP_CALLBACK_INSTANCE instance, void* raw) {
         std::unique_ptr<Work> work(static_cast<Work*>(raw));
         FreeLibraryWhenCallbackReturns(instance, work->module);
         CallbackMayRunLong(instance);
         try {
-            if (work->state->abandoned.load()) return;
-            RuntimeDictionarySnapshot result;
-            try { result = work->loader(); if (!result.dictionary) result = failed_snapshot(); }
-            catch (...) { result = failed_snapshot(); }
-            if (!work->state->abandoned.load())
-                work->state->snapshot.store(std::make_shared<const RuntimeDictionarySnapshot>(std::move(result)));
+            do {
+                if (work->state->abandoned.load()) return;
+                RuntimeDictionarySnapshot result; bool succeeded = false;
+                try { result = work->loader(); succeeded = result.dictionary != nullptr; if (!succeeded) result = failed_snapshot(); }
+                catch (...) { result = failed_snapshot(); }
+                if ((succeeded || !work->retry) && !work->state->abandoned.load())
+                    work->state->snapshot.store(std::make_shared<const RuntimeDictionarySnapshot>(std::move(result)));
+                if (succeeded || !work->retry) return;
+                // Startup can precede the desktop broker. Recover without
+                // requiring the input application (e.g. SearchHost) to restart.
+                for (int i = 0; i < 20 && !work->state->abandoned.load(); ++i) Sleep(50);
+            } while (!work->state->abandoned.load());
         } catch (...) {
             if (!work->state->abandoned.load()) work->state->snapshot.store(work->state->failure);
         }
     }
 };
-RuntimeDictionary::RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader) : state_(std::make_shared<State>()) {
-    auto work = std::make_unique<State::Work>(); work->state = state_; work->loader = std::move(loader);
+RuntimeDictionary::RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader, bool retry) : state_(std::make_shared<State>()) {
+    auto work = std::make_unique<State::Work>(); work->state = state_; work->loader = std::move(loader); work->retry = retry;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&module_anchor),&work->module))
         throw std::runtime_error("cannot pin dictionary loader module");
     if (!TrySubmitThreadpoolCallback(State::callback,work.get(),nullptr)) {
@@ -95,7 +101,7 @@ std::wstring RuntimeDictionary::status() const {
     return snapshot->status;
 }
 std::shared_ptr<const Dictionary> runtime_dictionary() {
-    if (in_app_container()) {
+    if (uses_data_broker()) {
         auto result = std::dynamic_pointer_cast<const RuntimeDictionary>(container_runtime_dictionary());
         const std::lock_guard lock(cache_mutex); latest = result; requested = true; return result;
     }

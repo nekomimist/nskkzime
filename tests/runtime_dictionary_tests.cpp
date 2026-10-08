@@ -23,6 +23,20 @@ RuntimeDictionarySnapshot loaded() { return {demo_dictionary(),L"辞書: 読み�
 int main() {
     int failed = 0;
     const std::vector<std::pair<const char*,std::function<void()>>> cases = {
+        {"failed-bootstrap-retries-without-losing-reading",[] {
+            auto attempts = std::make_shared<std::atomic<int>>(0);
+            auto gate = std::make_shared<Gate>(); OpenOnExit release{gate};
+            auto dictionary = std::make_shared<RuntimeDictionary>([attempts,gate] {
+                if (++*attempts == 1) throw std::runtime_error("broker not started yet");
+                gate->wait(); return loaded();
+            }, true);
+            Engine engine(dictionary); type(engine,"Kanji");
+            gate->started();
+            check(*attempts == 2 && !dictionary->ready(),"failed bootstrap appeared ready or did not retry");
+            check(engine.handle({KeyCode::Space}).dictionary_pending && engine.preedit()==U"▽かんじ","retry lost pending reading");
+            gate->open(); wait_for_dictionary([&] { return dictionary->ready(); });
+            engine.handle({KeyCode::Space}); check(engine.preedit()==U"▼漢字","recovered broker did not convert existing reading");
+        }},
         {"pending-keeps-reading-without-registration-or-inference",[] {
             auto gate = std::make_shared<Gate>(); OpenOnExit release{gate};
             const auto caller = GetCurrentThreadId(); auto worker=std::make_shared<std::atomic<DWORD>>(0);

@@ -33,6 +33,37 @@ $readRegistration = {
     } finally { $class.Dispose() }
 }.GetNewClosure()
 if ($Action -eq 'Status') { Get-NskkzimeInstallStatus $root $readRegistration; return }
+# A packaged caller (including an inherited virtualized child) can silently
+# write HKCU Run to its private registry. Refuse before any installation writes.
+if (-not ('NskkzimeInstallContext' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class NskkzimeInstallContext {
+    [DllImport("kernel32.dll")] static extern int GetCurrentPackageFullName(ref uint size, IntPtr name);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder name, uint size, uint flags);
+    public static bool Redirected() {
+        uint size=0;
+        if(GetCurrentPackageFullName(ref size,IntPtr.Zero)!=15700) return true;
+        string path=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"nskkzime","settings.ini");
+        using(var file=CreateFile(path,0x80,7,IntPtr.Zero,3,0,IntPtr.Zero)) {
+            if(file.IsInvalid) return false;
+            var final=new StringBuilder(32768);
+            uint length=GetFinalPathNameByHandle(file,final,32768,0);
+            if(length==0 || length>=32768) throw new InvalidOperationException("Cannot identify installation context.");
+            string opened=final.ToString(); if(opened.StartsWith(@"\\?\")) opened=opened.Substring(4);
+            return !string.Equals(opened,path,StringComparison.OrdinalIgnoreCase);
+        }
+    }
+}
+'@
+}
+if ([NskkzimeInstallContext]::Redirected()) {
+    throw 'アプリのデータ仮想化を検出しました。HKCUの起動登録が別の場所へ保存されるため、変更しません。通常のExplorerから起動したPowerShellで実行してください。'
+}
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw '使用する本人のアカウントで、管理者として起動したPowerShell 7から実行してください。'

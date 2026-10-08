@@ -155,12 +155,25 @@ int container_test(bool denied, bool real_model) {
         rejected = false;
         try { container_operation("FILE", "C:\\private.txt", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "arbitrary file operation accepted");
+        rejected = false;
+        try { container_operation("GUI1", "settings", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
+        check(rejected, "AppContainer launched desktop GUI");
     }
     CoUninitialize(); return 0;
 }
 }
 int wmain(int argc, wchar_t** argv) {
     try {
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--desktop") {
+            check(!in_app_container(), "desktop client unexpectedly restricted");
+            const auto dictionary = container_runtime_dictionary();
+            wait_for_dictionary([&] { return dictionary->ready(); });
+            const auto config = container_configuration();
+            check(config && config->configuration.settings.candidates.show_after == 3 &&
+                config->configuration.settings.candidates.keys == CandidateKeys::Asdfjkl, "desktop broker settings");
+            check(!dictionary->lookup({U"かんじ", 0}).empty(), "desktop broker dictionary");
+            return 0;
+        }
         if (argc == 2) return container_test(std::wstring_view(argv[1]) == L"--denied", std::wstring_view(argv[1]) == L"--real-client");
         const bool real_model = argc == 3 && std::wstring_view(argv[1]) == L"--model";
         check(argc == 1 || real_model, "invalid test arguments");
@@ -193,9 +206,11 @@ int wmain(int argc, wchar_t** argv) {
             else response.candidates = {U"蜜柑", U"みかん"}; return response;
         }, "fixture", 10000, 5000); });
         const auto instance = container_sid(allowed.name); const auto stop = container_stop_event(instance);
+        SetEnvironmentVariableW(L"NSKKZIME_BROKER_TEST_INSTANCE", instance.c_str());
         const auto broker = launch(container_broker_path(), L"--config \"" + config.native() + L"\" --test-package " + allowed.name);
         int result = 1;
         try {
+            auto desktop = launch(executable, L"--desktop"); check(wait_child(desktop.get()) == 0, "desktop client failed");
             auto client = launch(executable, real_model ? L"--real-client" : L"--client", allowed.sid); const auto code = wait_child(client.get());
             std::cout << "allowed child=" << code << std::endl; check(code == 0, "container client failed");
             check(!private_seen.load(), "broker received protected text");
@@ -210,7 +225,7 @@ int wmain(int argc, wchar_t** argv) {
         } catch (...) { SetEvent(stop.get()); WaitForSingleObject(broker.get(), 35000); throw; }
         SetEvent(stop.get()); check(WaitForSingleObject(broker.get(), 35000) == WAIT_OBJECT_0, "broker did not stop");
         ResetEvent(stop.get()); std::atomic<bool> spoof_received = false;
-        auto spoof = std::async(std::launch::async, [&] { serve_container({allowed.name}, [&](auto, const auto&) { spoof_received = true; return std::string("wrong server"); }, stop.get()); });
+        auto spoof = std::async(std::launch::async, [&] { serve_container({allowed.name}, [&](auto, const auto&) { spoof_received = true; return std::string("wrong server"); }, stop.get(), instance); });
         auto client = launch(executable, L"--denied", allowed.sid); const auto code = wait_child(client.get()); SetEvent(stop.get()); spoof.get();
         check(code == 0 && !spoof_received.load(), "client sent data to another executable");
         if (inference.valid()) inference.get();

@@ -265,13 +265,14 @@ public:
             // Display-attribute-only COM instances never load a dictionary.
             try {
                 dictionary_ = runtime_dictionary();
-                engine_ = Engine(dictionary_, true, in_app_container() ? RomajiRules::defaults() : runtime_romaji_rules());
+                engine_ = Engine(dictionary_, true, uses_data_broker() ? RomajiRules::defaults() : runtime_romaji_rules());
                 engine_.set_numeric_candidate_keys(false);
-                if (!in_app_container()) {
+                if (!uses_data_broker()) {
                     try { candidate_settings_ = current_dictionary_configuration().settings.candidates; }
                     catch (...) { candidate_settings_ = {}; }
                     tool_commands_ = current_tool_commands();
                 }
+                else if (!in_app_container()) tool_commands_ = current_tool_commands();
                 dictionary_loaded_ = true;
             }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
@@ -341,7 +342,7 @@ public:
         sink_cookie_ = TF_INVALID_COOKIE;
         keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL;
         eaten_keys_.reset(); engine_.reset();
-        try { if (in_app_container()) {
+        try { if (uses_data_broker()) {
             engine_ = Engine(std::make_shared<MemoryDictionary>()); dictionary_.reset();
             dictionary_loaded_ = false; container_configured_ = container_rules_configured_ = false;
         } } catch (...) { /* Deactivation cannot unwind through COM. */ }
@@ -544,7 +545,7 @@ public:
 private:
     void configure_container() noexcept {
         try {
-            if (!in_app_container()) return;
+            if (!uses_data_broker()) return;
             const auto remote = container_configuration();
             if (!remote || !dictionary_ || !dictionary_->ready()) return;
             if (!container_rules_configured_ && !composition_ && engine_.preedit().empty()) {
@@ -557,7 +558,7 @@ private:
             if (const auto config = current_inference_config()) {
                 inference_dummy_ = false; inference_policy_ = config->policy; allow_unknown_context_ = config->allow_unknown_context;
                 inference_ = std::make_unique<InferenceClient>(*config, [this](InferenceCompletion result) { receive_inference(std::move(result)); });
-                set_inference_status(this, L"推論: AppContainer補助プロセス経由でzenzを使用");
+                set_inference_status(this, L"推論: 補助プロセス経由でzenzを使用");
             }
             container_configured_ = true;
         } catch (...) { set_inference_status(this, L"推論: AppContainer設定を適用できません"); }

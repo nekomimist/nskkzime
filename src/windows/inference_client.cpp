@@ -192,7 +192,7 @@ LRESULT CALLBACK InferenceClient::window_proc(HWND window, UINT message, WPARAM 
 }
 std::optional<InferenceConfig> current_inference_config() {
     InferenceConfig config;
-    if (in_app_container()) {
+    if (uses_data_broker()) {
         const auto remote = container_configuration();
         if (!remote || !remote->configuration.settings.zenz.enabled) return {};
         const auto& settings = remote->configuration.settings.zenz;

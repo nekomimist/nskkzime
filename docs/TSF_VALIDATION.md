@@ -2,6 +2,28 @@
 
 OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIBILITY.md) を参照。
 
+## 2026-10-09: 再起動後の変換不良と設定の仮想化
+
+再起動後、ChatGPTでは候補設定が反映されず、検索・Storeではかなだけ入力できるとの報告。
+開発環境から既定設定を開いた実パスはOpenAI.CodexのLocalCache配下で、候補設定キーがなかった。
+Explorerから起動した通常PowerShellでは実体が通常AppDataで、`candidate-show-after=5` と
+`candidate-keys=asdfjkl` が存在した。前者の子プロセスはパッケージIDなしでも仮想化を継承していた。
+`KF_FLAG_NO_PACKAGE_REDIRECTION` で取得したパスを開いても同じ仮想化が起きることを確認。
+
+さらにbrokerが起動しておらず、開発側で見えるHKCU Run登録は通常デスクトップ側では存在しなかった。
+これまでのRun確認は仮想化された側だけの読み戻しだった。Explorer経由の一時起動は成功した。
+記録は `out/appcontainer-20261009/settings-{packaged,desktop}.json`、`desktop-startup.json`。
+辞書本文の調査・設定の書き換えは行っていない。
+
+修正では仮想化される通常権限アプリの設定・辞書・学習・推論を共有brokerへ統一した。
+設定GUIの起動も固定要求でbrokerへ渡す。初回取得は失敗後も再試行し、起動順に依存しない。
+インストーラーは仮想化を検出した場合、変更前に拒否する。
+候補UIではUI-lessホストへの初回 `UpdateUIElement` 通知も追加した。
+Releaseの全54テストが成功（194.50秒）。通常権限・AppContainer双方のfixture設定取得、
+実モデル推論、AppContainerからのGUI起動拒否、初期化失敗後に同じ読みを変換できる再試行を含む。
+仮想化された開発側での `install.ps1 -Action Recover` は、登録変更前のガードで拒否された。
+実アプリでの修正後の確認結果は、以下の過去の確認結果とは区別して追記する。
+
 ## 2026-10-09: スタートメニュー検索とMicrosoft Store検索
 
 ユーザーから両検索欄で日本語入力にならないとの報告。プロセスを変更せず、

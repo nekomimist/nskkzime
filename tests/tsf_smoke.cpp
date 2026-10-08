@@ -531,6 +531,7 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     check(!host->ui, "reading showed candidate UI");
     key(keys, context.Get(), VK_SPACE);
     check(host->ui && host->ui_begins == 1, "selection did not begin candidate UI");
+    check(host->ui_updates == 1, "UILess host did not receive the initial candidate contents");
     ComPtr<ITfCandidateListUIElement> list; succeeded(host->ui.As(&list), "candidate list interface missing");
     UINT count = 0, selected = 99;
     list->GetCount(&count); check(count == 2, "candidate UI count incorrect");
@@ -539,7 +540,7 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
     const bool correct = text && std::wstring_view(text) == L"漢字"; SysFreeString(text);
     check(correct, "candidate UI text or annotation incorrect");
     key(keys, context.Get(), VK_SPACE);
-    list->GetSelection(&selected); check(selected == 1 && host->ui_updates == 1, "candidate UI selection not updated");
+    list->GetSelection(&selected); check(selected == 1 && host->ui_updates == 2, "candidate UI selection not updated");
     // Page probes stay pure; an actual page edit adopts the selection only on success.
     for (int i = 0; i < 3; ++i) {
         BOOL eaten = FALSE; succeeded(keys->OnTestKeyDown(context.Get(), VK_PRIOR, 0, &eaten), "page probe failed");

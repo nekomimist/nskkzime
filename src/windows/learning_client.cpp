@@ -55,8 +55,7 @@ struct LearningDictionary::State {
     }
     void update_status(std::wstring value) { const std::lock_guard lock(mutex); report = std::move(value); }
     std::string exchange(std::string_view body) {
-        if (!in_app_container()) return learning_exchange(file, body);
-        if (container_generation.empty()) throw std::runtime_error("missing container generation");
+        if (container_generation.empty()) return learning_exchange(file, body);
         NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         return container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + 1500, cancel.get());
     }
@@ -95,7 +94,7 @@ struct LearningDictionary::State {
                 } catch (const std::exception&) {
                     update_status(L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）");
                     const auto now = GetTickCount64();
-                    if (now - last_launch > 5000 && !in_app_container()) {
+                    if (now - last_launch > 5000 && container_generation.empty()) {
                         last_launch = now;
                         try { const auto process = launch_dictionary_server(server, file); } catch (...) {}
                     }

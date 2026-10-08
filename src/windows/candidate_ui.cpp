@@ -401,6 +401,8 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
             if (list_.Get() != list.Get()) { if (SUCCEEDED(hr)) manager->EndUIElement(id); return; }
             if (FAILED(hr)) { close(); return; }
             id_ = id; begun_ = true; list->Show(show);
+            // A UILess host starts drawing at UpdateUIElement, not Begin.
+            if (!show && list_.Get() == list.Get() && FAILED(manager->UpdateUIElement(id_)) && list_.Get() == list.Get()) close();
         } else {
             list_->update(engine, document.Get());
             DWORD flags = 0; list_->GetUpdatedFlags(&flags);

@@ -1,4 +1,7 @@
 #include "app_container.h"
+#include "dictionary_settings.h"
+#include <appmodel.h>
+#include <shlobj.h>
 #include <sddl.h>
 #include <aclapi.h>
 #include <userenv.h>
@@ -116,6 +119,36 @@ ProcessIdentity process_identity(HANDLE process) {
     return result;
 }
 bool in_app_container() { static const bool value = !process_identity().container.empty(); return value; }
+bool redirected_data_context() {
+    UINT32 size = 0;
+    if (GetCurrentPackageFullName(&size, nullptr) != APPMODEL_ERROR_NO_PACKAGE) return true;
+    // Descendants can inherit file virtualization without package identity.
+    // Compare the opened file, not just the logical KnownFolder path.
+    PWSTR raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY | KF_FLAG_NO_PACKAGE_REDIRECTION, nullptr, &raw)))
+        throw std::runtime_error("cannot locate shared settings");
+    std::filesystem::path file;
+    try { file = std::filesystem::path(raw) / L"nskkzime" / L"settings.ini"; }
+    catch (...) { CoTaskMemFree(raw); throw; }
+    CoTaskMemFree(raw);
+    NativeHandle handle(CreateFileW(file.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, 0, nullptr));
+    if (!handle.valid()) return false;
+    wchar_t final[32768]{};
+    const auto count = GetFinalPathNameByHandleW(handle.get(), final, ARRAYSIZE(final), FILE_NAME_NORMALIZED);
+    if (!count || count >= ARRAYSIZE(final)) throw std::runtime_error("cannot identify shared settings");
+    std::wstring_view opened(final, count);
+    if (opened.starts_with(L"\\\\?\\")) opened.remove_prefix(4);
+    return CompareStringOrdinal(opened.data(), static_cast<int>(opened.size()), file.c_str(), -1, TRUE) != CSTR_EQUAL;
+}
+bool uses_data_broker() {
+    if (in_app_container()) return true;
+    // Explicit development configurations remain private to their host.
+    for (const auto name : {L"NSKKZIME_CONFIG", L"NSKKZIME_DICTIONARY", L"NSKKZIME_DEMO"})
+        if (GetEnvironmentVariableW(name, nullptr, 0)) return false;
+    static const bool redirected = redirected_data_context();
+    return redirected;
+}
 std::wstring container_sid(std::wstring_view package) {
     need(!package.empty() && package.size() <= 256 && package.find_first_of(L"\\/\r\n\t\" ") == package.npos);
     PSID sid = nullptr; need(SUCCEEDED(DeriveAppContainerSidFromAppContainerName(std::wstring(package).c_str(), &sid)));
@@ -131,13 +164,17 @@ std::filesystem::path container_broker_path() {
     return std::filesystem::path(path).parent_path() / L"nskkzime_broker.exe";
 }
 std::wstring container_pipe_name(const ProcessIdentity& identity) {
-    need(!identity.container.empty());
+    if (identity.container.empty()) return L"\\\\.\\pipe\\nskkzime-desktop-broker-v1-" + identity.user + L"-" + std::to_wstring(identity.session);
     return L"\\\\.\\pipe\\Sessions\\" + std::to_wstring(identity.session) + L"\\AppContainerNamedObjects\\" + identity.container +
         L"\\nskkzime-broker-v1-" + identity.user;
 }
 std::string container_exchange(std::string_view request, ULONGLONG deadline, HANDLE cancel) {
-    const auto identity = process_identity(); need(!identity.container.empty());
-    const auto name = L"\\\\.\\pipe\\LOCAL\\nskkzime-broker-v1-" + identity.user;
+    const auto identity = process_identity();
+    auto name = identity.container.empty() ? container_pipe_name(identity) : L"\\\\.\\pipe\\LOCAL\\nskkzime-broker-v1-" + identity.user;
+    if (identity.container.empty()) if (const auto instance = environment_value(L"NSKKZIME_BROKER_TEST_INSTANCE")) {
+        need(instance->size() <= 192 && instance->find_first_not_of(L"0123456789S-") == instance->npos);
+        name += *instance;
+    }
     HANDLE raw = INVALID_HANDLE_VALUE;
     for (;;) {
         need(GetTickCount64() < deadline && WaitForSingleObject(cancel, 0) != WAIT_OBJECT_0);
@@ -152,7 +189,7 @@ std::string container_exchange(std::string_view request, ULONGLONG deadline, HAN
     auto response = receive(pipe.get(), container_response_limit, deadline, cancel);
     char ack = 1; transfer(pipe.get(), &ack, 1, true, deadline, cancel); return response;
 }
-void serve_container(const std::vector<std::wstring>& packages, const ContainerHandler& handler, HANDLE stop) {
+void serve_container(const std::vector<std::wstring>& packages, const ContainerHandler& handler, HANDLE stop, std::wstring_view desktop_instance) {
     auto own = process_identity(); need(own.container.empty() && !packages.empty() && packages.size() <= 16);
     std::vector<std::wstring> sids;
     for (const auto& package : packages) {
@@ -163,11 +200,14 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
     grant_query(GetCurrentProcess(), PROCESS_QUERY_LIMITED_INFORMATION, sids);
     HANDLE raw = nullptr; need(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | READ_CONTROL | WRITE_DAC, &raw) != FALSE);
     NativeHandle token(raw); grant_query(token.get(), TOKEN_QUERY, sids);
+    sids.push_back(L""); // Normal desktop peers: same user/session, no AppContainer.
     struct Listener { NativeHandle pipe; ProcessIdentity peer; };
     std::vector<Listener> listeners;
     for (const auto& sid : sids) {
-        auto peer = own; peer.container = sid; const auto name = container_pipe_name(peer);
-        Descriptor descriptor(L"D:P(A;;GA;;;" + own.user + L")(A;;0x12019b;;;" + sid + L")S:(ML;;NW;;;LW)");
+        auto peer = own; peer.container = sid; auto name = container_pipe_name(peer);
+        if (sid.empty()) name += desktop_instance;
+        Descriptor descriptor(L"D:P(A;;GA;;;" + own.user + L")" +
+            (sid.empty() ? std::wstring{} : L"(A;;0x12019b;;;" + sid + L")S:(ML;;NW;;;LW)"));
         SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor.value, FALSE};
         for (int i = 0; i < 4; ++i) {
             NativeHandle pipe(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (i ? 0 : FILE_FLAG_FIRST_PIPE_INSTANCE),
@@ -184,6 +224,7 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 if (!connected && error != ERROR_PIPE_CONNECTED) finish(listener.pipe.get(), operation, connected, GetTickCount64() + 60000, stop);
                 check_peer(listener.pipe.get(), true, listener.peer);
                 const auto request = receive(listener.pipe.get(), container_request_limit, GetTickCount64() + 2000, stop);
+                need(listener.peer.container.empty() || !request.starts_with("GUI1"));
                 const auto deadline = GetTickCount64() + 30000;
                 const auto cancelled = [&] { return GetTickCount64() >= deadline || WaitForSingleObject(stop, 0) == WAIT_OBJECT_0 ||
                     !PeekNamedPipe(listener.pipe.get(), nullptr, 0, nullptr, nullptr, nullptr); };

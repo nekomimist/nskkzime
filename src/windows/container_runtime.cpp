@@ -58,8 +58,8 @@ std::shared_ptr<const Dictionary> container_runtime_dictionary() {
         }
         if (learning) base = std::make_shared<LearningDictionary>(base,
             config->configuration.file.parent_path() / L"user-dictionary.nskkdb", std::filesystem::path{}, config->generation);
-        return RuntimeDictionarySnapshot{base, L"辞書: AppContainer補助プロセスから読み込み済み", learning};
-    });
+        return RuntimeDictionarySnapshot{base, L"辞書: 補助プロセスから読み込み済み", learning};
+    }, true);
     dictionary = result; return result;
 }
 } // namespace nskkzime::windows

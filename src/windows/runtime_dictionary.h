@@ -11,7 +11,7 @@ struct RuntimeDictionarySnapshot {
 // or calls back into a TSF object. Lookup/status only read memory.
 class RuntimeDictionary final : public Dictionary {
 public:
-    explicit RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader);
+    explicit RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader, bool retry = false);
     explicit RuntimeDictionary(RuntimeDictionarySnapshot immediate);
     ~RuntimeDictionary() override;
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;

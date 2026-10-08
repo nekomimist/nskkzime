@@ -2,6 +2,7 @@
 #include "dictionary_settings.h"
 #include "inference_client.h"
 #include "learning_client.h"
+#include "tool_launcher.h"
 #include "nskkzime/compiled_dictionary.h"
 #include <nlohmann/json.hpp>
 #include <bcrypt.h>
@@ -63,6 +64,20 @@ struct Broker {
         if (bytes == "INIT") return snapshot(config, id);
         if (bytes.size() < 68 || bytes.substr(4, 64) != id) throw std::runtime_error("stale settings");
         const auto operation = bytes.substr(0, 4), body = bytes.substr(68);
+        if (operation == "GUI1") {
+            // The transport rejects this operation from AppContainer peers.
+            // No caller-supplied path or command line crosses the boundary.
+            ToolCommand command;
+            if (body == "settings") {
+                command.tool = ImeTool::Settings; command.file = config.file;
+                command.executable = container_broker_path().parent_path() / L"nskkzime_settings.exe";
+            } else if (body == "dictionary") {
+                command.tool = ImeTool::Dictionary; command.file = learning_file_path();
+                command.executable = container_broker_path().parent_path() / L"nskkzime_dictionary_gui.exe";
+            } else throw std::runtime_error("unknown GUI");
+            if (launch_tool_process(command) != ERROR_SUCCESS) throw std::runtime_error("GUI unavailable");
+            return "OKAY";
+        }
         if (operation == "LRN1") {
             if (!config.settings.learning || config.demo || config.settings.dictionaries.empty()) throw std::runtime_error("learning disabled");
             if (body.starts_with("NKL1") || body.starts_with("NKF1")) (void)decode_learning(body);
@@ -137,6 +152,7 @@ int wmain(int argc, wchar_t** argv) {
             else throw std::runtime_error("usage: nskkzime_broker [--replace|--stop] [--config PATH [--test-package NAME]]");
         }
         if (in_app_container()) throw std::runtime_error("broker requires a desktop process");
+        if (!explicit_config && redirected_data_context()) throw std::runtime_error("broker requires an unvirtualized desktop process");
         const auto stop = container_stop_event(instance);
         if (stop_only) { SetEvent(stop.get()); return 0; }
         const auto mutex = container_instance_mutex(instance);
@@ -146,7 +162,7 @@ int wmain(int argc, wchar_t** argv) {
         if (acquired != WAIT_OBJECT_0 && acquired != WAIT_ABANDONED) throw std::runtime_error("broker is busy");
         ResetEvent(stop.get());
         Broker broker;
-        try { serve_container(packages, [&](auto request, const auto& cancelled) { return broker.handle(request, cancelled); }, stop.get()); }
+        try { serve_container(packages, [&](auto request, const auto& cancelled) { return broker.handle(request, cancelled); }, stop.get(), instance); }
         catch (...) { ReleaseMutex(mutex.get()); throw; }
         ReleaseMutex(mutex.get()); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
