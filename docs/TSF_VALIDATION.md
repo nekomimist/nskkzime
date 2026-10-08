@@ -2,6 +2,24 @@
 
 OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIBILITY.md) を参照。
 
+## 2026-10-09: スタートメニュー検索とMicrosoft Store検索
+
+ユーザーから両検索欄で日本語入力にならないとの報告。プロセスを変更せず、
+`OpenProcessToken`／`GetTokenInformation(TokenIsAppContainer)` とモジュール一覧を調べた。
+この端末の `SearchHost` と `WinStore.App` はAppContainer、`StartMenuExperienceHost`・
+`TextInputHost`・起動中のWindows Terminalは非AppContainerだった。
+検索・Storeのプロセスには確認時点でnskkzime DLLが読み込まれていなかった。
+Startメニュー本体と検索担当プロセスは区別する。記録は `out/search-container-20261009/`。
+
+現行の `desktop_activation_allowed()` はAppContainerに `E_ACCESSDENIED` を返し、
+キー処理・辞書・推論を初期化しない。従って、DLLをロードできても現実装では入力できない。
+この調査では実際の有効化呼び出しを追跡していないため、ロード段階の別の制約がないとは断定しない。
+登録先は候補設定版 `3cdfb7eb...` で保留なし。配置DLLのDACLはSYSTEM・Administrators・Usersの3件で、
+AppContainer向けの読み取りACEもない。ロード可否は有効化拒否とは別に検証が必要。
+Terminalの修正は非AppContainerのXAML向け互換性登録で、今回の対応を含まない。
+拒否条件だけの削除では、設定・辞書・キャッシュ・学習／zenz IPCのコンテナー制約は解決しない。
+AppContainer対応は別途設計・検証する必要があり、この調査ではコード・登録・ACLを変更していない。
+
 ## 2026-10-08: 候補一覧の表示回数と選択キー
 
 候補一覧を表示する変換回数（1～99）と、数字／ASDFJKLの選択キーを設定GUI・CLIへ追加。
