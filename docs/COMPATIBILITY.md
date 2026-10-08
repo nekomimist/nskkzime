@@ -1,6 +1,6 @@
 # 対応範囲とOS・アプリの制約
 
-2026-10-09時点。配布対象は **Windows x64のデスクトップアプリ向け、zenz CPU入りの一種類**。
+2026-10-09時点。配布対象は **Windows x64、zenz CPU入りの一種類**。
 以下はソース・成果物・実測の区別を付けた対応表であり、未検証環境で使えるという宣言ではない。
 zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末以外の未実測範囲は [CPU対応](CPU_SUPPORT.md) を参照。
 
@@ -15,8 +15,8 @@ zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末�
 | Windows 10 x64 | 未検証 | Windows SDKのターゲット指定だけでは実OSでの動作確認にならない |
 | x86アプリ | 現在の配布対象外 | x86用TSF DLLと32ビット側登録を提供していない |
 | Windows on Arm／ARM64アプリ | 現在の配布対象外 | ARM64／ARM64EC成果物を提供せず、x64エミュレーション上のIME・推論も未検証 |
-| AppContainer／UWPの入力先 | 現在の配布対象外 | 実際のプロセストークンを調べて有効化を拒否する。デスクトップXAML向けの互換性登録とは区別。ファイル・IPC・UIの対応は下記のとおり未実装／未検証 |
-| スタートメニュー検索／Microsoft Store検索 | 日本語入力にならないとのユーザー報告あり | この端末の `SearchHost` と `WinStore.App` はAppContainerで、現実装の有効化拒否に該当する。TerminalのデスクトップXAML対応とは別に、AppContainerからの設定・辞書・zenz連携が必要。[調査記録](TSF_VALIDATION.md#2026-10-09-スタートメニュー検索とmicrosoft-store検索)を参照 |
+| その他のAppContainer／UWPの入力先 | 対応対象外 | かな入力は可能でも、補助プロセスの許可対象ではなく設定・辞書・zenzへ接続できない。追加するパッケージごとに検証が必要 |
+| スタートメニュー検索／Microsoft Store検索 | 補助プロセスによる対応を実装 | Windows検索・StoreのパッケージSIDだけを許可。実トークンを持つ隔離AppContainerでTSF・IPCを検証する。実画面の確認範囲は[調査・検証記録](TSF_VALIDATION.md#2026-10-09-スタートメニュー検索とmicrosoft-store検索)を参照 |
 | 低整合性のデスクトッププロセス | 未検証 | 同一ユーザーSIDでもIPC接続・サーバー起動・保存の可否は別に確認が必要 |
 | 管理者として実行する入力先／別ユーザー | 未検証 | 通常権限の補助プロセスとの接続、プロファイル、保存先を個別に確認する |
 | DPI変更・複数ディスプレイ・日本語／英語配列 | 実測未完了 | レイアウト・フォーカスの単体確認だけでは代替できない |
@@ -37,22 +37,20 @@ Windows on Armにx64エミュレーションがあっても、それだけでネ
 MicrosoftのIME要件では、IMEは読み込み先アプリのAppContainer制約を受け、互換性の宣言には
 `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT` を使う。XAML Islandsは通常のデスクトッププロセスも
 immersiveモードにするため、nskkzimeは既存の4カテゴリーにこの宣言を追加する。
-ただし、AppContainerへの対応を意味するものではない。`ActivateEx` の先頭で `TokenIsAppContainer` を
-確認し、AppContainerまたは判定失敗なら、辞書・設定・IPCを初期化せず失敗を返す。
-ファイルやIPCの権限を広げる変更は行わない。
+`ActivateEx` の先頭で実トークンを確認し、AppContainerでは専用の補助プロセスを利用する。
+トークンを判定できない場合は失敗を返し、デスクトップのファイル・IPC経路へ代替しない。
 [MicrosoftのIME要件](https://learn.microsoft.com/en-us/windows/apps/develop/input/input-method-editor-requirements)を参照。
 
-| 対象 | 現在のコード | 対応前に確認する点 |
+| 対象 | 現在のコード | 制約 |
 |---|---|---|
-| DLL・辞書・設定 | インストール先は管理者のみ変更可能。辞書・モデルは同梱せず、ユーザーが指定したパスを使う | AppContainerから各ファイルを読めるか。Program Filesへ置くだけで、明示したDACLや外部ファイルまでアクセス可能にはならない |
-| 辞書キャッシュ | `dictionary_cache.cpp` はユーザーSID向け読み取りACLの共有メモリーを使う | コンテナーの名前空間・共有可否・ファイルアクセス |
-| 学習・推論IPC | `learning_ipc.cpp`／`inference_ipc.cpp` はデスクトップ向けパイプ名とユーザーSID向けACLを使う | 接続の認証、コンテナーの制約、サーバーの起動方法 |
-| 候補UI・設定／辞書GUI | デスクトップの候補ウィンドウと補助プロセス起動を使う | ホストのUI制約、タッチキーボード、GUIの起動経路 |
+| DLL・設定・辞書 | 公開プログラムだけAppContainerの読み取りを許可。設定と辞書のスナップショットはbrokerから非同期取得 | brokerは通常権限で起動。私用ファイルのACLは変更しない |
+| 辞書キャッシュ | コンパイル済み辞書イメージをメモリーに読み込む | 初期取得中はかな入力のみ。broker再起動・設定変更後は入力先アプリを起動し直す |
+| 学習・推論IPC | 許可したパッケージSID、ユーザー、セッションを照合してbrokerが既存の補助プロセスへ中継 | 任意ファイルの読み書き・任意コマンドの実行は提供しない。パスワード・属性不明の扱いは既存と同じ |
+| 候補UI・設定／辞書GUI | 候補UIとTSF UIElementを利用。AppContainerから管理GUIは起動しない | 検索UIへの候補統合とタッチキーボードは未検証 |
 
-UWP向け名前付きパイプの記述には、同一アプリのAppContainer内に限定した利用と `LOCAL` 名前空間の要件がある。
-現在のデスクトップIPCがそのまま使えるという根拠にはしない。
-[CreateNamedPipeの注記](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)を参照。
-対応を検討する際も、任意のコンテナーへ辞書や読みを公開するACL変更は行わず、必要な境界と経路を設計して検証する。
+コンテナー内の `LOCAL` パイプ名と、デスクトップ側のセッション・コンテナーSID付きパイプ名を対応させる。
+接続先の実行ファイルもIME DLLと同じディレクトリーのbrokerに限定する。
+[AppContainer設計と検証](APPCONTAINER.md)を参照。
 
 ## 入力属性と外部アプリの検証
 

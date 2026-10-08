@@ -5,7 +5,7 @@ $testParent = [IO.Path]::GetFullPath($TestRoot)
 $fixtureRoot = Join-Path $testParent ('stage-test 日本語 space-' + [Guid]::NewGuid().ToString('N'))
 $source = Join-Path $fixtureRoot 'source'
 $destination = Join-Path $fixtureRoot 'staged'
-$names = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe')
+$names = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe', 'nskkzime_broker.exe')
 $bundles = [Collections.Generic.List[string]]::new()
 function Assert-Stage([bool]$Condition, [string]$Reason) { if (-not $Condition) { throw $Reason } }
 function Expect-Failure([scriptblock]$Action) {
@@ -18,7 +18,7 @@ try {
     foreach ($name in $names) { [IO.File]::WriteAllText((Join-Path $source $name), "fixture-$name") }
     $first = & $StageScript -SourceDirectory $source -DestinationRoot $destination
     $bundles.Add($first.Directory)
-    Assert-Stage ($first.Hashes.Count -eq 5) 'Server or GUI binaries are missing from bundle.'
+    Assert-Stage ($first.Hashes.Count -eq 6) 'Server, broker or GUI binaries are missing from bundle.'
     foreach ($name in $names) {
         Assert-Stage ((Get-FileHash -LiteralPath (Join-Path $first.Directory $name)).Hash -eq $first.Hashes[$name]) 'Staged bytes differ.'
     }

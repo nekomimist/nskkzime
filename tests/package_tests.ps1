@@ -73,7 +73,7 @@ try {
     }
     $created = & $PackageScript @arguments
     $verified = & $PackageScript -Verify $created.Path
-    Assert-Package ($verified.Verified -and $verified.Files -eq 16 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
+    Assert-Package ($verified.Verified -and $verified.Files -eq 17 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
     Assert-Package ($verified.SHA256 -eq $created.SHA256) 'Verification changed archive.'
     Expect-Failure { & $PackageScript @arguments } '上書きしません'
     Assert-Package ((Get-FileHash -LiteralPath $created.Path).Hash -eq $created.SHA256) 'Existing archive overwritten.'
@@ -95,7 +95,7 @@ try {
     $expanded = Join-Path $fixture 'expanded'
     [IO.Compression.ZipFile]::ExtractToDirectory($created.Path, $expanded)
     $directoryResult = & $PackageScript -VerifyDirectory $expanded
-    Assert-Package ($directoryResult.Verified -and $directoryResult.FormatVersion -eq 2 -and $directoryResult.Paths.Count -eq 17) 'Expanded package verification failed.'
+    Assert-Package ($directoryResult.Verified -and $directoryResult.FormatVersion -eq 3 -and $directoryResult.Paths.Count -eq 18) 'Expanded package verification failed.'
     $manifest = Get-Content -LiteralPath (Join-Path $expanded 'manifest.json') -Raw | ConvertFrom-Json
     Assert-Package ($manifest.binary_build_revision -match '^[a-f0-9]{40}$' -and
         $manifest.binary_build_revision -eq $manifest.binary_build_metadata.source_revision -and

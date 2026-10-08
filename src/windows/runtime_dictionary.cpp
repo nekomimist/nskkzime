@@ -1,4 +1,5 @@
 #include "runtime_dictionary.h"
+#include "container_runtime.h"
 #include "dictionary_settings.h"
 #include "learning_client.h"
 #include "learning_ipc.h"
@@ -94,6 +95,10 @@ std::wstring RuntimeDictionary::status() const {
     return snapshot->status;
 }
 std::shared_ptr<const Dictionary> runtime_dictionary() {
+    if (in_app_container()) {
+        auto result = std::dynamic_pointer_cast<const RuntimeDictionary>(container_runtime_dictionary());
+        const std::lock_guard lock(cache_mutex); latest = result; requested = true; return result;
+    }
     // Capture configuration/environment before queueing. Later activations must
     // never redirect an in-flight load or its learning writer.
     std::shared_ptr<const RuntimeDictionary> result;

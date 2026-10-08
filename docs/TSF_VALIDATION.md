@@ -11,7 +11,7 @@ OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIB
 検索・Storeのプロセスには確認時点でnskkzime DLLが読み込まれていなかった。
 Startメニュー本体と検索担当プロセスは区別する。記録は `out/search-container-20261009/`。
 
-現行の `desktop_activation_allowed()` はAppContainerに `E_ACCESSDENIED` を返し、
+調査時の `desktop_activation_allowed()` はAppContainerに `E_ACCESSDENIED` を返し、
 キー処理・辞書・推論を初期化しない。従って、DLLをロードできても現実装では入力できない。
 この調査では実際の有効化呼び出しを追跡していないため、ロード段階の別の制約がないとは断定しない。
 登録先は候補設定版 `3cdfb7eb...` で保留なし。配置DLLのDACLはSYSTEM・Administrators・Usersの3件で、
@@ -19,6 +19,17 @@ AppContainer向けの読み取りACEもない。ロード可否は有効化拒�
 Terminalの修正は非AppContainerのXAML向け互換性登録で、今回の対応を含まない。
 拒否条件だけの削除では、設定・辞書・キャッシュ・学習／zenz IPCのコンテナー制約は解決しない。
 AppContainer対応は別途設計・検証する必要があり、この調査ではコード・登録・ACLを変更していない。
+
+同日の対応では `nskkzime_broker.exe` を追加し、Windows検索・Storeのパッケージを許可した。
+実トークンを持つ隔離AppContainerで、かな・辞書変換・一覧の遅延・ASDF選択・学習同期・
+非同期推論・取消・保護入力の抑止を確認。私用設定ファイルを直接読めないこと、未許可パッケージ・
+別の実行ファイル・古い設定世代・任意ファイル操作を拒否することも確認した。
+実モデルでは「試験問題のかいとう→試験問題の解答」の文脈採点と、
+辞書にない「もんだいなさそう→問題なさそう」の生成が成功した。
+これは実AppContainer内のTSFテストホストによる検証であり、実アプリの検索欄の確認とは区別する。
+方式と境界は [AppContainer対応](APPCONTAINER.md)、ログは `out/appcontainer-20261009/` を参照。
+Releaseの全54テストが成功（195.78秒）。開発用配置へのbroker追加も専用テストで成功した。
+形式3パッケージの検査、形式2への復帰、起動登録の中断・復帰は隔離したインストーラーテストで確認した。
 
 ## 2026-10-08: 候補一覧の表示回数と選択キー
 

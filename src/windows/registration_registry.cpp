@@ -17,7 +17,7 @@ std::wstring class_path() {
     return std::wstring(L"Software\\Classes\\CLSID\\") + guid;
 }
 // XAML Islands set TF_TMF_IMMERSIVEMODE even in full-trust desktop apps
-// (including Windows Terminal). Activation separately rejects AppContainer.
+// (including Windows Terminal). AppContainer file/IPC access uses the broker.
 const std::array<const GUID*, 5> categories{
     &GUID_TFCAT_TIP_KEYBOARD, &GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
     &GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,

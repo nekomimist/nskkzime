@@ -6,12 +6,20 @@ Windows / x64用の開発中のSKK風IMEです。検証用ZIPに導入・更新�
 
 ## 内容と前提
 
-`bin/` にIME DLL、辞書補助プロセス、設定GUI、辞書管理GUI、設定CLI、辞書管理CLI、入力検証アプリを収めています。
+`bin/` にIME DLL、辞書補助プロセス、AppContainer補助プロセス、設定GUI、辞書管理GUI、設定CLI、辞書管理CLI、入力検証アプリを収めています。
 実モデル用の `nkkz-ime-server.exe` を必ず含む、zenz CPUの単一構成です。
 `manifest.json` に構成（`zenz-cpu`）、各ファイルのSHA-256・サイズ・依存DLL・署名検査結果を記録しています。
 `binary_build_revision` と `binary_build_metadata` は各バイナリーに埋め込んだビルド元・内容ハッシュ・
 構成です。ZIPと展開先の検査では全バイナリーとの一致も確認します。梱包時点のrevisionは別に記録します。
 これらはビルド追跡のための自己記載情報で、署名や提供者の認証にはなりません。
+
+形式3から `nskkzime_broker.exe` を含みます。インストール時に本人のHKCUのRunへ登録し、
+通常権限のExplorer経由で起動します。次のサインイン時にも起動します。Windows検索・Store内のIMEは、
+このプロセスを通じて既存の設定・辞書・学習・zenzを利用します。モデルを常時ロードする処理ではありません。
+Program Files内の公開プログラムにAppContainerの読み取り・実行権限を追加します。
+ユーザーの辞書・設定・モデルへのファイルアクセス権は変更しません。
+登録解除・旧形式へのロールバックではRun登録を外します。AppContainer内から設定・辞書管理GUIは開けないため、
+デスクトップアプリ側の入力モードメニューか `bin/nskkzime_settings.exe` を使用してください。
 
 - Windows x64、Microsoft Visual C++ v14 Redistributable **x64** が必要です。
   ビルドに使ったツールセット以上の版を、[Microsoft公式配布ページ](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)から取得してください。
@@ -21,7 +29,7 @@ Windows / x64用の開発中のSKK風IMEです。検証用ZIPに導入・更新�
   初期モデルはzenz-v3.2-smallの `ggml-model-Q5_K_M.gguf`、SHA-256は
   `29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673` です。
 - PowerShell 7をZIPの検査と以下の登録手順に使います。通常のIME・GUI利用にはPythonやBuild Toolsは不要です。
-- 検証対象はWindows 11のx64アプリです。x86、ARM64、AppContainer等は未確認です。
+- 検証対象はWindows 11のx64アプリです。AppContainerはWindows検索・Microsoft Storeの2パッケージを対象とします。x86、ARM64、その他のAppContainerは対象外です。
 
 ZIP全体のSHA-256を提供者の値と照合し、展開後のスクリプトで元ZIPの内容を検査できます。
 自己記載したハッシュの一致は改変検出の補助であり、署名や提供者の認証の代わりにはなりません。

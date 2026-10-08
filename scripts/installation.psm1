@@ -16,11 +16,12 @@ function Assert-NskkzimePath([string]$Path) {
 }
 function Get-NskkzimeBundle([string]$Directory, [string]$Verifier) {
     $result = & $Verifier -VerifyDirectory $Directory
-    if (-not $result.Verified -or $result.FormatVersion -ne 2 -or $result.Variant -cne 'zenz-cpu') {
-        throw 'インストールには形式2のzenz入りパッケージが必要です。'
+    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3) -or $result.Variant -cne 'zenz-cpu') {
+        throw 'インストールには形式2または3のzenz入りパッケージが必要です。'
     }
     [pscustomobject]@{ Directory = $result.Path; Version = $result.ManifestSHA256;
-        Dll = (Join-Path $result.Path 'bin/nskkzime_tsf.dll'); Paths = $result.Paths }
+        Dll = (Join-Path $result.Path 'bin/nskkzime_tsf.dll'); Paths = $result.Paths;
+        Broker = $(if ($result.FormatVersion -ge 3) { Join-Path $result.Path 'bin/nskkzime_broker.exe' } else { $null }) }
 }
 function Get-NskkzimeInstalledBundle([string]$Root, [string]$Version, [string]$Verifier) {
     if ($Version -cnotmatch '^[a-f0-9]{64}$') { throw '版IDは64桁の小文字SHA-256で指定してください。' }
@@ -98,7 +99,7 @@ function Assert-NskkzimeRegistration([scriptblock]$ReadRegistration, [string]$Ex
     }
 }
 function Set-NskkzimeRegistrationTarget([string]$Root, [string]$Target, [string[]]$Allowed,
-    [string]$Verifier, [scriptblock]$ReadRegistration, [scriptblock]$Registrar) {
+    [string]$Verifier, [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup) {
     $current = & $ReadRegistration
     $version = Get-NskkzimeManagedVersion $Root $current
     if ($version -and $version -notin $Allowed) { throw '更新記録にない版へ登録先が変更されています。' }
@@ -117,27 +118,29 @@ function Set-NskkzimeRegistrationTarget([string]$Root, [string]$Target, [string[
         if ($code -ne 0) { throw "登録に失敗しました (regsvr32 exit $code)。" }
         Assert-NskkzimeRegistration $ReadRegistration $next.Dll
     }
+    if ($SetStartup) { & $SetStartup $(if ($next) { $next.Broker } else { $null }) }
 }
 function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Verifier,
-    [scriptblock]$ReadRegistration, [scriptblock]$Registrar) {
+    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup) {
     if ($null -ne (Read-NskkzimeJournal $Root)) { throw '未完了の更新記録があります。Recoverを先に実行してください。' }
     $previous = Get-NskkzimeManagedVersion $Root (& $ReadRegistration)
     if ($previous) { $null = Get-NskkzimeInstalledBundle $Root $previous $Verifier }
     if ($Target) { $null = Get-NskkzimeInstalledBundle $Root $Target $Verifier }
     if ([string]$previous -ceq [string]$Target) {
+        if ($SetStartup) { & $SetStartup $(if ($Target) { (Get-NskkzimeInstalledBundle $Root $Target $Verifier).Broker } else { $null }) }
         return [pscustomobject]@{ Result = 'Unchanged'; Version = $Target }
     }
     Write-NskkzimeJournal $Root $previous $Target
     $allowed = @($previous, $Target) | Where-Object { $_ }
     try {
-        Set-NskkzimeRegistrationTarget $Root $Target $allowed $Verifier $ReadRegistration $Registrar
+        Set-NskkzimeRegistrationTarget $Root $Target $allowed $Verifier $ReadRegistration $Registrar $SetStartup
         [IO.File]::Delete((Join-Path $Root 'transaction.json'))
     } catch {
         $original = $_.Exception.Message
         $restored = $false
         $recoveryError = ''
         try {
-            Set-NskkzimeRegistrationTarget $Root $previous $allowed $Verifier $ReadRegistration $Registrar
+            Set-NskkzimeRegistrationTarget $Root $previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup
             [IO.File]::Delete((Join-Path $Root 'transaction.json'))
             $restored = $true
         } catch { $recoveryError = $_.Exception.Message }
@@ -147,11 +150,15 @@ function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Veri
     [pscustomobject]@{ Result = 'Changed'; Version = $Target; Previous = $previous }
 }
 function Repair-NskkzimeTransition([string]$Root, [string]$Verifier,
-    [scriptblock]$ReadRegistration, [scriptblock]$Registrar) {
+    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup) {
     $record = Read-NskkzimeJournal $Root
-    if ($null -eq $record) { return [pscustomobject]@{ Result = 'NoPendingTransaction' } }
+    if ($null -eq $record) {
+        $current = Get-NskkzimeManagedVersion $Root (& $ReadRegistration)
+        if ($SetStartup) { & $SetStartup $(if ($current) { (Get-NskkzimeInstalledBundle $Root $current $Verifier).Broker } else { $null }) }
+        return [pscustomobject]@{ Result = 'NoPendingTransaction' }
+    }
     $allowed = @($record.previous, $record.target) | Where-Object { $_ }
-    Set-NskkzimeRegistrationTarget $Root $record.previous $allowed $Verifier $ReadRegistration $Registrar
+    Set-NskkzimeRegistrationTarget $Root $record.previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup
     [IO.File]::Delete((Join-Path $Root 'transaction.json'))
     [pscustomobject]@{ Result = 'Recovered'; Version = $record.previous }
 }

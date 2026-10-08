@@ -9,7 +9,12 @@ Import-Module (Join-Path $repository 'scripts/installation.psm1') -Force
 $fixture = Join-Path ([IO.Path]::GetFullPath($BuildDirectory)) ('install-test 日本語 space-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($fixture) | Out-Null
 $root = Join-Path $fixture 'managed'
-$state = @{ Dll = $null; Calls = [Collections.Generic.List[string]]::new(); Failures = [Collections.Generic.List[object]]::new() }
+$state = @{ Dll = $null; Startup = $null; StartupFailure = $false; Calls = [Collections.Generic.List[string]]::new(); Failures = [Collections.Generic.List[object]]::new() }
+$setStartup = {
+    param([string]$Broker)
+    $state.Startup = $Broker
+    if ($state.StartupFailure) { $state.StartupFailure = $false; throw 'startup write interrupted' }
+}.GetNewClosure()
 $readRegistration = { return $state.Dll }.GetNewClosure()
 $registrar = {
     param([string]$Dll, [bool]$Unregister)
@@ -32,8 +37,8 @@ function Expect-Failure([scriptblock]$Action, [string]$Expected) {
     try { & $Action | Out-Null } catch { $message = $_.Exception.Message }
     Assert-Install ($message.Contains($Expected)) "Expected '$Expected', got '$message'."
 }
-function Transition([string]$Target) { Invoke-NskkzimeTransition $root $Target $verifier $readRegistration $registrar }
-function Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar }
+function Transition([string]$Target) { Invoke-NskkzimeTransition $root $Target $verifier $readRegistration $registrar $setStartup }
+function Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup }
 function Fail-Next([string]$Dll, [string]$Operation, [string]$Mode) {
     $state.Failures.Add(@{ Dll = $Dll; Operation = $Operation; Mode = $Mode })
 }
@@ -52,6 +57,14 @@ try {
     $second = Join-Path $fixture 'second'
     [IO.Compression.ZipFile]::ExtractToDirectory($zip.Path, $first)
     [IO.Compression.ZipFile]::ExtractToDirectory($zip.Path, $second)
+    # Simulate an existing format-2 install: no broker, but identical trusted
+    # binary metadata. New installations must still be able to roll back to it.
+    [IO.File]::Delete((Join-Path $first 'bin/nskkzime_broker.exe'))
+    $legacyPath = Join-Path $first 'manifest.json'
+    $legacy = Get-Content -LiteralPath $legacyPath -Raw | ConvertFrom-Json
+    $legacy.format_version = 2
+    $legacy.files = @($legacy.files | Where-Object path -ne 'bin/nskkzime_broker.exe')
+    $legacy | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyPath
     $readme = Join-Path $second 'README.md'
     [IO.File]::AppendAllText($readme, "`nFixture second version.`n")
     $manifestPath = Join-Path $second 'manifest.json'
@@ -76,9 +89,16 @@ try {
     Assert-Install ((Transition $a.Version).Result -eq 'Unchanged' -and $state.Calls.Count -eq $count) 'Same version was re-registered.'
     Transition $b.Version | Out-Null
     Assert-Install ($state.Dll -eq $b.Dll) 'Update failed.'
+    Assert-Install ($state.Startup -eq $b.Broker -and $b.Broker) 'Broker startup missing after update.'
     Transition $a.Version | Out-Null
     Assert-Install ($state.Dll -eq $a.Dll) 'Explicit rollback failed.'
+    Assert-Install (-not $state.Startup) 'Rollback to legacy version retained broker startup.'
+    $state.StartupFailure = $true
+    Expect-Failure { Transition $b.Version } '変更前の登録へ復帰'
+    Assert-Install ($state.Dll -eq $a.Dll -and -not $state.Startup) 'Interrupted startup write was not rolled back.'
+    Transition $b.Version | Out-Null
     Transition $null | Out-Null
+    Assert-Install (-not $state.Startup) 'Unregister retained broker startup.'
     Assert-Install (-not $state.Dll -and (Test-Path -LiteralPath $a.Dll) -and (Test-Path -LiteralPath $b.Dll)) 'Unregister removed files or retained registration.'
     Fail-Next $a.Dll add after
     Expect-Failure { Transition $a.Version } '変更前の登録へ復帰'

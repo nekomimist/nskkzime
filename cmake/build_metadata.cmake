@@ -15,7 +15,7 @@ add_custom_target(nskkzime_build_metadata
   BYPRODUCTS "${_metadata_source}"
   VERBATIM)
 foreach(_target nskkzime_tsf nskkzime_dictionary_server nskkzime_settings nskkzime_dictionary_gui
-    nskkzime_config nskkzime_user_dictionary ime_probe nkkz-ime-server)
+    nskkzime_config nskkzime_user_dictionary ime_probe nkkz-ime-server nskkzime_broker)
   target_sources(${_target} PRIVATE "${_metadata_source}")
   target_compile_definitions(${_target} PRIVATE "NSKKZIME_BINARY_NAME=\"$<TARGET_FILE_NAME:${_target}>\"")
   add_dependencies(${_target} nskkzime_build_metadata)

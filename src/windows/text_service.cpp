@@ -1,6 +1,7 @@
 #include "module.h"
 #include "nskkzime/engine.h"
 #include "runtime_dictionary.h"
+#include "container_runtime.h"
 #include "learning_client.h"
 #include <initguid.h>
 #include <inputscope.h>
@@ -24,17 +25,10 @@ namespace nskkzime::windows {
 namespace {
 using Microsoft::WRL::ComPtr;
 
-HRESULT desktop_activation_allowed() noexcept {
-    // Immersive TSF also occurs in full-trust XAML desktop hosts. Do not infer
-    // AppContainer from that flag or try desktop file/IPC access in a container.
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return HRESULT_FROM_WIN32(GetLastError());
-    DWORD app_container = 0, size = 0;
-    const auto queried = GetTokenInformation(token, TokenIsAppContainer, &app_container, sizeof(app_container), &size);
-    const auto error = queried ? ERROR_SUCCESS : GetLastError();
-    CloseHandle(token);
-    if (!queried) return HRESULT_FROM_WIN32(error);
-    return app_container ? E_ACCESSDENIED : S_OK;
+HRESULT activation_identity_allowed() noexcept {
+    // Detect the real token rather than the immersive/XAML flag. Containers
+    // use only the broker path; an unreadable identity is never a desktop fallback.
+    try { (void)in_app_container(); return S_OK; } catch (...) { return E_ACCESSDENIED; }
 }
 
 // Common controls can expose their full text store through a transitory
@@ -265,17 +259,19 @@ public:
     HRESULT STDMETHODCALLTYPE ActivateEx(ITfThreadMgr* manager, TfClientId client, DWORD) override {
         if (!manager || client == TF_CLIENTID_NULL) return E_INVALIDARG;
         if (manager_) return E_UNEXPECTED;
-        const auto permission = desktop_activation_allowed();
+        const auto permission = activation_identity_allowed();
         if (FAILED(permission)) return permission;
         if (!dictionary_loaded_) {
             // Display-attribute-only COM instances never load a dictionary.
             try {
                 dictionary_ = runtime_dictionary();
-                engine_ = Engine(dictionary_, true, runtime_romaji_rules());
+                engine_ = Engine(dictionary_, true, in_app_container() ? RomajiRules::defaults() : runtime_romaji_rules());
                 engine_.set_numeric_candidate_keys(false);
-                try { candidate_settings_ = current_dictionary_configuration().settings.candidates; }
-                catch (...) { candidate_settings_ = {}; }
-                tool_commands_ = current_tool_commands();
+                if (!in_app_container()) {
+                    try { candidate_settings_ = current_dictionary_configuration().settings.candidates; }
+                    catch (...) { candidate_settings_ = {}; }
+                    tool_commands_ = current_tool_commands();
+                }
                 dictionary_loaded_ = true;
             }
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
@@ -313,7 +309,7 @@ public:
                 }
                 try {
                     if (const auto config = current_inference_config()) {
-                        inference_dummy_ = config->model.empty();
+                        inference_dummy_ = !config->container && config->model.empty();
                         inference_policy_ = config->policy;
                         allow_unknown_context_ = config->allow_unknown_context;
                         inference_ = std::make_unique<InferenceClient>(*config,[this](InferenceCompletion result) { receive_inference(std::move(result)); });
@@ -345,16 +341,22 @@ public:
         sink_cookie_ = TF_INVALID_COOKIE;
         keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL;
         eaten_keys_.reset(); engine_.reset();
+        try { if (in_app_container()) {
+            engine_ = Engine(std::make_shared<MemoryDictionary>()); dictionary_.reset();
+            dictionary_loaded_ = false; container_configured_ = container_rules_configured_ = false;
+        } } catch (...) { /* Deactivation cannot unwind through COM. */ }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override {
         if (!foreground) finish_composition();
+        else configure_container();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        configure_container();
         const auto target = editing_context(context);
         if (target.Get() != context && !editable(target.Get())) return S_OK;
         context = target.Get();
@@ -381,6 +383,7 @@ public:
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
+        configure_container();
         const ComPtr<ITfContext> origin(context);
         const auto resolved = editing_context(context);
         if (resolved.Get() != context && !editable(resolved.Get())) return S_OK;
@@ -539,6 +542,26 @@ public:
         return S_OK;
     }
 private:
+    void configure_container() noexcept {
+        try {
+            if (!in_app_container()) return;
+            const auto remote = container_configuration();
+            if (!remote || !dictionary_ || !dictionary_->ready()) return;
+            if (!container_rules_configured_ && !composition_ && engine_.preedit().empty()) {
+                const auto mode = engine_.outer_mode();
+                engine_ = Engine(dictionary_, true, remote->romaji); engine_.set_mode(mode); engine_.set_numeric_candidate_keys(false);
+                container_rules_configured_ = true;
+            }
+            if (container_configured_) return;
+            candidate_settings_ = remote->configuration.settings.candidates;
+            if (const auto config = current_inference_config()) {
+                inference_dummy_ = false; inference_policy_ = config->policy; allow_unknown_context_ = config->allow_unknown_context;
+                inference_ = std::make_unique<InferenceClient>(*config, [this](InferenceCompletion result) { receive_inference(std::move(result)); });
+                set_inference_status(this, L"推論: AppContainer補助プロセス経由でzenzを使用");
+            }
+            container_configured_ = true;
+        } catch (...) { set_inference_status(this, L"推論: AppContainer設定を適用できません"); }
+    }
     struct PendingInference {
         std::uint64_t id, revision, session, generation;
         ULONGLONG deadline;
@@ -915,6 +938,8 @@ private:
     bool ending_ = false;
     bool reading_context_ = false;
     bool dictionary_loaded_ = false;
+    bool container_configured_ = false;
+    bool container_rules_configured_ = false;
     std::unique_ptr<InferenceClient> inference_;
     bool inference_dummy_ = false;
     InferencePolicy inference_policy_;

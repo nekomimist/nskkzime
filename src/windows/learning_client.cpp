@@ -1,4 +1,5 @@
 #include "learning_client.h"
+#include "app_container.h"
 #include "learning_ipc.h"
 #include "dictionary_settings.h"
 #include <algorithm>
@@ -28,6 +29,7 @@ struct LearningDictionary::State {
     std::shared_ptr<const Dictionary> base;
     std::atomic<std::shared_ptr<const UserDictionary>> snapshot{std::make_shared<UserDictionary>()};
     std::filesystem::path file, server;
+    std::string container_generation;
     std::string client = learning_client_id();
     std::uint64_t sequence = 0;
     std::atomic<std::uint64_t> dropped{0};
@@ -52,6 +54,12 @@ struct LearningDictionary::State {
         return result;
     }
     void update_status(std::wstring value) { const std::lock_guard lock(mutex); report = std::move(value); }
+    std::string exchange(std::string_view body) {
+        if (!in_app_container()) return learning_exchange(file, body);
+        if (container_generation.empty()) throw std::runtime_error("missing container generation");
+        NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        return container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + 1500, cancel.get());
+    }
     void run() noexcept {
         try {
             std::uint64_t revision = std::numeric_limits<std::uint64_t>::max();
@@ -66,10 +74,10 @@ struct LearningDictionary::State {
                 }
                 try {
                     if (request) {
-                        const auto response = learning_exchange(file, encode_learning(*request));
+                        const auto response = exchange(encode_learning(*request));
                         if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
                     }
-                    const auto response = learning_exchange(file, snapshot_request(revision));
+                    const auto response = exchange(snapshot_request(revision));
                     std::shared_ptr<UserDictionary> next;
                     if (response.starts_with("DATA")) {
                         next = std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
@@ -87,7 +95,7 @@ struct LearningDictionary::State {
                 } catch (const std::exception&) {
                     update_status(L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）");
                     const auto now = GetTickCount64();
-                    if (now - last_launch > 5000) {
+                    if (now - last_launch > 5000 && !in_app_container()) {
                         last_launch = now;
                         try { const auto process = launch_dictionary_server(server, file); } catch (...) {}
                     }
@@ -110,9 +118,10 @@ struct LearningDictionary::State {
         work->state->run();
     }
 };
-LearningDictionary::LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server)
+LearningDictionary::LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server, std::string container_generation)
     : state_(std::make_shared<State>()) {
     if (!state_->wake.valid()) throw std::runtime_error("cannot allocate learning worker event");
+    state_->container_generation = std::move(container_generation);
     state_->base = std::move(base); state_->file = std::move(file); state_->server = std::move(server);
     auto work = std::make_unique<State::Work>(); work->state = state_; work->module = pin_module();
     if (!TrySubmitThreadpoolCallback(State::callback, work.get(), nullptr)) {

@@ -1,4 +1,6 @@
 #include "inference_client.h"
+#include "container_runtime.h"
+#include <nlohmann/json.hpp>
 #include "dictionary_settings.h"
 #include "cpu_requirements.h"
 #include <algorithm>
@@ -59,11 +61,31 @@ struct InferenceClient::State {
                 if (!job && !records.empty()) { record = std::move(records.front()); records.pop_front(); }
             }
             if (!job) {
-                if (record) { log_status = logger->write(*record); continue; }
+                if (record) {
+                    if (config.container) {
+                        try {
+                            nlohmann::json value{{"request", encode_request(record->request)},
+                                {"response", record->response ? nlohmann::json(encode_response(*record->response)) : nlohmann::json(nullptr)},
+                                {"status", static_cast<int>(record->status)}};
+                            const auto bytes = nlohmann::json::to_cbor(value);
+                            NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+                            const auto response = container_exchange("LOG1" + config.container_generation + std::string(bytes.begin(), bytes.end()),
+                                GetTickCount64() + 1000, cancel.get());
+                            const auto status = response == "OFF" ? 0 : std::stoi(response);
+                            if (status < 0 || status > static_cast<int>(InputLogStatus::Unavailable)) throw std::runtime_error("invalid log status");
+                            log_status = static_cast<InputLogStatus>(status);
+                        } catch (...) { log_status = InputLogStatus::Unavailable; }
+                    } else log_status = logger->write(*record);
+                    continue;
+                }
                 WaitForSingleObject(wake.get(), INFINITE); continue;
             }
             InferenceCompletion result; result.id = job->request.id; result.deadline = job->deadline;
             try {
+                if (config.container) {
+                    result.response = decode_response(container_exchange("INF1" + config.container_generation + encode_request(job->request), job->deadline, job->cancel.get()), job->request);
+                    result.status = InferenceStatus::Ok;
+                } else {
                 bool launched = false;
                 for (;;) {
                     try {
@@ -80,8 +102,9 @@ struct InferenceClient::State {
                         if (WaitForSingleObject(job->cancel.get(), 10) == WAIT_OBJECT_0) throw InferenceFailure(InferenceStatus::Cancelled);
                     }
                 }
+                }
             } catch (const InferenceFailure& failure) { result.status = failure.status; }
-            catch (...) { result.status = InferenceStatus::Unavailable; }
+            catch (...) { result.status = GetTickCount64() >= job->deadline ? InferenceStatus::Timeout : InferenceStatus::Unavailable; }
             { const std::lock_guard lock(mutex);
                 if (pending == job) { pending.reset(); if (!stop && WaitForSingleObject(job->cancel.get(), 0) != WAIT_OBJECT_0) completion = std::move(result); }
             }
@@ -97,8 +120,10 @@ InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : st
     if (!state_->wake.valid() || config.timeout_ms == 0 || config.timeout_ms > 10000) throw std::invalid_argument("invalid inference configuration");
     state_->config = std::move(config); owner_ = module(false);
     if (state_->config.log_input) {
-        if (state_->config.log_directory.empty()) throw std::invalid_argument("input log directory required");
-        state_->logger = std::make_unique<InputLog>(state_->config.log_directory);
+        if (!state_->config.container) {
+            if (state_->config.log_directory.empty()) throw std::invalid_argument("input log directory required");
+            state_->logger = std::make_unique<InputLog>(state_->config.log_directory);
+        }
         state_->log_status = InputLogStatus::Ready;
     }
     wchar_t name[96]{}; swprintf_s(name,L"nskkzime-inference-%lu-%p",GetCurrentThreadId(),this); class_name_ = name;
@@ -135,7 +160,7 @@ void InferenceClient::cancel() noexcept {
     state_->pending.reset(); state_->completion.reset();
 }
 void InferenceClient::record_input(const InferenceRequest& request, const InferenceResponse* response, InferenceStatus status) noexcept {
-    if (!state_->logger) return;
+    if (!state_->config.log_input) return;
     try {
         const std::lock_guard lock(state_->mutex);
         if (state_->stop || state_->log_status == InputLogStatus::Full || state_->log_status == InputLogStatus::Unavailable) return;
@@ -167,6 +192,15 @@ LRESULT CALLBACK InferenceClient::window_proc(HWND window, UINT message, WPARAM 
 }
 std::optional<InferenceConfig> current_inference_config() {
     InferenceConfig config;
+    if (in_app_container()) {
+        const auto remote = container_configuration();
+        if (!remote || !remote->configuration.settings.zenz.enabled) return {};
+        const auto& settings = remote->configuration.settings.zenz;
+        config.container = true; config.timeout_ms = settings.timeout_ms; config.policy = settings.policy;
+        config.container_generation = remote->generation;
+        config.log_input = settings.log_input; config.allow_unknown_context = settings.allow_unknown_context;
+        return config;
+    }
     if (const auto dummy = environment_value(L"NSKKZIME_INFERENCE_DUMMY")) {
         if (*dummy == L"0") return {};
         if (*dummy != L"1") throw std::invalid_argument("invalid inference override");

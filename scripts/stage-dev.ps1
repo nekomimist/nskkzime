@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory)
 $bundleRoot = [IO.Path]::GetFullPath($DestinationRoot)
-$requiredFiles = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe')
+$requiredFiles = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe', 'nskkzime_broker.exe')
 $hashes = [ordered]@{}
 foreach ($name in $requiredFiles) {
     $source = Join-Path $sourceRoot $name

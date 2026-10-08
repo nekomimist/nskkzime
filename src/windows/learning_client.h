@@ -7,7 +7,8 @@ namespace nskkzime::windows {
 // queues an event. Neither method opens a file, pipe, or process.
 class LearningDictionary final : public Dictionary {
 public:
-    LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server);
+    LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server,
+        std::string container_generation = {});
     ~LearningDictionary() override;
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
     bool registration_pending(const LearningEvent&) const override;

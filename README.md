@@ -46,6 +46,7 @@ Release成果物を開発用ZIPへまとめるには [パッケージの作成�
 | `nskkzime_config.exe` | ユーザーごとの辞書設定を保存・表示・検査 |
 | `nskkzime_settings.exe` | 辞書・ローマ字・zenz設定を編集し、検査して保存するGUI |
 | `nskkzime_dictionary_server.exe` | 候補学習の保存とプロセス間同期。IMEが必要時に自動起動 |
+| `nskkzime_broker.exe` | Windows検索・StoreのAppContainerから設定・辞書・学習・zenzを利用する補助プロセス。インストール後とサインイン時に通常権限で起動 |
 | `nkkz-ime-server.exe` | 実モデルの変換・採点。パイプ／標準入出力。テスト用の `--dummy` も備える |
 | `nskkzime_user_dictionary.exe` | 登録・学習語の一覧、削除、SKKファイルの書き出し・一括取り込み |
 | `nskkzime_dictionary_gui.exe` | 学習辞書の一覧・絞り込み・送り別の削除・SKK取り込み／書き出しを行うGUI |

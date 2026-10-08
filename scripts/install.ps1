@@ -63,7 +63,7 @@ if (-not (Test-Path -LiteralPath $root)) {
     if ($Action -ne 'Install') { throw 'インストール先がありません。' }
     $null = Get-NskkzimeBundle $PackageDirectory $verifier
     $security = [Security.AccessControl.DirectorySecurity]::new()
-    $security.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)')
+    $security.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)')
     # Apply the protected DACL at creation, with no temporarily writable root.
     [IO.FileSystemAclExtensions]::CreateDirectory($security, $root) | Out-Null
     Assert-ProtectedItem $root
@@ -92,6 +92,26 @@ try {
     }
     $status = Get-NskkzimeInstallStatus $root $readRegistration
     if ($status.Pending -and $Action -ne 'Recover') { throw '未完了の更新記録があります。Recoverを先に実行してください。' }
+    # This tree contains verified public program files only. Private dictionaries,
+    # settings, model files and IPC objects retain their existing access rules.
+    $publicAcl = Get-Acl -LiteralPath $root
+    $publicAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.SecurityIdentifier]::new('S-1-15-2-1'),
+        [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+        [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    Set-Acl -LiteralPath $root -AclObject $publicAcl
+    Assert-ProtectedItem $root
+    $previousBroker = if ($status.ManagedVersion) { (Get-NskkzimeInstalledBundle $root $status.ManagedVersion $verifier).Broker } else { $null }
+    $setStartup = {
+        param([string]$Broker)
+        if ($Broker) { Assert-ProtectedItem $Broker }
+        $run = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+        try {
+            if ($Broker) { $run.SetValue('nskkzime broker', ('"' + $Broker + '" --replace'), [Microsoft.Win32.RegistryValueKind]::String) }
+            else { $run.DeleteValue('nskkzime broker', $false) }
+        } finally { $run.Dispose() }
+    }
     $registrar = {
         param([string]$Dll, [bool]$Unregister)
         Assert-ProtectedItem $Dll
@@ -108,11 +128,31 @@ try {
     switch ($Action) {
         Install {
             $bundle = Add-NskkzimeVersion $root $PackageDirectory $verifier
-            Invoke-NskkzimeTransition $root $bundle.Version $verifier $readRegistration $registrar
+            Invoke-NskkzimeTransition $root $bundle.Version $verifier $readRegistration $registrar $setStartup
         }
-        Rollback { Invoke-NskkzimeTransition $root $Version $verifier $readRegistration $registrar }
-        Unregister { Invoke-NskkzimeTransition $root $null $verifier $readRegistration $registrar }
-        Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar }
+        Rollback { Invoke-NskkzimeTransition $root $Version $verifier $readRegistration $registrar $setStartup }
+        Unregister { Invoke-NskkzimeTransition $root $null $verifier $readRegistration $registrar $setStartup }
+        Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup }
     }
+    # Registration + startup are transactional. Live process replacement is best
+    # effort; startup also repairs it on the next sign-in. Never run the broker
+    # elevated: private data and helper processes belong to the desktop user.
+    try {
+        if ($previousBroker) {
+            $stop = [Diagnostics.ProcessStartInfo]::new($previousBroker)
+            $stop.UseShellExecute = $false; $stop.CreateNoWindow = $true; $stop.ArgumentList.Add('--stop')
+            $child = [Diagnostics.Process]::Start($stop)
+            try { $child.WaitForExit(); if ($child.ExitCode) { throw '補助プロセスを停止できません。' } } finally { $child.Dispose() }
+        }
+        $current = Get-NskkzimeManagedVersion $root (& $readRegistration)
+        $broker = if ($current) { (Get-NskkzimeInstalledBundle $root $current $verifier).Broker } else { $null }
+        if ($broker) {
+            $shell = New-Object -ComObject Shell.Application
+            $desktopHandle = 0
+            $desktop = $shell.Windows().FindWindowSW(0, 0, 8, [ref]$desktopHandle, 1)
+            if (-not $desktop) { throw '通常ユーザーのExplorerが見つかりません。' }
+            $desktop.Document.Application.ShellExecute($broker, '--replace', (Split-Path -Parent $broker), 'open', 0)
+        }
+    } catch { Write-Warning "登録は完了しましたが、補助プロセスの切り替えに失敗しました。サインアウト・サインインで反映できます。$($_.Exception.Message)" }
     Get-NskkzimeInstallStatus $root $readRegistration
 } finally { $lock.Dispose() }

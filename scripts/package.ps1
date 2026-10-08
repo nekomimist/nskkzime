@@ -79,22 +79,23 @@ function Get-MetadataIdentity($Metadata) {
     } else { throw 'マニフェストのビルド情報が一致しません。' }
     ConvertTo-Json -InputObject $ordered -Compress -Depth 4
 }
-function Get-PackageNames([bool]$WithZenz, [int]$Format = 2) {
+function Get-PackageNames([bool]$WithZenz, [int]$Format = 3) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
     if ($WithZenz) { $names += @('bin/nkkz-ime-server.exe') + $zenzLicenses }
-    if ($Format -eq 2) { $names += @('tools/install.ps1', 'tools/installation.psm1') }
+    if ($Format -ge 2) { $names += @('tools/install.ps1', 'tools/installation.psm1') }
+    if ($Format -ge 3) { $names += 'bin/nskkzime_broker.exe' }
     $names | Sort-Object -CaseSensitive
 }
 function Test-PackageContents($Contents) {
     if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
     if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
     $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
-    if ($manifest.format_version -notin @(1, 2) -or $manifest.product -cne 'nskkzime' -or
+    if ($manifest.format_version -notin @(1, 2, 3) -or $manifest.product -cne 'nskkzime' -or
         $manifest.architecture -cne 'x64' -or $manifest.configuration -cne 'Release' -or
         $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
-        ($manifest.format_version -eq 2 -and $manifest.variant -cne 'zenz-cpu')) {
+        ($manifest.format_version -ge 2 -and $manifest.variant -cne 'zenz-cpu')) {
         throw '未対応のパッケージ形式です。'
     }
     $names = @(Get-PackageNames ($manifest.variant -ceq 'zenz-cpu') $manifest.format_version)
@@ -226,11 +227,12 @@ if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Build Tools 2022が見つかり�
 $toolset = (Get-Content -LiteralPath (Join-Path $vs 'VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt') -Raw).Trim()
 $dumpbin = Join-Path $vs "VC/Tools/MSVC/$toolset/bin/Hostx64/x64/dumpbin.exe"
 $systemLibraries = @('kernel32.dll', 'user32.dll', 'gdi32.dll', 'advapi32.dll', 'ole32.dll', 'oleaut32.dll',
-    'shell32.dll', 'bcrypt.dll', 'comctl32.dll', 'uuid.dll', 'imm32.dll', 'msctf.dll', 'shlwapi.dll')
+    'shell32.dll', 'bcrypt.dll', 'comctl32.dll', 'uuid.dll', 'imm32.dll', 'msctf.dll', 'shlwapi.dll', 'userenv.dll')
 $runtimeLibraries = @('msvcp140.dll', 'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $sources = [ordered]@{}
 foreach ($name in $binaries) { $sources['bin/' + $name] = Join-Path $source $name }
 $sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe'
+$sources['bin/nskkzime_broker.exe'] = Join-Path $source 'nskkzime_broker.exe'
 $sources['README.md'] = Join-Path $repository 'docs/PACKAGE_README.md'
 $sources['tools/package.ps1'] = $PSCommandPath
 $sources['tools/install.ps1'] = Join-Path $PSScriptRoot 'install.ps1'
@@ -283,7 +285,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できませ�
 $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
-    format_version = 2; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
+    format_version = 3; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $buildMetadata.source_revision
