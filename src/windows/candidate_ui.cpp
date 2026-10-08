@@ -226,9 +226,18 @@ void CandidateList::render() noexcept {
             cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = class_name_.c_str();
             cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
             if (!RegisterClassW(&cls)) { trace(L"class-failed", GetLastError()); class_name_.clear(); return; }
+            // Keep the TSF-provided owner. Walking to GA_ROOT can cross from
+            // an AppContainer's CoreWindow into the desktop shell's frame.
+            if (IsDebuggerPresent()) {
+                DWORD owner_process = 0, root_process = 0;
+                const auto root = owner_ ? GetAncestor(owner_, GA_ROOT) : nullptr;
+                if (owner_) GetWindowThreadProcessId(owner_, &owner_process);
+                if (root) GetWindowThreadProcessId(root, &root_process);
+                trace(L"owner-context", owner_process == GetCurrentProcessId(), root_process == GetCurrentProcessId(), owner_ == root);
+            }
             window_ = CreateWindowExW(popup_ex_style,
                 class_name_.c_str(), kind_ == PopupKind::Reading ? L"nskkzime 読み" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
-                owner_ ? GetAncestor(owner_, GA_ROOT) : nullptr, nullptr, module_instance, this);
+                owner_, nullptr, module_instance, this);
             if (!window_) { trace(L"window-failed", GetLastError()); UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
         const auto dpi = owner_ ? GetDpiForWindow(owner_) : 96U;
