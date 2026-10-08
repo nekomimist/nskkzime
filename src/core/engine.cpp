@@ -318,7 +318,7 @@ Result Engine::handle_registration(Key key) {
 Result Engine::handle_input(Key key) {
     Result result; result.consumed = true;
     if (input_.stage == Stage::Selecting) input_.candidates_touched = true;
-    if (key.code == KeyCode::SelectCandidate || (input_.stage == Stage::Selecting &&
+    if (key.code == KeyCode::SelectCandidate || (numeric_candidate_keys_ && input_.stage == Stage::Selecting &&
         key.code == KeyCode::Character && key.character >= '1' && key.character <= '7')) {
         const auto index = key.code == KeyCode::SelectCandidate ? key.candidate_index :
             input_.candidate_index / candidate_page_size * candidate_page_size + static_cast<std::size_t>(key.character - '1');

@@ -272,6 +272,9 @@ public:
             try {
                 dictionary_ = runtime_dictionary();
                 engine_ = Engine(dictionary_, true, runtime_romaji_rules());
+                engine_.set_numeric_candidate_keys(false);
+                try { candidate_settings_ = current_dictionary_configuration().settings.candidates; }
+                catch (...) { candidate_settings_ = {}; }
                 tool_commands_ = current_tool_commands();
                 dictionary_loaded_ = true;
             }
@@ -649,9 +652,12 @@ private:
             }
             if (engine_.revision() != revision || composition_.Get() != current.Get()) return S_OK;
         }
+        auto visibility = candidate_visibility_;
         const auto status = apply(target, cookie, result.committed, next);
         if (SUCCEEDED(status)) {
             cancel_inference();
+            visibility.advance(key, result, next);
+            candidate_visibility_ = visibility;
             engine_ = std::move(next); applied = true;
             if (origin && composition_ && composition_context_.Get() == target) composition_origin_ = origin;
             if (result.forgetting && persistence_allowed && publish_runtime_forgetting(dictionary_, *result.forgetting))
@@ -712,7 +718,8 @@ private:
         // Common EDIT's full parent permits direct editing but does not paint
         // display attributes. Present its reading separately from document text.
         const bool show_reading = composition_origin_ && composition_origin_.Get() != composition_context_.Get();
-        candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_, show_reading);
+        candidates_.update(manager_.Get(), composition_context_.Get(), engine_, candidate_actions_, show_reading,
+            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys);
         candidates_.locate(composition_context_.Get(), composition_.Get(), cookie);
         if (engine_.forgetting() && !candidates_.presentation_available()) {
             engine_.cancel_forgetting(); candidates_.close();
@@ -730,6 +737,7 @@ private:
             range_matches(range.Get(), cookie, expected_text_) && selection_at_end(composition_context_.Get(), cookie, range.Get());
     }
     void detach_composition() noexcept {
+        candidate_visibility_.reset();
         ++composition_session_; cancel_inference();
         clear_context_preview(this);
         ++layout_generation_; layout_pending_ = false;
@@ -889,6 +897,8 @@ private:
     std::wstring expected_text_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
+    CandidateSettings candidate_settings_;
+    CandidateVisibility candidate_visibility_;
     ComPtr<InputMode> input_mode_;
     std::shared_ptr<ModeActions> mode_actions_;
     std::array<ToolCommand, 2> tool_commands_;

@@ -1,6 +1,7 @@
 #pragma once
 #include "nskkzime/dictionary.h"
 #include "nskkzime/inference_policy.h"
+#include "candidate_settings.h"
 #include <optional>
 
 namespace nskkzime::windows {
@@ -18,6 +19,7 @@ struct DictionarySettings {
     bool learning = true;
     std::filesystem::path romaji_rules; // Empty selects the built-in rules.
     ZenzSettings zenz;
+    CandidateSettings candidates;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;
@@ -36,6 +38,8 @@ DictionarySettings read_dictionary_settings(const std::filesystem::path&);
 std::string serialize_dictionary_settings(const DictionarySettings&);
 void save_dictionary_settings(const std::filesystem::path&, const DictionarySettings&);
 void validate_zenz_settings(const ZenzSettings&, bool check_files = false);
+void validate_candidate_settings(const CandidateSettings&);
+std::wstring candidate_settings_status(const CandidateSettings&);
 std::wstring zenz_settings_status(const ZenzSettings&);
 // Explicit inputs keep tests independent of the user's saved configuration.
 DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file,

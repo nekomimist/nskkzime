@@ -108,6 +108,28 @@ CLIの終了コードは正常・非致命的な行スキップが0、設定・�
 | 推論 | zenzの有効／無効、GGUFモデルとサーバー、候補採点、短い追加生成語の学習 |
 | 詳細 | 推論スレッド数、生成・採点の期限、長い読みの文字数、採点候補数とスコア差 |
 | 診断 | 既定オフの入力ログ、読み・前後本文・候補を保存するローカルフォルダー |
+| 文脈 | 入力属性が不明なアプリでの周辺本文取得の許可 |
+| 候補一覧 | 一覧を出すまでのSpace回数（1～99）、選択キー（1–7／ASDFJKL） |
+
+「候補一覧」の既定値は1回目から表示・1–7で選択で、既存の設定と動作は変わらない。
+変換開始を1回目として、その後のSpaceごとに回数を増やす。送り仮名による自動変換も1回目と数える。
+たとえば3にすると、最初の候補と次候補は本文内だけに表示し、3回目から一覧を開く。
+zenzの候補追加・並べ替えでは回数を増やさない。一度開いた一覧はxで戻っても表示し続ける。
+PgDn／PgUpは回数を待たず一覧を開く。登録欄・削除確認欄はこの設定で遅らせない。
+ASDFJKLはShiftなしの `a/s/d/f/j/k/l` で表示中の7行を選ぶ。一覧が出るまでは通常の続け打ちになり、
+ASDFJKL設定時の数字も通常の文字入力として扱う。保存後は利用するアプリを起動し直す。
+
+CLIでも設定できる。回数・選択キーの省略時はそれぞれ1・numbers。既存の辞書・推論設定を保持する。
+
+```powershell
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-candidate-show-after 3
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-candidate-keys asdfjkl
+# 従来の動作へ戻す
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-candidate-show-after 1
+.\out\build\windows-x64-zenz\Release\nskkzime_config.exe --set-candidate-keys numbers
+```
+
+保存形式は `candidate-show-after=3`、`candidate-keys=asdfjkl`。既定値の項目は保存時に省略する。
 
 「検査する」は編集内容を保存せず検査する。「保存」も同じ検査を通してから書き込む。
 辞書・ローマ字の読み込みはバックグラウンドで行い、検査中は編集を止めるが画面は閉じられる。

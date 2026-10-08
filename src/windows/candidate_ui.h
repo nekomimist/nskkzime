@@ -1,6 +1,7 @@
 #pragma once
 #include "module.h"
 #include "input_timing.h"
+#include "candidate_settings.h"
 #include "nskkzime/engine.h"
 #include <wrl/client.h>
 #include <functional>
@@ -31,9 +32,29 @@ std::optional<std::size_t> candidate_row_at(POINT, SIZE client, int padding, int
 inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
 inline constexpr GUID reading_ui_guid = {0x3eb96c26, 0x5b51, 0x4a45, {0x8c, 0x5a, 0x26, 0x29, 0x80, 0xa3, 0x19, 0x0b}};
 enum class PopupKind { Candidates, Editor, Reading };
+// Count accepted user conversion steps, independently of candidate reordering
+// and async generation. A failed host edit must not advance this state.
+class CandidateVisibility {
+public:
+    void reset() noexcept { steps_ = 0; explicit_list_ = false; }
+    void advance(Key key, const Result& result, const Engine& next) noexcept {
+        if (next.registering() || next.forgetting()) { reset(); return; }
+        if (result.conversion_started) { steps_ = 1; explicit_list_ = false; }
+        else if (next.stage() == Stage::Selecting) {
+            if (key.code == KeyCode::Space && steps_ < 99) ++steps_;
+            if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) explicit_list_ = true;
+        } else reset();
+    }
+    bool visible(const CandidateSettings& settings) const noexcept {
+        return settings.show_after == 1 || explicit_list_ || steps_ >= settings.show_after;
+    }
+private:
+    unsigned int steps_ = 0;
+    bool explicit_list_ = false;
+};
 class CandidateList final : public ITfCandidateListUIElement {
 public:
-    explicit CandidateList(PopupKind = PopupKind::Candidates, std::weak_ptr<CandidateActions> actions = {});
+    explicit CandidateList(PopupKind = PopupKind::Candidates, std::weak_ptr<CandidateActions> actions = {}, CandidateKeys = CandidateKeys::Numbers);
     ~CandidateList();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -58,6 +79,7 @@ public:
     void request_selection(std::size_t index) noexcept;
     void begin_interaction() noexcept;
     PopupKind kind() const { return kind_; }
+    CandidateKeys keys() const { return keys_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
     struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
@@ -74,6 +96,7 @@ private:
     std::vector<Row> rows_;
     std::vector<UINT> pages_;
     const PopupKind kind_;
+    const CandidateKeys keys_;
     std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
@@ -93,7 +116,8 @@ private:
 class CandidatePresenter {
 public:
     ~CandidatePresenter() { close(); }
-    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false) noexcept;
+    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false,
+        bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers) noexcept;
     void locate(ITfContext*, ITfComposition*, TfEditCookie) noexcept;
     void hide() noexcept;
     void close() noexcept;

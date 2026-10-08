@@ -27,6 +27,11 @@ std::string serialize(const DictionarySettings& settings) {
     if (settings.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
     bytes += settings.learning ? "learning=on\n" : "learning=off\n";
+    validate_candidate_settings(settings.candidates);
+    // Old/default settings retain their representation and behavior.
+    if (settings.candidates.show_after != 1)
+        bytes += "candidate-show-after=" + std::to_string(settings.candidates.show_after) + "\n";
+    if (settings.candidates.keys != CandidateKeys::Numbers) bytes += "candidate-keys=asdfjkl\n";
     if (!settings.romaji_rules.empty()) {
         validate_path(settings.romaji_rules);
         bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
@@ -142,13 +147,23 @@ std::filesystem::path dictionary_settings_path() {
     CoTaskMemFree(raw);
     return path / L"nskkzime" / L"settings.ini";
 }
+void validate_candidate_settings(const CandidateSettings& settings) {
+    if (settings.show_after < 1 || settings.show_after > 99)
+        throw std::invalid_argument("candidate-show-after must be 1..99");
+    if (settings.keys != CandidateKeys::Numbers && settings.keys != CandidateKeys::Asdfjkl)
+        throw std::invalid_argument("candidate-keys must equal numbers or asdfjkl");
+}
+std::wstring candidate_settings_status(const CandidateSettings& settings) {
+    return L"候補一覧: " + std::to_wstring(settings.show_after) + L"回目から / 選択キー: " +
+        std::wstring(candidate_labels(settings.keys));
+}
 DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     if (bytes.size() > max_settings_bytes) throw std::invalid_argument("settings exceed 64 KiB");
     from_utf8(bytes); // Validate before interpreting keys or paths.
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
     DictionarySettings settings; bool version = false, learning = false, romaji = false;
-    std::set<std::string_view> inference_keys;
+    std::set<std::string_view> inference_keys, candidate_options;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -163,6 +178,17 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else if (key == "learning") {
             if (learning || (value != "on" && value != "off")) throw std::invalid_argument("learning must appear at most once and equal on or off");
             learning = true; settings.learning = value == "on";
+        } else if (key == "candidate-show-after" || key == "candidate-keys") {
+            if (!candidate_options.insert(key).second) throw std::invalid_argument("duplicate candidate setting");
+            if (key == "candidate-keys") {
+                if (value != "numbers" && value != "asdfjkl") throw std::invalid_argument("candidate-keys must equal numbers or asdfjkl");
+                settings.candidates.keys = value == "asdfjkl" ? CandidateKeys::Asdfjkl : CandidateKeys::Numbers;
+            } else {
+                unsigned int number = 0;
+                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("invalid candidate-show-after");
+                settings.candidates.show_after = number;
+            }
         } else if (key == "romaji") {
             if (romaji) throw std::invalid_argument("romaji must appear at most once");
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
@@ -210,6 +236,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else throw std::invalid_argument("unknown settings key");
     }
     if (!version) throw std::invalid_argument("settings version is missing");
+    validate_candidate_settings(settings.candidates);
     validate_zenz_settings(settings.zenz);
     return settings;
 }

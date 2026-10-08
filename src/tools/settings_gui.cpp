@@ -24,7 +24,7 @@ struct Editor {
     std::filesystem::path file;
     SettingsDocument document;
     std::vector<std::filesystem::path> dictionaries;
-    std::array<HWND, 6> pages{};
+    std::array<HWND, 7> pages{};
     HWND window = nullptr;
     bool valid = false, loading = false, dirty = false, confirming_close = false;
     std::shared_ptr<Work> work;
@@ -98,6 +98,9 @@ void reload(Editor& editor) {
         check(editor.pages[0], IDC_LEARNING, settings.learning);
         check(editor.pages[1], IDC_CUSTOM_ROMAJI, !settings.romaji_rules.empty());
         set(editor.pages[1], IDC_ROMAJI_PATH, settings.romaji_rules.native());
+        set(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, std::to_wstring(settings.candidates.show_after));
+        SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_SETCURSEL,
+            settings.candidates.keys == CandidateKeys::Asdfjkl ? 1 : 0, 0);
         const auto& zenz = settings.zenz;
         check(editor.pages[2], IDC_ZENZ, zenz.enabled);
         set(editor.pages[2], IDC_MODEL, zenz.model.native());
@@ -148,6 +151,10 @@ DictionarySettings draft(Editor& editor) {
     auto result = editor.document.settings;
     result.dictionaries = editor.dictionaries;
     result.learning = checked(editor.pages[0], IDC_LEARNING);
+    result.candidates.show_after = number<unsigned>(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, L"候補一覧のSpace回数", 1, 99);
+    const auto keys = SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_GETCURSEL, 0, 0);
+    if (keys != 0 && keys != 1) throw std::invalid_argument("候補一覧の選択キーを選んでください。");
+    result.candidates.keys = keys == 1 ? CandidateKeys::Asdfjkl : CandidateKeys::Numbers;
     result.romaji_rules = checked(editor.pages[1], IDC_CUSTOM_ROMAJI) ? get(editor.pages[1], IDC_ROMAJI_PATH) : L"";
     if (checked(editor.pages[1], IDC_CUSTOM_ROMAJI) && result.romaji_rules.empty())
         throw std::invalid_argument("ローマ字ルールのファイルを指定してください。");
@@ -325,7 +332,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SetWindowLongPtrW(window, DWLP_USER, lparam);
             set(window, IDC_FILE, L"保存先: " + editor->file.native());
             SendDlgItemMessageW(window, IDC_REPORT, EM_SETLIMITTEXT, 65535, 0);
-            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈"};
+            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈", L"候補一覧"};
             for (std::size_t i = 0; i < editor->pages.size(); ++i) {
                 TCITEMW item{};
                 item.mask = TCIF_TEXT;
@@ -336,6 +343,8 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 if (!editor->pages[i])
                     throw std::runtime_error("cannot create settings page");
             }
+            for (const auto label : {L"1–7", L"ASDFJKL"})
+                SendDlgItemMessageW(editor->pages[6], IDC_CANDIDATE_KEYS, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
             show_page(*editor);
             reload(*editor);
             return TRUE;
@@ -390,8 +399,8 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     reorder(*editor, id);
                 else if (id == IDC_DICTIONARIES && notification == LBN_SELCHANGE)
                     update_enabled(*editor);
-                else if (id >= IDC_LEARNING && id <= IDC_ALLOW_UNKNOWN_CONTEXT &&
-                         (notification == BN_CLICKED || notification == EN_CHANGE)) {
+                else if (id >= IDC_LEARNING && id <= IDC_CANDIDATE_KEYS &&
+                         (notification == BN_CLICKED || notification == EN_CHANGE || notification == CBN_SELCHANGE)) {
                     editor->dirty = true;
                     update_enabled(*editor);
                 }

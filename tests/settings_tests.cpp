@@ -55,6 +55,21 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/candidate-options-defaults-roundtrip-and-bounds", [&] {
+            const auto defaults = parse_dictionary_settings("version=1\n").candidates;
+            require(defaults.show_after == 1 && defaults.keys == CandidateKeys::Numbers, "old settings changed candidate behavior");
+            auto settings = parse_dictionary_settings("version=1\ncandidate-show-after=3\ncandidate-keys=asdfjkl\n");
+            const auto file = files.path(L"candidates.ini"); save_dictionary_settings(file, settings);
+            const auto loaded = read_dictionary_settings(file).candidates;
+            require(loaded.show_after == 3 && loaded.keys == CandidateKeys::Asdfjkl, "candidate settings lost");
+            settings.candidates = {}; save_dictionary_settings(file, settings);
+            require(read_dictionary_settings(file).candidates.show_after == 1 && read_dictionary_settings(file).candidates.keys == CandidateKeys::Numbers, "candidate defaults not restored");
+            require(parse_dictionary_settings("version=1\ncandidate-show-after=99\ncandidate-keys=numbers\n").candidates.show_after == 99, "upper bound rejected");
+            for (const auto invalid : {"candidate-show-after=0", "candidate-show-after=100", "candidate-show-after=-1", "candidate-show-after=", "candidate-show-after=3x",
+                 "candidate-show-after=2\ncandidate-show-after=3", "candidate-keys=ASDFJKL", "candidate-keys=qwerty", "candidate-keys=numbers\ncandidate-keys=asdfjkl"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+            settings.candidates.show_after = 0; rejects([&] { serialize_dictionary_settings(settings); });
+        }},
         {"settings/input-log-explicit-opt-in-and-path", [&] {
             auto settings = parse_dictionary_settings("version=1\n");
             require(!settings.zenz.log_input && settings.zenz.log_directory.empty(), "old settings enabled input log");

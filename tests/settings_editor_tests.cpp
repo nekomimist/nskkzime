@@ -52,11 +52,13 @@ int wmain(int argc, wchar_t** argv) {
              settings.dictionaries = {dictionary};
              settings.learning = false;
              settings.romaji_rules = romaji;
+             settings.candidates = {5, CandidateKeys::Asdfjkl};
              check(check_settings_draft(settings).valid, "valid configuration rejected");
              save_settings_document(document, settings);
              const auto loaded = open_settings_document(path);
              check(loaded.original == document.original && loaded.settings.dictionaries == settings.dictionaries &&
-                       !loaded.settings.learning && loaded.settings.romaji_rules == romaji,
+                       !loaded.settings.learning && loaded.settings.romaji_rules == romaji &&
+                       loaded.settings.candidates.show_after == 5 && loaded.settings.candidates.keys == CandidateKeys::Asdfjkl,
                    "saved configuration changed");
          }},
         {"all-inference-options-survive-disabled-save",

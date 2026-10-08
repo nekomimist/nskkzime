@@ -80,6 +80,8 @@ public:
     explicit Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled = true,
         std::shared_ptr<const RomajiRules> rules = RomajiRules::defaults());
     bool would_handle(Key key) const;
+    // GUI hosts can map visible rows to SelectCandidate themselves.
+    void set_numeric_candidate_keys(bool enabled) { numeric_candidate_keys_ = enabled; }
     Result handle(Key key);
     void reset(); // Clear composition, retain input mode.
     void set_mode(Mode mode); // Host has ended its composition; discard input and select an explicit mode.
@@ -152,6 +154,7 @@ private:
     struct Forget { std::optional<LearningEvent> target; std::u32string answer; };
     std::optional<Forget> forget_;
     bool registration_enabled_ = true, registration_limit_ = false;
+    bool numeric_candidate_keys_ = true;
     std::uint64_t revision_ = 0;
 };
 } // namespace nskkzime

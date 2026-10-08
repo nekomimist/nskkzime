@@ -3,6 +3,8 @@
 #include "candidate_ui.h"
 #include "learning_ipc.h"
 #include "tsf_test_host.h"
+#include "dictionary_settings.h"
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 
@@ -52,6 +54,62 @@ template<class F> void until(F predicate) {
     const auto end = GetTickCount64() + 7000;
     do { try { if (predicate()) return; } catch (...) {} Sleep(25); } while (GetTickCount64() < end);
     throw std::runtime_error("click learning did not reach the helper");
+}
+void candidate_settings_tests(const std::filesystem::path& root) {
+    const auto dictionary = root / L"candidate-settings.skk", config = root / L"candidate-settings.ini";
+    { std::ofstream file(dictionary, std::ios::binary);
+      file << "こうほ /候補一/候補二/候補三/候補四/候補五/候補六/候補七/候補八/候補九/\nかk /書/描/掻/\n"; }
+    DictionarySettings settings{{dictionary}, false}; settings.candidates = {3, CandidateKeys::Asdfjkl};
+    save_dictionary_settings(config, settings);
+    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", nullptr);
+    SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
+    SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0");
+    {
+        Session s; s.type("Kouho"); s.key(VK_SPACE);
+        check(!s.host->ui && s.context->doc->text == L"候補一", "first conversion showed delayed list");
+        for (int i = 0; i < 4; ++i) { BOOL eaten = FALSE; s.keys->OnTestKeyDown(s.context.Get(), VK_SPACE, 0, &eaten); check(eaten && !s.host->ui, "preflight advanced candidate display"); }
+        s.key(VK_SPACE); check(!s.host->ui && s.context->doc->text == L"候補二", "second conversion showed delayed list");
+        s.context->doc->reject_write = true;
+        BOOL eaten = TRUE; s.keys->OnKeyDown(s.context.Get(), VK_SPACE, 0, &eaten);
+        check(!eaten && !s.host->ui && s.context->doc->text == L"候補二", "failed edit advanced list count");
+        s.context->doc->reject_write = false; s.key(VK_SPACE);
+        check(s.host->ui && s.context->doc->text == L"候補三" && s.snapshot()->keys() == CandidateKeys::Asdfjkl, "third conversion did not show letter list");
+        s.type("x"); check(s.host->ui && s.context->doc->text == L"候補二", "previous candidate hid opened list");
+        s.type("a"); check(s.context->doc->text == L"候補一" && !s.host->ui && s.context->composition->ended, "A row was not selected");
+        s.type("Kouho"); s.key(VK_SPACE); check(!s.host->ui, "new conversion inherited list count");
+        s.type("desu"); check(s.context->doc->text == L"候補一候補一です", "hidden letter shortcuts intercepted continuation");
+    }
+    {
+        Session s; s.type("Kouho"); s.key(VK_SPACE); s.key(VK_SPACE); s.key(VK_SPACE); s.type("1");
+        check(s.context->doc->text == L"候補三1" && !s.host->ui, "letter mode still selected with digits");
+    }
+    {
+        Session s; s.type("Kouho"); s.key(VK_SPACE); s.key(VK_NEXT);
+        check(s.host->ui && s.context->doc->text == L"候補八", "PageDown did not reveal delayed list");
+        s.type("l"); check(s.context->doc->text == L"候補八" && !s.context->composition->ended, "missing last-page letter committed or leaked");
+        s.type("s"); check(s.context->doc->text == L"候補九" && s.context->composition->ended, "letter selection ignored page offset");
+    }
+    {
+        Session s; s.type("KaKu"); check(!s.host->ui && s.context->doc->text == L"書く", "automatic okuri displayed early");
+        s.key(VK_SPACE); check(!s.host->ui, "okuri second conversion displayed early"); s.key(VK_SPACE);
+        check(s.host->ui && s.context->doc->text == L"掻く", "okuri count did not include automatic conversion");
+        s.type("s"); check(s.context->doc->text == L"描く", "letter shortcut lost okuri");
+    }
+    {
+        Session s; s.type("Kouho"); s.key(VK_SPACE); s.key(VK_SPACE); s.key(VK_SPACE); s.key(VK_ESCAPE); s.key(VK_SPACE);
+        check(!s.host->ui && s.context->doc->text == L"候補一", "cancel did not reset list delay");
+        s.key(VK_RETURN); check(!s.host->ui && s.context->composition->ended, "hidden candidate could not commit with Enter");
+    }
+    settings.candidates.keys = CandidateKeys::Numbers; save_dictionary_settings(config, settings);
+    {
+        Session s; s.type("Kouho"); s.key(VK_SPACE); s.type("2");
+        check(s.context->doc->text == L"候補一2", "hidden number selected an invisible row");
+    }
+    settings.candidates = {}; save_dictionary_settings(config, settings);
+    {
+        Session s; s.type("Kouho"); s.key(VK_SPACE); check(s.host->ui != nullptr, "default stopped showing first list");
+        s.type("2"); check(s.context->doc->text == L"候補二", "default numeric shortcut changed");
+    }
 }
 }
 int wmain(int argc, wchar_t** argv) {
@@ -132,13 +190,14 @@ int wmain(int argc, wchar_t** argv) {
             until([&] { return read_user_dictionary(file).revision() == 1; });
             check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"感じ", "wrong click learned");
         }
+        candidate_settings_tests(root);
         check(module_objects == 0, "click sessions or UI retained the service");
         std::cout << "PASS deferred clicks, stale requests, retries, private scopes, registration draft, persistence and lifetime\n";
         result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
     Sleep(12000); // Drain the worker and let the helper release these owned test files.
-    for (const auto& path : {file, std::filesystem::path(file.native() + L".lock")}) {
+    for (const auto& path : {file, std::filesystem::path(file.native() + L".lock"), root / L"candidate-settings.skk", root / L"candidate-settings.ini"}) {
         std::error_code ignored; std::filesystem::remove(path, ignored);
     }
     std::error_code ignored; std::filesystem::remove(root, ignored);

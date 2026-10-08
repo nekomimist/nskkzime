@@ -90,6 +90,19 @@ BEGIN
     LTEXT "変更を保存した後、IMEを使うアプリを起動し直してください。", -1, 5, 163, 378, 13
 END
 
+IDD_CANDIDATES DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    LTEXT "候補一覧を表示するまでのSpace回数（1～99）(&N)", -1, 5, 8, 278, 12
+    EDITTEXT IDC_CANDIDATE_SHOW_AFTER, 294, 5, 84, 15, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT "1は最初から表示します。変換開始を1回目として数えます。\n送り仮名による自動変換も1回目とし、その後のSpaceで回数が増えます。", -1, 5, 29, 378, 29
+    LTEXT "一覧の選択キー(&K)", -1, 5, 72, 150, 12
+    COMBOBOX IDC_CANDIDATE_KEYS, 162, 68, 216, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "ASDFJKLはShiftを押さずに選択します。一覧が出る前は通常の続け打ちです。\nSpace／xで次／前の候補、Enterで確定できます。\nPgDn／PgUpは一覧を表示して、7件ずつ移動します。", -1, 5, 103, 378, 43
+    LTEXT "保存後は、IMEを使うアプリを終了して起動し直してください。", -1, 5, 163, 378, 13
+END
+
 IDD_DIAGNOSTICS DIALOGEX 0, 0, 388, 187
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Yu Gothic UI"

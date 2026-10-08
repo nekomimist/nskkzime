@@ -94,6 +94,18 @@ int wmain(int argc,wchar_t** argv) {
         }
         empty=true;{Session s;s.start("Arigatougozaimasu");s.complete();check(s.context->doc->text==L"前元一後","empty long result lost dictionary");}empty=false;
         {Session s;const auto before=count.load();s.context->input_scope=IS_PRIVATE;s.start();s.wait();check(count==before&&s.context->doc->text==L"前回答後","private field scored");}
+        // Async scoring/generation changes the candidate, not the user's list counter.
+        settings.candidates = {3, CandidateKeys::Asdfjkl}; save_dictionary_settings(config, settings);
+        {Session s; s.start(); check(!s.host->ui, "delayed list appeared before score"); s.complete();
+         check(!s.host->ui && s.context->doc->text == L"前解答後", "score forced list display");
+         s.key(VK_SPACE); check(!s.host->ui, "score incremented list count"); s.key(VK_SPACE);
+         check(s.host->ui && s.context->doc->text == L"前解凍後", "third conversion after score missing");
+         s.type("a"); check(s.context->doc->text == L"前解答後" && !s.host->ui, "letter shortcut ignored ranked order");}
+        {Session s; s.start("Mikan"); s.complete();
+         check(!s.host->ui && s.context->doc->text == L"前蜜柑後", "dictionary-miss generation forced list display");
+         s.key(VK_SPACE); check(!s.host->ui, "generated candidate advanced delay unexpectedly");
+         s.key(VK_PRIOR); check(s.host->ui != nullptr, "explicit page did not reveal generated candidates");}
+        settings.candidates = {}; save_dictionary_settings(config, settings);
         // Logging is opt-in per client, even when the inference server is shared.
         std::filesystem::create_directory(log_directory);
         settings.zenz.log_input = true; settings.zenz.log_directory = log_directory; save_dictionary_settings(config, settings);
