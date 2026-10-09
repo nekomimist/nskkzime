@@ -15,6 +15,7 @@ struct InferenceConfig {
     DWORD timeout_ms = 1000;
     std::filesystem::path model; // Empty: dummy backend, otherwise zenz.
     unsigned int threads = 4;
+    DWORD idle_ms = 10000; // Server lifetime without requests; saved zenz settings use a longer default.
     InferencePolicy policy;
     bool log_input = false;
     std::filesystem::path log_directory;
@@ -38,8 +39,8 @@ public:
     InferenceClient(const InferenceClient&) = delete;
     InferenceClient& operator=(const InferenceClient&) = delete;
     ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0); // Zero uses the generation timeout.
-    // Blocks the input thread for at most wait_ms. Never launches a server: an
-    // unavailable or slow server yields nullopt and the caller falls back to submit().
+    // Blocks the input thread for at most wait_ms, launching an absent server
+    // within that time. A slow server yields nullopt; the caller then uses submit().
     std::optional<InferenceResponse> exchange_now(const InferenceRequest&, DWORD wait_ms) const noexcept;
     void cancel() noexcept;
     void poll();

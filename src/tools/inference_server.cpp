@@ -74,7 +74,7 @@ int wmain(int argc, wchar_t** argv) {
             if (option == L"--model") model = value;
             else if (option == L"--pipe-token") { token = value; (void)inference_pipe_name(token); }
             else if (option == L"--delay-ms") delay = number(value,10000);
-            else if (option == L"--idle-ms") idle = number(value,60000);
+            else if (option == L"--idle-ms") idle = number(value,inference_max_idle_ms);
             else if (option == L"--timeout-ms") timeout = number(value,10000);
             else if (option == L"--threads") threads = number(value,64);
             else if (option == L"-n") request.count = number(value,8);

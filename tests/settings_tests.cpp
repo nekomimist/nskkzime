@@ -109,6 +109,11 @@ int main() {
             require(policy.rerank_wait_ms==InferencePolicy{}.rerank_wait_ms&&serialize_dictionary_settings(settings).find("zenz-rerank-wait-ms")==std::string::npos,"default wait was written");
             const auto waiting=parse_dictionary_settings(std::string(text)+"zenz-rerank-wait-ms=0\n"); save_dictionary_settings(file,waiting);
             require(read_dictionary_settings(file).zenz.policy.rerank_wait_ms==0,"rerank wait roundtrip");
+            require(serialize_dictionary_settings(settings).find("zenz-idle-seconds")==std::string::npos,"default idle time was written");
+            save_dictionary_settings(file,parse_dictionary_settings(std::string(text)+"zenz-idle-seconds=86400\n"));
+            require(read_dictionary_settings(file).zenz.idle_seconds==86400,"idle time roundtrip");
+            for(const auto invalid:{"zenz-idle-seconds=0","zenz-idle-seconds=86401"})
+                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
             for(const auto invalid:{"zenz-min-length=1025","zenz-rerank=yes","zenz-learn-fallback=yes","zenz-rerank-limit=1","zenz-rerank-limit=65",
                 "zenz-rerank-wait-ms=1001","zenz-rerank-wait-ms=-1","zenz-rerank-wait-ms=0\nzenz-rerank-wait-ms=0",
                 "zenz-score-timeout-ms=0","zenz-score-timeout-ms=10001","zenz-promote-threshold=nan","zenz-promote-threshold=-1",

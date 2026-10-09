@@ -46,6 +46,7 @@ std::string serialize(const DictionarySettings& settings) {
     }
     const auto& policy = settings.zenz.policy;
     if (settings.zenz.enabled || !settings.zenz.model.empty() || !settings.zenz.server.empty() || settings.zenz.threads != 4 || settings.zenz.timeout_ms != 1000 ||
+        settings.zenz.idle_seconds != ZenzSettings{}.idle_seconds ||
         policy.long_min_length != 10 || policy.rerank || policy.learn_fallback || policy.rerank_limit != 20 || policy.score_timeout_ms != 300 ||
         policy.rerank_wait_ms != InferencePolicy{}.rerank_wait_ms || policy.promote_threshold != 1.0f || policy.max_score_gap != 8.0f) {
         bytes += settings.zenz.enabled ? "inference=zenz\n" : "inference=off\n";
@@ -58,6 +59,7 @@ std::string serialize(const DictionarySettings& settings) {
             "\nzenz-max-score-gap="+std::to_string(policy.max_score_gap)+"\n";
         // Written only when changed: older IMEs still running reject unknown keys.
         if (policy.rerank_wait_ms != InferencePolicy{}.rerank_wait_ms) bytes += "zenz-rerank-wait-ms=" + std::to_string(policy.rerank_wait_ms) + "\n";
+        if (settings.zenz.idle_seconds != ZenzSettings{}.idle_seconds) bytes += "zenz-idle-seconds=" + std::to_string(settings.zenz.idle_seconds) + "\n";
     }
     for (const auto& path : settings.dictionaries) {
         validate_path(path);
@@ -98,6 +100,7 @@ void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     }
     if (settings.threads < 1 || settings.threads > 64 || settings.timeout_ms < 1 || settings.timeout_ms > 10000)
         throw std::invalid_argument("inference threads must be 1..64; timeout must be 1..10000 ms");
+    if (settings.idle_seconds < 1 || settings.idle_seconds > 86400) throw std::invalid_argument("zenz idle time must be 1..86400 seconds");
     for (const auto& path : {settings.model,settings.server}) {
         if (path.empty() && !settings.enabled) continue;
         validate_path(path);
@@ -110,7 +113,8 @@ std::wstring zenz_settings_status(const ZenzSettings& settings) {
     const auto logging = settings.log_input ? L"\r\n入力ログ: オン（読み・周辺本文・候補を保存） / 保存先: " + settings.log_directory.native() : std::wstring(L"\r\n入力ログ: オフ");
     if (!settings.enabled) return L"推論設定: オフ（入力ログも動作しません）" + context + logging;
     return L"推論設定: zenz / モデル: " + settings.model.native() + L"\r\nサーバー: " + settings.server.native() +
-        L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms"+
+        L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms" +
+        L" / サーバー待機: " + std::to_wstring(settings.idle_seconds) + L" 秒"+
         L"\r\n長い読みの生成: "+std::to_wstring(settings.policy.long_min_length)+L"文字（0は無効） / 候補採点: "+(settings.policy.rerank ? L"on" : L"off")+
         L" / 短い生成候補の学習: "+(settings.policy.learn_fallback ? L"on" : L"off") + context + logging;
 }
@@ -199,7 +203,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
         } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms" ||
             key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
-            key == "zenz-rerank-wait-ms" || key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" ||
+            key == "zenz-rerank-wait-ms" || key == "zenz-idle-seconds" || key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" ||
             key == "zenz-unknown-context") {
             if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
             if (key == "inference") {
@@ -234,6 +238,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
                 else if (key == "zenz-min-length") settings.zenz.policy.long_min_length = number;
                 else if (key == "zenz-rerank-limit") settings.zenz.policy.rerank_limit = number;
                 else if (key == "zenz-rerank-wait-ms") settings.zenz.policy.rerank_wait_ms = number;
+                else if (key == "zenz-idle-seconds") settings.zenz.idle_seconds = number;
                 else settings.zenz.policy.score_timeout_ms = number;
             }
         } else if (key == "dictionary") {

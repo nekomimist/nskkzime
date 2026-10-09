@@ -9,6 +9,8 @@ struct ZenzSettings {
     bool enabled = false;
     std::filesystem::path model, server;
     unsigned int threads = 4, timeout_ms = 1000;
+    // The server keeps the model loaded until idle this long; a restart costs a model load.
+    unsigned int idle_seconds = 1800;
     InferencePolicy policy;
     bool log_input = false;
     std::filesystem::path log_directory;

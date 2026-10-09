@@ -140,6 +140,26 @@ void ipc_tests(const std::filesystem::path& server) {
         check(inference_exchange(name,{100+i,U"接続",U"",U"",1},GetTickCount64()+1500,cancel.get()).id==100+i,"accept lost at idle-check boundary");
     }
     check(WaitForSingleObject(restarted.get(),3000)==WAIT_OBJECT_0,"restarted helper did not exit");
+    phase = "launch with legacy idle fallback";
+    {
+        // A server from an older install rejects a long --idle-ms and exits with 2.
+        const auto fresh = token(); std::vector<DWORD> launched;
+        const InferenceLauncher launch = [&](DWORD idle) {
+            launched.push_back(idle);
+            if (idle <= inference_legacy_idle_ms) return launch_dummy_server(server,fresh,0,idle);
+            auto command = L"\"" + server.native() + L"\" --dummy --pipe-token " + fresh + L" --idle-ms 99999999999";
+            STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION info{};
+            check(CreateProcessW(server.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&startup,&info) != 0,"cannot start legacy fixture");
+            CloseHandle(info.hThread); return NativeHandle(info.hProcess);
+        };
+        check(inference_exchange_launching(fresh,{15,U"互換",U"",U"",1},GetTickCount64()+5000,cancel.get(),launch,inference_max_idle_ms).id==15 &&
+            launched.size()==2 && launched[1]==inference_legacy_idle_ms,"legacy server was not relaunched with its idle limit");
+        NativeHandle pipe(CreateFileW(inference_pipe_name(fresh).c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,SECURITY_SQOS_PRESENT|SECURITY_ANONYMOUS,nullptr));
+        ULONG pid = 0;
+        if (pipe.valid() && GetNamedPipeServerProcessId(pipe.get(),&pid)) {
+            NativeHandle helper(OpenProcess(PROCESS_TERMINATE,FALSE,pid)); if (helper.valid()) TerminateProcess(helper.get(),0);
+        }
+    }
     } catch (const InferenceFailure& failure) {
         throw std::runtime_error(std::string(phase) + ": IPC status " + std::to_string(static_cast<int>(failure.status)));
     }

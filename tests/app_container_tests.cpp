@@ -219,9 +219,10 @@ int wmain(int argc, wchar_t** argv) {
         settings.zenz.enabled = true; settings.zenz.model = root / L"fixture.gguf";
         settings.zenz.server = std::filesystem::path(executable).parent_path() / L"nkkz-ime-server.exe";
         settings.zenz.timeout_ms = 3000; settings.zenz.policy.rerank = true; settings.zenz.policy.score_timeout_ms = 3000;
-        // The fixture scores in 30 ms: wait for it through the broker. The real
+        // The fixture scores in 5 ms: wait for it through the broker. The real
         // model may need a cold start, so that case keeps the asynchronous path.
         settings.zenz.policy.rerank_wait_ms = real_model ? 0 : 1000;
+        settings.zenz.idle_seconds = 10; // Broker-launched servers must not outlive the test for long.
         settings.zenz.log_input = true; settings.zenz.log_directory = root / L"logs";
         std::filesystem::create_directory(settings.zenz.log_directory);
         if (real_model) settings.zenz.model = argv[2];
@@ -234,7 +235,7 @@ int wmain(int argc, wchar_t** argv) {
         if (!real_model) inference = std::async(std::launch::async, [&] { return serve_inference(token, [&](const InferenceRequest& request, const auto& cancelled) {
             if (request.reading == U"ひみつ") private_seen = true;
             // Scores are waited for before display and must still fit the per-key bound; generation stays asynchronous.
-            const auto end = GetTickCount64() + (request.operation == InferenceOperation::Score ? 30 : 160);
+            const auto end = GetTickCount64() + (request.operation == InferenceOperation::Score ? 5 : 160);
             while (!cancelled() && GetTickCount64() < end) Sleep(5);
             InferenceResponse response; response.id = request.id; response.operation = request.operation;
             if (request.operation == InferenceOperation::Score) {

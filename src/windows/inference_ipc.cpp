@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <optional>
 #include <thread>
 
 namespace nskkzime::windows {
@@ -109,8 +110,22 @@ InferenceResponse inference_exchange(std::wstring_view token, const InferenceReq
     } catch (const InferenceFailure&) { throw; }
     catch (...) { throw InferenceFailure(InferenceStatus::InvalidResponse); }
 }
+InferenceResponse inference_exchange_launching(std::wstring_view token, const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel,
+    const InferenceLauncher& launch, DWORD idle_ms) {
+    std::optional<NativeHandle> process; bool legacy = false;
+    for (;;) {
+        try { return inference_exchange(token, request, deadline, cancel); }
+        catch (const InferenceFailure& failure) { if (failure.status != InferenceStatus::Unavailable || !launch) throw; }
+        (void)remaining(deadline);
+        DWORD code = 0;
+        if (!process) process.emplace(launch(idle_ms));
+        else if (!legacy && idle_ms > inference_legacy_idle_ms && WaitForSingleObject(process->get(), 0) == WAIT_OBJECT_0 &&
+            GetExitCodeProcess(process->get(), &code) && code == 2) { legacy = true; process.emplace(launch(inference_legacy_idle_ms)); }
+        if (WaitForSingleObject(cancel, (std::min)(remaining(deadline), DWORD{10})) == WAIT_OBJECT_0) throw InferenceFailure(InferenceStatus::Cancelled);
+    }
+}
 NativeHandle launch_dummy_server(const std::filesystem::path& program, std::wstring_view token, DWORD delay_ms, DWORD idle_ms) {
-    inference_pipe_name(token); need(program.is_absolute() && program.native().find(L'"') == std::wstring::npos && delay_ms <= 10000 && idle_ms <= 60000);
+    inference_pipe_name(token); need(program.is_absolute() && program.native().find(L'"') == std::wstring::npos && delay_ms <= 10000 && idle_ms <= inference_max_idle_ms);
     auto command = L"\"" + program.native() + L"\" --dummy --pipe-token " + std::wstring(token) + L" --delay-ms " + std::to_wstring(delay_ms) + L" --idle-ms " + std::to_wstring(idle_ms);
     STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION process{};
@@ -132,7 +147,7 @@ NativeHandle launch_zenz_server(const std::filesystem::path& program, const std:
     require_zenz_cpu(current_cpu_features()); // Baseline parent checks before executing the AVX2-linked child.
     inference_pipe_name(token);
     for (const auto& path : {program,model}) need(path.is_absolute() && !path.filename().empty() && path.native().find_first_of(L"\"\r\n") == std::wstring::npos);
-    need(threads >= 1 && threads <= 64 && timeout_ms >= 1 && timeout_ms <= 10000 && idle_ms >= 100 && idle_ms <= 60000);
+    need(threads >= 1 && threads <= 64 && timeout_ms >= 1 && timeout_ms <= 10000 && idle_ms >= 100 && idle_ms <= inference_max_idle_ms);
     auto command = L"\""+program.native()+L"\" --model \""+model.native()+L"\" --pipe-token "+std::wstring(token)+
         L" --threads "+std::to_wstring(threads)+L" --timeout-ms "+std::to_wstring(timeout_ms)+L" --idle-ms "+std::to_wstring(idle_ms);
     STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
@@ -141,7 +156,7 @@ NativeHandle launch_zenz_server(const std::filesystem::path& program, const std:
     CloseHandle(process.hThread); return NativeHandle(process.hProcess);
 }
 int serve_inference(std::wstring_view token, const InferenceHandler& handler, std::string_view backend, DWORD idle_ms, DWORD timeout_ms) {
-    need(idle_ms >= 100 && idle_ms <= 60000 && timeout_ms >= 1 && timeout_ms <= 15000);
+    need(idle_ms >= 100 && idle_ms <= inference_max_idle_ms && timeout_ms >= 1 && timeout_ms <= 15000);
     const auto name = inference_pipe_name(token); Descriptor descriptor;
     SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), descriptor.value, FALSE};
     NativeHandle first(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,

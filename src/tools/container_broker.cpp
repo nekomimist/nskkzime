@@ -93,24 +93,14 @@ struct Broker {
             std::jthread monitor([&](std::stop_token stopped) { while (!stopped.stop_requested()) {
                 if (cancelled()) { SetEvent(cancel.get()); return; } Sleep(5);
             }});
-            bool launched = false;
-            for (;;) {
-                if (cancelled() || GetTickCount64() >= deadline) throw std::runtime_error("cancelled inference");
-                try { return encode_response(inference_exchange(settings->token, request, deadline, cancel.get())); }
-                catch (const InferenceFailure& failure) {
-                    if (failure.status != InferenceStatus::Unavailable || launched) throw;
-                    const auto child = settings->model.empty() ? launch_dummy_server(settings->server, settings->token, settings->delay_ms) :
-                        launch_zenz_server(settings->server, settings->model, settings->token, settings->threads,
-                            (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)));
-                    launched = true;
-                    // The child initializes its pipe before loading the model.
-                    for (int i = 0; i < 100 && !cancelled() && GetTickCount64() < deadline; ++i) {
-                        try { return encode_response(inference_exchange(settings->token, request, deadline, cancel.get())); }
-                        catch (const InferenceFailure& retry) { if (retry.status != InferenceStatus::Unavailable) throw; Sleep(10); }
-                    }
-                    throw std::runtime_error("inference helper unavailable");
-                }
-            }
+            if (cancelled() || GetTickCount64() >= deadline) throw std::runtime_error("cancelled inference");
+            InferenceLauncher launch;
+            if (!settings->server.empty()) launch = [&](DWORD idle) {
+                return settings->model.empty() ? launch_dummy_server(settings->server, settings->token, settings->delay_ms, idle) :
+                    launch_zenz_server(settings->server, settings->model, settings->token, settings->threads,
+                        (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)), idle);
+            };
+            return encode_response(inference_exchange_launching(settings->token, request, deadline, cancel.get(), launch, settings->idle_ms));
         }
         if (operation == "LOG1") {
             if (!config.settings.zenz.enabled || !config.settings.zenz.log_input) return "OFF";

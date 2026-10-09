@@ -53,6 +53,16 @@ struct InferenceClient::State {
     std::deque<InputLogRecord> records;
     std::atomic<InputLogStatus> log_status{InputLogStatus::Off};
     std::atomic<unsigned> log_dropped{0};
+    // Desktop only: connect, launching the configured server while it is absent.
+    InferenceResponse exchange(const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel) const {
+        InferenceLauncher launch;
+        if (!config.server.empty()) launch = [config = config](DWORD idle) {
+            return config.model.empty() ? launch_dummy_server(config.server, config.token, config.delay_ms, idle) :
+                launch_zenz_server(config.server, config.model, config.token, config.threads,
+                    (std::max)(config.timeout_ms, static_cast<DWORD>(config.policy.score_timeout_ms)), idle);
+        };
+        return inference_exchange_launching(config.token, request, deadline, cancel, launch, config.idle_ms);
+    }
     void run() noexcept {
         for (;;) {
             std::shared_ptr<Job> job;
@@ -87,22 +97,8 @@ struct InferenceClient::State {
                     result.response = decode_response(container_exchange("INF1" + config.container_generation + encode_request(job->request), job->deadline, job->cancel.get()), job->request);
                     result.status = InferenceStatus::Ok;
                 } else {
-                bool launched = false;
-                for (;;) {
-                    try {
-                        result.response = inference_exchange(config.token, job->request, job->deadline, job->cancel.get());
-                        result.status = InferenceStatus::Ok; break;
-                    } catch (const InferenceFailure& failure) {
-                        if (failure.status != InferenceStatus::Unavailable || config.server.empty()) throw;
-                        if (GetTickCount64() >= job->deadline) throw InferenceFailure(InferenceStatus::Timeout);
-                        if (!launched) {
-                            const auto process = config.model.empty() ? launch_dummy_server(config.server,config.token,config.delay_ms) :
-                                launch_zenz_server(config.server,config.model,config.token,config.threads,(std::max)(config.timeout_ms,static_cast<DWORD>(config.policy.score_timeout_ms)));
-                            launched = true;
-                        }
-                        if (WaitForSingleObject(job->cancel.get(), 10) == WAIT_OBJECT_0) throw InferenceFailure(InferenceStatus::Cancelled);
-                    }
-                }
+                    result.response = exchange(job->request, job->deadline, job->cancel.get());
+                    result.status = InferenceStatus::Ok;
                 }
             } catch (const InferenceFailure& failure) { result.status = failure.status; }
             catch (...) { result.status = GetTickCount64() >= job->deadline ? InferenceStatus::Timeout : InferenceStatus::Unavailable; }
@@ -161,9 +157,9 @@ std::optional<InferenceResponse> InferenceClient::exchange_now(const InferenceRe
         const auto deadline = GetTickCount64() + wait_ms;
         NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!cancel.valid()) return std::nullopt;
-        if (config.container)
+        if (config.container) // The broker launches the server itself.
             return decode_response(container_exchange("INF1" + config.container_generation + encode_request(request), deadline, cancel.get()), request);
-        return inference_exchange(config.token, request, deadline, cancel.get());
+        return state_->exchange(request, deadline, cancel.get());
     } catch (...) { return std::nullopt; }
 }
 void InferenceClient::cancel() noexcept {
@@ -233,6 +229,7 @@ std::optional<InferenceConfig> inference_config(const RuntimeConfiguration& runt
         validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
         config.server = settings.server; config.model = settings.model;
         config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
+        config.idle_ms = settings.idle_seconds * 1000;
         config.policy = settings.policy;
         config.log_input = settings.log_input; config.log_directory = settings.log_directory;
         config.allow_unknown_context = settings.allow_unknown_context;

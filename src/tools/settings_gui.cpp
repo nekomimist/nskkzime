@@ -111,6 +111,7 @@ void reload(Editor& editor) {
         const auto advanced = editor.pages[3];
         set(advanced, IDC_THREADS, std::to_wstring(zenz.threads));
         set(advanced, IDC_TIMEOUT, std::to_wstring(zenz.timeout_ms));
+        set(advanced, IDC_IDLE_SECONDS, std::to_wstring(zenz.idle_seconds));
         set(advanced, IDC_MIN_LENGTH, std::to_wstring(zenz.policy.long_min_length));
         set(advanced, IDC_RERANK_LIMIT, std::to_wstring(zenz.policy.rerank_limit));
         set(advanced, IDC_SCORE_TIMEOUT, std::to_wstring(zenz.policy.score_timeout_ms));
@@ -169,6 +170,7 @@ DictionarySettings draft(Editor& editor) {
     const auto page = editor.pages[3];
     zenz.threads = number<unsigned>(page, IDC_THREADS, L"スレッド数", 1, 64);
     zenz.timeout_ms = number<unsigned>(page, IDC_TIMEOUT, L"生成の期限", 1, 10000);
+    zenz.idle_seconds = number<unsigned>(page, IDC_IDLE_SECONDS, L"サーバーの待機秒数", 1, 86400);
     zenz.policy.long_min_length = number<unsigned>(page, IDC_MIN_LENGTH, L"文字数", 0, 1024);
     zenz.policy.rerank_limit = number<unsigned>(page, IDC_RERANK_LIMIT, L"候補数", 2, 64);
     zenz.policy.score_timeout_ms = number<unsigned>(page, IDC_SCORE_TIMEOUT, L"採点の期限", 1, 10000);

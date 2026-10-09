@@ -48,6 +48,7 @@ int wmain(int argc,wchar_t** argv) {
     const auto file=root/L"設定.ini";
     const auto dictionary=root/L"辞書.skk";
     DictionarySettings settings; settings.learning=false; settings.zenz={true,argv[3],argv[2],4,2000};
+    settings.zenz.idle_seconds=10; // Launched servers must idle out within the test.
     save_dictionary_settings(file,settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG",file.c_str()); SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",nullptr);
     SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0"); SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",nullptr);
@@ -98,6 +99,10 @@ int wmain(int argc,wchar_t** argv) {
         {Session s(factory.Get(),L"試験問題の");s.type("Kaitou");s.key(VK_SPACE);
          check(s.context->doc->text==L"試験問題の解答","real model score was not applied before display");
          s.wait();check(s.context->doc->text==L"試験問題の解答","waited real score reordered after display");}
+        { auto process=server_process(token); check(TerminateProcess(process.get(),99)!=0,"stop server before cold wait");
+          check(WaitForSingleObject(process.get(),3000)==WAIT_OBJECT_0,"server did not stop before cold wait"); }
+        {Session s(factory.Get(),L"試験問題の");s.type("Kaitou");s.key(VK_SPACE);
+         check(s.context->doc->text==L"試験問題の解答","absent server was not launched within the wait");}
         {Session s(factory.Get(),L"");s.start("Kyouhaiitenkidesune");check(s.context->doc->text==L"旧候補","long dictionary candidate missing");
          s.complete();check(s.context->doc->text==L"今日はいい天気ですね","real long generation was not preferred");}
         auto process=server_process(token);
