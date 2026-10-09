@@ -124,7 +124,7 @@ std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration&
         const auto user_file = learning ? settings.user_file : std::filesystem::path{};
         const auto helper = learning ? settings.learning_helper : std::filesystem::path{};
         const bool learning_paths_failed = learning && settings.learning_paths_failed;
-        std::wstring key = configuration.demo ? L"demo" : configuration.environment ? L"env" : L"file";
+        std::wstring key = configuration.demo ? L"demo" : L"file";
         append_key(key,configuration.file.native());
         for (const auto& path : configuration.settings.dictionaries) append_key(key,path.native());
         append_key(key,learning ? L"learn" : L"no-learn");

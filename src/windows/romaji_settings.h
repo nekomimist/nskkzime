@@ -8,7 +8,7 @@ struct LoadedRomajiRules {
     bool failed = false;
     std::string bytes; // The exact validated file; empty selects built-in rules.
 };
-LoadedRomajiRules load_romaji_rules(const DictionaryConfiguration&, const std::optional<std::wstring>& override_path);
+LoadedRomajiRules load_romaji_rules(const DictionaryConfiguration&);
 std::shared_ptr<const RomajiRules> runtime_romaji_rules(); // Activation only, never in key handling.
 std::shared_ptr<const RomajiRules> runtime_romaji_rules(const RuntimeConfiguration&);
 std::wstring runtime_romaji_status();

@@ -35,8 +35,7 @@ void help() {
         "  --disable-input-log       Stop logging after restarting the target applications\n"
         "  --help                    Show this help\n"
         "Default: %LOCALAPPDATA%\\nskkzime\\settings.ini (UTF-8)\n"
-        "NSKKZIME_CONFIG overrides that file; NSKKZIME_DICTIONARY selects isolated dictionary settings.\n"
-        "NSKKZIME_ROMAJI overrides romaji rules (absolute path or builtin).\n"
+        "NSKKZIME_CONFIG selects another settings file (its folder also holds the user dictionary and cache).\n"
         "Restart the target applications after saving. Output is UTF-8.\n";
 }
 }
@@ -71,12 +70,11 @@ int wmain(int argc, wchar_t** argv) {
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
             const auto loaded = load_dictionaries(configuration);
-            const auto rules = load_romaji_rules(configuration,environment_value(L"NSKKZIME_ROMAJI"));
+            const auto rules = load_romaji_rules(configuration);
             show(zenz_settings_status(configuration.settings.zenz)); validate_zenz_settings(configuration.settings.zenz,true);
             show(loaded.status); show(rules.status); return loaded.failed || rules.failed ? 2 : 0;
         }
         const auto file = explicit_file ? *explicit_file : dictionary_settings_path();
-        const auto dictionary_override = environment_value(L"NSKKZIME_DICTIONARY");
         if (candidates) {
             auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
             const auto value = utf8_message(argv[index]);
@@ -122,7 +120,7 @@ int wmain(int argc, wchar_t** argv) {
             if (std::filesystem::exists(file)) proposed.settings = read_dictionary_settings(file);
             proposed.settings.romaji_rules = romaji ? std::filesystem::path(argv[index]) : std::filesystem::path{};
             if (romaji && proposed.settings.romaji_rules.empty()) throw std::invalid_argument("--set-romaji requires an absolute path");
-            const auto loaded = load_romaji_rules(proposed,{}); show(loaded.status);
+            const auto loaded = load_romaji_rules(proposed); show(loaded.status);
             if (loaded.failed) { std::cerr << "Not saved: invalid romaji rules.\n"; return 2; }
             save_dictionary_settings(file,proposed.settings);
             show(L"ローマ字設定を保存しました。利用するアプリを起動し直すと反映されます。"); return 0;
@@ -149,16 +147,13 @@ int wmain(int argc, wchar_t** argv) {
             save_dictionary_settings(file, proposed.settings);
             show(L"保存しました: " + file.native());
             show(L"利用するアプリを終了して起動し直すと反映されます。");
-            if (dictionary_override) show(L"注意: NSKKZIME_DICTIONARY が設定されているアプリでは、環境変数が優先されます。");
             return 0;
         }
         const bool missing_is_demo = !explicit_file && !environment_value(L"NSKKZIME_CONFIG");
         if (action == L"--show") {
             show(L"設定ファイル: " + file.native());
-            if (dictionary_override) show(L"優先する環境変数 NSKKZIME_DICTIONARY: " + *dictionary_override);
-            if (const auto rules_override = environment_value(L"NSKKZIME_ROMAJI")) show(L"優先する環境変数 NSKKZIME_ROMAJI: " + *rules_override);
-            const auto configuration = resolve_dictionary_configuration(file, {}, missing_is_demo);
-            if (configuration.demo) show(L"保存された設定はありません。環境変数も未設定なら内蔵テスト用辞書を使います。");
+            const auto configuration = resolve_dictionary_configuration(file, missing_is_demo);
+            if (configuration.demo) show(L"保存された設定はありません。内蔵テスト用辞書を使います。");
             else {
                 show(configuration.settings.learning ? L"学習: on" : L"学習: off");
                 show(candidate_settings_status(configuration.settings.candidates));
@@ -170,9 +165,9 @@ int wmain(int argc, wchar_t** argv) {
             }
             return 0;
         }
-        const auto configuration = resolve_dictionary_configuration(file,dictionary_override,missing_is_demo);
+        const auto configuration = resolve_dictionary_configuration(file,missing_is_demo);
         const auto loaded = load_dictionaries(configuration);
-        const auto rules = load_romaji_rules(configuration,environment_value(L"NSKKZIME_ROMAJI"));
+        const auto rules = load_romaji_rules(configuration);
         show(loaded.status); show(rules.status);
         show(zenz_settings_status(configuration.settings.zenz)); validate_zenz_settings(configuration.settings.zenz,true);
         return loaded.failed || rules.failed ? 2 : 0;

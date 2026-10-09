@@ -36,7 +36,7 @@ std::optional<PlannedInference> plan_inference(const Engine& before, const Engin
     }
     return PlannedInference{InferencePurpose::Rerank,std::move(request)};
 }
-bool apply_inference_result(Engine& engine, const PlannedInference& plan, const InferenceResponse& response, const InferencePolicy& policy, bool dummy) {
+bool apply_inference_result(Engine& engine, const PlannedInference& plan, const InferenceResponse& response, const InferencePolicy& policy) {
     validate_inference_policy(policy);
     if (response.id != plan.request.id || response.operation != plan.request.operation) return false;
     if (engine.registering() || engine.inference_reading(plan.purpose == InferencePurpose::Rerank) != plan.request.reading) return false;
@@ -60,8 +60,8 @@ bool apply_inference_result(Engine& engine, const PlannedInference& plan, const 
         const auto& word = response.candidates[i];
         if ((!response.scores.empty() && best-response.scores[i] > policy.max_score_gap) || word == plan.request.reading ||
             word == katakana(plan.request.reading) || word.find(U'\ufffd') != word.npos) continue;
-        const bool learn = !dummy && !long_reading && policy.learn_fallback && plan.request.reading.size() < 10 && word.size() < 10;
-        candidates.push_back({"generated:"+std::to_string(response.id)+":"+std::to_string(i),word,dummy ? U"ダミーIPC" : U"zenz",
+        const bool learn = !long_reading && policy.learn_fallback && plan.request.reading.size() < 10 && word.size() < 10;
+        candidates.push_back({"generated:"+std::to_string(response.id)+":"+std::to_string(i),word,U"zenz",
             long_reading ? CandidateSource::GeneratedLong : CandidateSource::GeneratedFallback,learn ? LearningPolicy::Learn : LearningPolicy::DoNotLearn});
     }
     return long_reading ? engine.prepend_generated(std::move(candidates)) : engine.append_generated(std::move(candidates));

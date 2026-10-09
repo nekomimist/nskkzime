@@ -43,7 +43,7 @@ NativeHandle server_process(std::wstring_view token) {
 int wmain(int argc,wchar_t** argv) {
     if(argc!=4)return 2;
     if(!std::filesystem::exists(argv[3]))return 77;
-    const auto raw=learning_client_id(); const std::wstring token(raw.begin(),raw.end());
+    const auto raw=learning_client_id();
     const auto root=std::filesystem::current_path()/("tsf-zenz-"+raw); std::filesystem::create_directory(root);
     const auto file=root/L"設定.ini";
     const auto dictionary=root/L"辞書.skk";
@@ -51,9 +51,7 @@ int wmain(int argc,wchar_t** argv) {
     DictionarySettings settings; settings.learning=false; settings.zenz={true,argv[3],{},4,2000};
     settings.zenz.idle_seconds=10; // Launched servers must idle out within the test.
     save_dictionary_settings(file,settings);
-    SetEnvironmentVariableW(L"NSKKZIME_CONFIG",file.c_str()); SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",nullptr);
-    SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0"); SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",nullptr);
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TOKEN",nullptr); SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TIMEOUT_MS",nullptr);
+    SetEnvironmentVariableW(L"NSKKZIME_CONFIG",file.c_str());
     BYTE keyboard[256]{}; GetKeyboardState(keyboard); CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     const auto library=LoadLibraryW(argv[1]); int result=1;
     try {
@@ -63,10 +61,8 @@ int wmain(int argc,wchar_t** argv) {
         settings.zenz.threads=2; save_dictionary_settings(file,settings);
         check(current_inference_config()->token!=config->token,"incompatible settings reused server");
         settings.zenz.threads=4; save_dictionary_settings(file,settings);
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"0"); check(!current_inference_config(),"disable override ignored");
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",nullptr);
-        // This unique test-only token owns every server launched below.
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TOKEN",token.c_str());
+        // The build directory's server and this timeout keep the endpoint apart from an installed IME.
+        const auto token=current_inference_config()->token;
         check(library!=nullptr,"DLL load");
         using Factory=HRESULT(WINAPI*)(REFCLSID,REFIID,void**);
 #pragma warning(push)
@@ -110,7 +106,6 @@ int wmain(int argc,wchar_t** argv) {
         // Broken optional model affects generation only; kana entry stays usable.
         settings.dictionaries.clear();settings.zenz.policy.rerank=false;
         settings.zenz.model=root/L"missing.gguf"; settings.zenz.timeout_ms=150; save_dictionary_settings(file,settings);
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TOKEN",nullptr);
         { Session s(factory.Get(),L""); s.start(); s.complete();
           // This fixture disables learning/registration, so fallback retains the reading.
           check(s.context->doc->text==L"かいとう"&&!s.host->ui,"missing model did not retain reading");
@@ -119,5 +114,5 @@ int wmain(int argc,wchar_t** argv) {
         std::cout<<"PASS saved zenz configuration through DLL, nonblocking launch, shared contexts, commit, stale edits, privacy, restart and fallback\n"; result=0;
     } catch(const std::exception& error) {std::cerr<<"FAIL "<<error.what()<<'\n';}
     if(library)FreeLibrary(library); CoUninitialize(); SetKeyboardState(keyboard);
-    std::error_code ignored; std::filesystem::remove(file,ignored); std::filesystem::remove(dictionary,ignored); std::filesystem::remove(root,ignored); return result;
+    std::error_code ignored; std::filesystem::remove_all(root,ignored); return result;
 }

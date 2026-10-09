@@ -15,13 +15,7 @@
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr int activate_id = 101, restore_id = 102, refresh_id = 103, mode_id = 104, preview_id = 105, timing_id = 106;
-#ifdef NSKKZIME_PROBE_ROMAJI
-constexpr auto window_title = L"nskkzime 入力検証 (ローマ字ルール・学習なし)";
-#elif defined(NSKKZIME_PROBE_DUMMY)
-constexpr auto window_title = L"nskkzime 入力検証 (ダミーIPC・隔離データ)";
-#elif defined(NSKKZIME_PROBE_DICTIONARY)
-constexpr auto window_title = L"nskkzime 入力検証 (隔離データ)";
-#elif defined(NSKKZIME_LOCAL_PROBE)
+#if defined(NSKKZIME_LOCAL_PROBE)
 constexpr auto window_title = L"nskkzime 入力検証 (ビルド版)";
 #else
 constexpr auto window_title = L"nskkzime 入力検証";
@@ -251,29 +245,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 }
 }
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-#ifdef NSKKZIME_PROBE_DICTIONARY
-    // Interactive development fixture; never load or write the user's settings/store.
-    wchar_t executable[32768]{};
-    const auto length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
-    if (!length || length == ARRAYSIZE(executable)) return 2;
-#ifdef NSKKZIME_PROBE_DUMMY
-    const auto file = std::filesystem::path(executable).parent_path() / L"probe-async-user-dictionary.nskkdb";
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"1");
-    // Leave enough time to inspect and cancel a pending request manually.
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DELAY_MS",L"8000");
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TIMEOUT_MS",L"10000");
-#else
-    const auto file = std::filesystem::path(executable).parent_path() / L"probe-user-dictionary.nskkdb";
-#endif
-    if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", NSKKZIME_PROBE_DICTIONARY) ||
-        !SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1") || !SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str())) return 2;
-#ifdef NSKKZIME_PROBE_ROMAJI
-    if (!SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",NSKKZIME_PROBE_ROMAJI) || !SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0") ||
-        !SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"0")) return 2;
-#else
-    if (!SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",L"builtin")) return 2;
-#endif
-#endif
     int argument_count = 0;
     auto** arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
     std::filesystem::path native_output;
@@ -281,12 +252,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         if (argument_count != 4) { LocalFree(arguments); return 2; }
         const auto dictionary = std::filesystem::path(arguments[2]); native_output = arguments[3];
         if (!dictionary.is_absolute() || !native_output.is_absolute()) { LocalFree(arguments); return 2; }
-        SetEnvironmentVariableW(L"NSKKZIME_CONFIG", L"Z:\\nskkzime-native-probe-no-settings.ini");
-        SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", dictionary.c_str());
-        SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0");
-        SetEnvironmentVariableW(L"NSKKZIME_ROMAJI", L"builtin");
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY", L"0");
-        SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY_CACHE", L"off");
+        // Isolated settings beside the output: only this dictionary, no learning or inference.
+        const auto config = native_output.parent_path() / L"nskkzime-native-probe-settings.ini";
+        const auto path = dictionary.u8string();
+        std::ofstream(config, std::ios::binary) << "version=1\nlearning=off\ndictionary=" << std::string(path.begin(), path.end()) << "\n";
+        SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
     }
     if (arguments) LocalFree(arguments);
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

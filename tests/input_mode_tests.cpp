@@ -3,6 +3,7 @@
 #include "tsf_mode_host.h"
 #include "learning_ipc.h"
 #include "candidate_ui.h"
+#include "isolated_settings.h"
 #include <iostream>
 #include <stdexcept>
 namespace nskkzime::windows {
@@ -75,9 +76,8 @@ struct Session {
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
     const auto root = std::filesystem::current_path() / ("tsf-mode-" + learning_client_id());
-    std::filesystem::create_directory(root); const auto file = root / L"user.nskkdb";
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", argv[1]); SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1");
-    SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str());
+    use_isolated_settings(root, "learning=on\ndictionary=" + settings_path(argv[1]) + "\n");
+    const auto file = root / L"user-dictionary.nskkdb";
     BYTE previous[256]{}; GetKeyboardState(previous); CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     int result = 1;
     try {
@@ -208,6 +208,5 @@ int wmain(int argc, wchar_t** argv) {
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
     Sleep(12000);
-    for (const auto& path : {file, std::filesystem::path(file.native() + L".lock")}) { std::error_code ignored; std::filesystem::remove(path, ignored); }
-    std::error_code ignored; std::filesystem::remove(root, ignored); return result;
+    std::error_code ignored; std::filesystem::remove_all(root, ignored); return result;
 }

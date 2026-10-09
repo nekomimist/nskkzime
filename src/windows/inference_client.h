@@ -11,9 +11,8 @@ struct ContainerConfiguration;
 struct InferenceConfig {
     std::wstring token;
     std::filesystem::path server; // Empty: connect only. Always an explicit executable path.
-    DWORD delay_ms = 150;
     DWORD timeout_ms = 1000;
-    std::filesystem::path model; // Empty: dummy backend, otherwise zenz.
+    std::filesystem::path model;
     unsigned int threads = 4;
     DWORD idle_ms = 10000; // Server lifetime without requests; saved zenz settings use a longer default.
     InferencePolicy policy;
@@ -58,7 +57,7 @@ private:
     HINSTANCE owner_ = nullptr;
     std::wstring class_name_;
 };
-// Off by default. Saved zenz settings or an explicit development dummy override.
+// Off by default; enabled by the saved zenz settings.
 std::optional<InferenceConfig> current_inference_config();
 std::optional<InferenceConfig> inference_config(const RuntimeConfiguration&);
 std::optional<InferenceConfig> inference_config(const ContainerConfiguration&);

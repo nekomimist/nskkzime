@@ -2,7 +2,6 @@
 
 namespace nskkzime::windows {
 void InferenceSession::configure(const InferenceConfig& config, InferenceClient::Callback callback) {
-    dummy = !config.container && config.model.empty();
     policy = config.policy;
     allow_unknown_context = config.allow_unknown_context;
     client = std::make_unique<InferenceClient>(config, std::move(callback));

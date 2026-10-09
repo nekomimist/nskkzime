@@ -3,6 +3,7 @@
 #include "tsf_test_host.h"
 #include "context_text.h"
 #include "module.h"
+#include "isolated_settings.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -168,7 +169,7 @@ void integration_tests() {
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", argv[1]); SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0");
+    use_isolated_settings(std::filesystem::current_path() / L"context-text-settings", "learning=off\ndictionary=" + settings_path(argv[1]) + "\n");
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); BYTE previous[256]{}; GetKeyboardState(previous);
     int result = 1;
     try { capture_tests(); integration_tests(); std::cout << "PASS bounded context, scopes, UTF-16, failures, TSF preview and lifetime\n"; result = 0; }

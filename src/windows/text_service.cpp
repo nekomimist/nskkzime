@@ -215,7 +215,7 @@ public:
                 try {
                     if (const auto config = configuration_.broker ? std::nullopt : inference_config(configuration_)) {
                         inference_state_.configure(*config, [this](InferenceCompletion result) { receive_inference(std::move(result)); });
-                        set_inference_status(this,inference_state_.dummy ? L"推論: ダミーサーバーを使用（辞書候補の枯渇時）" : L"推論: zenzを使用");
+                        set_inference_status(this,L"推論: zenzを使用");
                     }
                 } catch (const UnsupportedZenzCpu&) { set_inference_status(this,L"推論: CPU/OSがzenzの要件を満たしません。設定CLIの --check-cpu で確認できます。辞書入力を続けます"); }
                 catch (...) { set_inference_status(this,L"推論: 起動できません。辞書入力を続けます"); }
@@ -497,7 +497,7 @@ private:
                     auto next = self->engine_; bool adjusted = false;
                     const bool timed_out = GetTickCount64() >= pending.deadline || result.status == InferenceStatus::Timeout;
                     if (!timed_out && result.status == InferenceStatus::Ok) {
-                        adjusted = apply_inference_result(next,pending.plan,result.response,self->inference_state_.policy,self->inference_state_.dummy);
+                        adjusted = apply_inference_result(next,pending.plan,result.response,self->inference_state_.policy);
                     }
                     self->cancel_inference();
                     const bool fallback = pending.plan.purpose == InferencePurpose::Fallback ||
@@ -581,7 +581,7 @@ private:
         bool promoted = false, log_scored = false;
         if (plan && inference_text) {
             if (auto response = inference_state_.score_now(*plan, *inference_text)) {
-                promoted = apply_inference_result(next, *plan, *response, inference_state_.policy, inference_state_.dummy);
+                promoted = apply_inference_result(next, *plan, *response, inference_state_.policy);
                 log_scored = inference_text->permission == InputPermission::Allowed && !inference_text->contains_unknown_scope;
                 scored.emplace(std::move(plan->request), std::move(*response));
                 plan.reset(); inference_text.reset();

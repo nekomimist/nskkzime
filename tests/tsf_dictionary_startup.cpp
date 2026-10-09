@@ -1,6 +1,7 @@
 #include "module.h"
 #include "tsf_test_host.h"
 #include "dictionary_wait.h"
+#include "isolated_settings.h"
 #include <filesystem>
 #include <chrono>
 #include <fstream>
@@ -21,15 +22,14 @@ void type(ITfKeyEventSink* sink,ITfContext* context,std::string_view input) {
 }
 }
 int wmain(int argc,wchar_t** argv) {
-    if(argc!=2 && !(argc==3 && std::wstring_view(argv[2])==L"--cache"))return 2;
-    const bool cached=argc==3;
-    const auto file=std::filesystem::current_path()/(L"startup-dictionary-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L".skk");
+    if(argc!=2)return 2;
+    // The default cache lives beside the settings file; a fresh folder starts cold.
+    const auto root=std::filesystem::current_path()/(L"startup-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+    std::filesystem::create_directories(root);const auto file=root/L"dictionary.skk";
     {std::ofstream out(file,std::ios::binary);out<<";; coding: utf-8\nかんじ /漢字/\n";
      for(int i=0;i<200000;++i)out<<"entry"<<i<<" /試験;入力確認/\n";
      check(static_cast<bool>(out),"cannot write startup fixture");}
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",file.c_str());SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0");
-    const auto cache=std::filesystem::path(file.native()+L".cache");
-    if(cached)SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY_CACHE",cache.c_str());
+    use_isolated_settings(root,"learning=off\ndictionary="+settings_path(file)+"\n");
     BYTE previous[256]{};GetKeyboardState(previous);CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     HMODULE library=LoadLibraryW(argv[1]);int result=1;
     try {
@@ -61,7 +61,7 @@ int wmain(int argc,wchar_t** argv) {
             const auto before=context->doc->text;
             if(!is_ready())check(before==L"かなかんじ" && !host->ui,"loading dictionary opened registration or candidates");
             wait_for_dictionary(is_ready);
-            if(cached)check(status_contains(L"キャッシュ作成"),"cold cache was not created by the DLL");
+            check(status_contains(L"キャッシュ作成"),"cold cache was not created by the DLL");
             check(context->doc->text==before,"load completion changed composition without a key");
             if(before==L"かなかんじ")key(keys.Get(),context.Get(),VK_SPACE);
             check(context->doc->text==L"かな漢字","retry did not use loaded dictionary");
@@ -70,7 +70,7 @@ int wmain(int argc,wchar_t** argv) {
                 <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<"ms; kana/reading/retry\n";
             check(SUCCEEDED(service->Deactivate()),"deactivate");context->pump();
         }
-        if(cached) {
+        {
             ComPtr<IClassFactory> factory;check(SUCCEEDED(create(service_clsid,IID_PPV_ARGS(&factory))),"cached factory");
             ComPtr<ITfTextInputProcessorEx> service;check(SUCCEEDED(factory->CreateInstance(nullptr,IID_PPV_ARGS(&service))),"cached service");
             ComPtr<ITfKeyEventSink> keys;service.As(&keys);ComPtr<test_host::Manager> host;host.Attach(new test_host::Manager);
@@ -92,7 +92,6 @@ int wmain(int argc,wchar_t** argv) {
             ComPtr<ITfTextInputProcessorEx> service;check(SUCCEEDED(factory->CreateInstance(nullptr,IID_PPV_ARGS(&service))),"second service");
             ComPtr<test_host::Manager> host;host.Attach(new test_host::Manager);
             check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"second activate");
-            if(!cached)check(!is_ready(),"second load did not run asynchronously");
             check(SUCCEEDED(service->Deactivate()),"early deactivate");
         }
         check(unload()==S_OK,"COM teardown leaked objects");
@@ -102,13 +101,6 @@ int wmain(int argc,wchar_t** argv) {
     }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';}
     // A failed assertion can leave test-host subscriptions alive until exit.
     if(!result && library)FreeLibrary(library);
-    SetKeyboardState(previous);CoUninitialize();std::error_code ignored;std::filesystem::remove(file,ignored);
-    if(cached) {
-        for(std::filesystem::directory_iterator it(cache,ignored),end;!ignored&&it!=end;it.increment(ignored)) {
-            const auto name=it->path().filename().native();
-            if(name==L"build.lock" || (name.size()==73 && name.ends_with(L"-v1.bin")))std::filesystem::remove(it->path(),ignored);
-        }
-        std::filesystem::remove(cache,ignored);
-    }
+    SetKeyboardState(previous);CoUninitialize();std::error_code ignored;std::filesystem::remove_all(root,ignored);
     return result;
 }

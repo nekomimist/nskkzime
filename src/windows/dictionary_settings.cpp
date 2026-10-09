@@ -303,29 +303,18 @@ void write_file_atomic(const std::filesystem::path& path, std::string_view bytes
         throw std::runtime_error("cannot replace settings; previous file was kept");
     temporary.created = false;
 }
-DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file,
-    const std::optional<std::wstring>& dictionary_override, bool missing_is_demo) {
+DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file, bool missing_is_demo) {
     DictionaryConfiguration configuration; configuration.file = file;
-    if (dictionary_override) {
-        auto path = std::filesystem::path(*dictionary_override); validate_path(path);
-        configuration.settings.dictionaries.push_back(std::move(path)); configuration.environment = true;
-        configuration.settings.learning = false; // Development override is isolated unless explicitly enabled.
-    } else if (missing_is_demo && !std::filesystem::exists(file)) configuration.demo = true;
+    if (missing_is_demo && !std::filesystem::exists(file)) configuration.demo = true;
     else configuration.settings = read_dictionary_settings(file);
     return configuration;
 }
 DictionaryConfiguration current_dictionary_configuration() {
-    // An explicit dictionary works even when the saved configuration is broken.
-    const auto dictionary = environment_value(L"NSKKZIME_DICTIONARY");
-    if (dictionary) return resolve_dictionary_configuration({}, dictionary, false);
-    return resolve_dictionary_configuration(dictionary_settings_path(), {}, !environment_value(L"NSKKZIME_CONFIG").has_value());
+    // An explicitly selected file (NSKKZIME_CONFIG) must exist; the default may be absent.
+    return resolve_dictionary_configuration(dictionary_settings_path(), !environment_value(L"NSKKZIME_CONFIG").has_value());
 }
 std::optional<std::filesystem::path> dictionary_cache_path(const DictionaryConfiguration& configuration) {
-    if (const auto value = environment_value(L"NSKKZIME_DICTIONARY_CACHE")) {
-        if (*value == L"off") return {};
-        return std::filesystem::path(*value);
-    }
-    if (configuration.demo || configuration.environment || configuration.file.empty()) return {};
+    if (configuration.demo || configuration.file.empty()) return {};
     return configuration.file.parent_path() / L"dictionary-cache-v1";
 }
 LoadedDictionaries load_dictionaries(const DictionaryConfiguration& configuration, const std::optional<std::filesystem::path>& cache_root) {
@@ -335,7 +324,7 @@ LoadedDictionaries load_dictionaries(const DictionaryConfiguration& configuratio
         loaded.status = L"辞書: 内蔵テスト用（5見出し）。通常の辞書は未設定です。\r\n設定: " + configuration.file.native();
         return loaded;
     }
-    loaded.status = configuration.environment ? L"辞書設定: 環境変数 NSKKZIME_DICTIONARY（保存設定より優先）" : L"辞書設定: " + configuration.file.native();
+    loaded.status = L"辞書設定: " + configuration.file.native();
     std::vector<std::shared_ptr<const Dictionary>> dictionaries;
     std::size_t index = 0;
     for (const auto& path : configuration.settings.dictionaries) {

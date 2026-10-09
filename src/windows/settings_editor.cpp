@@ -37,7 +37,7 @@ SettingsCheck check_settings_draft(const DictionarySettings& settings) {
         DictionaryConfiguration configuration;
         configuration.settings = settings;
         const auto dictionaries = load_dictionaries(configuration);
-        const auto romaji = load_romaji_rules(configuration, {});
+        const auto romaji = load_romaji_rules(configuration);
         result.report = dictionaries.status + L"\r\n" + romaji.status + L"\r\n" + zenz_settings_status(settings.zenz) +
             L"\r\n" + candidate_settings_status(settings.candidates);
         validate_zenz_settings(settings.zenz, true);

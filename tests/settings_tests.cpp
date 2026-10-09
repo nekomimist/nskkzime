@@ -49,7 +49,6 @@ struct Environment {
 };
 }
 int main() {
-    Environment no_learning(L"NSKKZIME_LEARNING", L"0");
     Files files;
     const auto first = files.write(L"優先 = # 辞書.skk", "かな /仮名;優先/カナ/\n");
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
@@ -147,25 +146,22 @@ int main() {
             const auto file = files.path(L"romaji.ini"); DictionarySettings proposed{{first},false,rules};
             save_dictionary_settings(file,proposed); const auto loaded = read_dictionary_settings(file);
             require(loaded.romaji_rules==rules&&!loaded.learning&&loaded.dictionaries==proposed.dictionaries,"romaji roundtrip damaged settings");
-            auto config=resolve_dictionary_configuration(file,{},false);
-            const auto custom=load_romaji_rules(config,{}); require(!custom.failed&&custom.rules->find("wi")->output==U"ゐ","romaji file not loaded");
-            require(load_romaji_rules(config,L"builtin").rules->find("wi")->output==U"うぃ","builtin override ignored");
-            const auto broken=files.write(L"broken-romaji.tsv","version=1\nwi\t私的な出力\nwi\t別の値");
-            const auto failed=load_romaji_rules(config,broken.native());
+            auto config=resolve_dictionary_configuration(file,false);
+            const auto custom=load_romaji_rules(config); require(!custom.failed&&custom.rules->find("wi")->output==U"ゐ","romaji file not loaded");
+            config.settings.romaji_rules=files.write(L"broken-romaji.tsv","version=1\nwi\t私的な出力\nwi\t別の値");
+            const auto failed=load_romaji_rules(config);
             require(failed.failed&&failed.rules->find("wi")->output==U"うぃ","invalid rules did not fall back");
             require(failed.status.find(L"私的な出力")==std::wstring::npos,"diagnostic leaked output");
             for(const auto text:{"version=1\nromaji=relative.tsv","version=1\nromaji=","version=1\nromaji=C:\\a\nromaji=C:\\b"})
                 rejects([&]{parse_dictionary_settings(text);});
         }},
-        {"runtime/romaji-independent-snapshots-and-override", [&] {
+        {"runtime/romaji-independent-snapshots", [&] {
             const auto rules = files.write(L"snapshot.tsv","version=1\nwi\tゐ\n");
             const auto file = files.path(L"snapshot.ini"); save_dictionary_settings(file,{{first},false,rules});
-            Environment no_override(L"NSKKZIME_DICTIONARY",nullptr), config_env(L"NSKKZIME_CONFIG",file.c_str()), rules_env(L"NSKKZIME_ROMAJI",nullptr);
+            Environment config_env(L"NSKKZIME_CONFIG",file.c_str());
             const auto old=runtime_romaji_rules(); require(old->find("wi")->output==U"ゐ","saved romaji ignored");
             {std::ofstream output(rules,std::ios::binary|std::ios::trunc); output<<"version=1\nwi\tうぃー\n";}
             require(runtime_romaji_rules()->find("wi")->output==U"うぃー"&&old->find("wi")->output==U"ゐ","existing romaji snapshot changed");
-            Environment invalid_config(L"NSKKZIME_CONFIG",L"relative.ini"), explicit_rules(L"NSKKZIME_ROMAJI",rules.c_str());
-            require(runtime_romaji_rules()->find("wi")->output==U"うぃー","explicit rules blocked by invalid config");
         }},
         {"settings/utf8-bom-priority-and-literal-path", [&] {
             const auto config = parse_dictionary_settings("\xef\xbb\xbf# comment\r\n; another\r\n version = 1\r\n dictionary = " +
@@ -222,19 +218,13 @@ int main() {
             for (const auto& entry : std::filesystem::directory_iterator(files.root)) require(entry.path().extension() != L".tmp", "temporary file leaked");
         }},
         {"settings/default-missing-vs-explicit-missing", [&] {
-            auto config = resolve_dictionary_configuration(missing, {}, true);
+            auto config = resolve_dictionary_configuration(missing, true);
             require(config.demo && !load_dictionaries(config).dictionary->lookup({U"かんじ"}).empty(), "default demo missing");
-            rejects([&] { resolve_dictionary_configuration(missing, {}, false); });
-        }},
-        {"settings/environment-overrides-broken-settings", [&] {
-            const auto broken = files.write(L"broken.ini", "version=invalid");
-            const auto config = resolve_dictionary_configuration(broken, first.native(), false);
-            require(config.environment && config.settings.dictionaries == std::vector<std::filesystem::path>{first}, "override did not win");
-            require(!config.settings.learning, "development override unexpectedly enabled learning");
+            rejects([&] { resolve_dictionary_configuration(missing, false); });
         }},
         {"settings/explicit-empty-disables-demo", [&] {
             const auto path = files.path(L"empty.ini"); save_dictionary_settings(path, {});
-            const auto loaded = load_dictionaries(resolve_dictionary_configuration(path, {}, false));
+            const auto loaded = load_dictionaries(resolve_dictionary_configuration(path, false));
             require(!loaded.failed && loaded.dictionary->lookup({U"かんじ"}).empty(), "disabled dictionary used demo");
         }},
         {"runtime/partial-load-priority-dedup-and-diagnostics", [&] {
@@ -249,7 +239,7 @@ int main() {
         }},
         {"runtime/live-snapshot-sharing-and-file-change", [&] {
             const auto path = files.path(L"cache.ini"); save_dictionary_settings(path, {{first}});
-            Environment no_override(L"NSKKZIME_DICTIONARY", nullptr), config_env(L"NSKKZIME_CONFIG", path.c_str());
+            Environment config_env(L"NSKKZIME_CONFIG", path.c_str());
             auto initial = runtime_dictionary(); auto same = runtime_dictionary();
             wait_for_dictionary([&] { return initial->ready(); });
             require(initial == same, "snapshot not reused");
@@ -262,18 +252,11 @@ int main() {
         }},
         {"runtime/invalid-config-kana-fallback-with-status", [&] {
             const auto path = files.write(L"invalid-runtime.ini", "version=7");
-            Environment no_override(L"NSKKZIME_DICTIONARY", nullptr), config_env(L"NSKKZIME_CONFIG", path.c_str());
+            Environment config_env(L"NSKKZIME_CONFIG", path.c_str());
             const auto dictionary = runtime_dictionary();
             wait_for_dictionary([&] { return dictionary->ready(); });
             require(dictionary->lookup({U"かんじ"}).empty(), "broken configuration fell back to demo");
             require(runtime_dictionary_status().find(L"読み込めません") != std::wstring::npos, "configuration failure invisible");
-        }},
-        {"runtime/environment-bypasses-invalid-config-path", [&] {
-            Environment config_env(L"NSKKZIME_CONFIG", L"relative.ini"), override_env(L"NSKKZIME_DICTIONARY", first.c_str());
-            const auto dictionary = runtime_dictionary();
-            wait_for_dictionary([&] { return dictionary->ready(); });
-            require(dictionary->lookup({U"かな"}).size() == 2, "valid dictionary blocked by invalid config path");
-            require(runtime_dictionary_status().find(L"NSKKZIME_DICTIONARY") != std::wstring::npos, "override source invisible");
         }}
     };
     std::size_t passed = 0;

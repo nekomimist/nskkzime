@@ -3,6 +3,7 @@
 #include "display_attributes.h"
 #include "candidate_ui.h"
 #include "tsf_test_host.h"
+#include "isolated_settings.h"
 #include <wrl/client.h>
 #include <iostream>
 #include <stdexcept>
@@ -613,15 +614,12 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
 }
 }
 int wmain(int argc, wchar_t** argv) {
-    if (!SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0")) return 2;
-    if (argc < 2 || argc > 4) return 2;
-    const auto option = argc == 4 ? std::wstring_view(argv[3]) : std::wstring_view{};
-    if (!option.empty() && option != L"--expect-empty" && option != L"--config" && option != L"--config-empty") return 2;
-    const bool configured = option == L"--config" || option == L"--config-empty";
-    const bool empty = option == L"--expect-empty" || option == L"--config-empty";
-    // Test process only. Do not inherit a user's configured dictionary into fixtures.
-    if (!SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", configured ? nullptr : argc >= 3 ? argv[2] : NSKKZIME_TEST_DICTIONARY)) return 2;
-    if (configured && !SetEnvironmentVariableW(L"NSKKZIME_CONFIG", argv[2])) return 2;
+    if (argc < 2 || argc > 3 || (argc == 3 && std::wstring_view(argv[2]) != L"--empty")) return 2;
+    // --empty: an unreadable settings file must leave kana input working.
+    const bool empty = argc == 3;
+    const auto config = use_isolated_settings(std::filesystem::current_path() / (empty ? L"tsf-smoke-empty" : L"tsf-smoke"),
+        empty ? std::string{} : "learning=off\ndictionary=" + settings_path(NSKKZIME_TEST_DICTIONARY) + "\n");
+    if (empty) std::ofstream(config, std::ios::binary | std::ios::trunc) << "version=unsupported\n";
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
     const auto library = LoadLibraryW(argv[1]);
@@ -687,11 +685,10 @@ int wmain(int argc, wchar_t** argv) {
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
             attribute_tests(service.Get());
             if (empty) missing_dictionary_tests(service.Get(), keys.Get());
-            else { adapter_tests(service.Get(), keys.Get(), argc >= 3); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
+            else { adapter_tests(service.Get(), keys.Get(), true); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
             const auto status = status_text();
             check(status.find(L"まだ読み込んでいません") == status.npos, "activation failed to update status");
-            if (!empty) check(status.find(L"読み込み済み") != status.npos, "loaded dictionary invisible");
-            if (configured && !empty) check(status.find(argv[2]) != status.npos, "saved configuration source invisible");
+            if (!empty) check(status.find(L"読み込み済み") != status.npos && status.find(config.native()) != status.npos, "loaded configuration invisible");
         }
         check(can_unload() == S_OK, "COM object or subscription leaked");
         check(timing_text().find(L"TSF OnKeyDown: n=0") == std::wstring::npos, "DLL key timing did not collect callbacks");

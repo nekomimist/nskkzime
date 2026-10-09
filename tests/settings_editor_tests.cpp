@@ -164,14 +164,6 @@ int wmain(int argc, wchar_t** argv) {
              std::string text;
              std::getline(input, text);
              check(text == "version=unknown", "bad settings overwritten");
-         }},
-        {"environment-overrides-do-not-redirect-draft-validation", [&] {
-             SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", L"missing.skk");
-             SetEnvironmentVariableW(L"NSKKZIME_ROMAJI", L"missing.tsv");
-             DictionarySettings settings;
-             settings.dictionaries = {dictionary};
-             settings.romaji_rules = romaji;
-             check(check_settings_draft(settings).valid, "environment redirected editor validation");
          }}};
     for (const auto& [name, run] : cases)
         try {

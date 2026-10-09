@@ -70,12 +70,8 @@ std::string receive_frame(HANDLE pipe, ULONGLONG deadline, std::size_t maximum) 
     std::string bytes(size, '\0'); transfer(pipe, bytes.data(), bytes.size(), false, deadline); return bytes;
 }
 }
-std::filesystem::path learning_file_path() {
-    if (const auto file = environment_value(L"NSKKZIME_USER_DICTIONARY")) return checked_path(*file);
-    return checked_path(dictionary_settings_path().parent_path() / L"user-dictionary.nskkdb");
-}
+std::filesystem::path learning_file_path() { return learning_file_path(dictionary_settings_path()); }
 std::filesystem::path learning_file_path(const std::filesystem::path& settings_file) {
-    if (const auto file = environment_value(L"NSKKZIME_USER_DICTIONARY")) return checked_path(*file);
     return checked_path(settings_file.parent_path() / L"user-dictionary.nskkdb");
 }
 namespace {

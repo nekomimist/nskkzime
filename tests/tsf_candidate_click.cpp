@@ -4,6 +4,7 @@
 #include "learning_ipc.h"
 #include "tsf_test_host.h"
 #include "dictionary_settings.h"
+#include "isolated_settings.h"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -61,9 +62,7 @@ void candidate_settings_tests(const std::filesystem::path& root) {
       file << "こうほ /候補一/候補二/候補三/候補四/候補五/候補六/候補七/候補八/候補九/\nかk /書/描/掻/\n"; }
     DictionarySettings settings{{dictionary}, false}; settings.candidates = {3, CandidateKeys::Asdfjkl};
     save_dictionary_settings(config, settings);
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", nullptr);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
-    SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0");
     {
         Session s; s.type("Kouho"); s.key(VK_SPACE);
         check(!s.host->ui && s.context->doc->text == L"候補一", "first conversion showed delayed list");
@@ -115,9 +114,8 @@ void candidate_settings_tests(const std::filesystem::path& root) {
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
     const auto root = std::filesystem::current_path() / ("tsf-click-" + learning_client_id());
-    std::filesystem::create_directory(root); const auto file = root / L"user.nskkdb";
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", argv[1]);
-    SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1"); SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str());
+    use_isolated_settings(root, "learning=on\ndictionary=" + settings_path(argv[1]) + "\n");
+    const auto file = root / L"user-dictionary.nskkdb";
     BYTE previous[256]{}; GetKeyboardState(previous); CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     int result = 1;
     try {
@@ -197,9 +195,6 @@ int wmain(int argc, wchar_t** argv) {
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
     Sleep(12000); // Drain the worker and let the helper release these owned test files.
-    for (const auto& path : {file, std::filesystem::path(file.native() + L".lock"), root / L"candidate-settings.skk", root / L"candidate-settings.ini"}) {
-        std::error_code ignored; std::filesystem::remove(path, ignored);
-    }
-    std::error_code ignored; std::filesystem::remove(root, ignored);
+    std::error_code ignored; std::filesystem::remove_all(root, ignored);
     return result;
 }

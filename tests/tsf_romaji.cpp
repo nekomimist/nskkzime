@@ -35,8 +35,7 @@ int wmain(int argc,wchar_t** argv) {
     std::filesystem::create_directory(root); const auto config=root/L"settings.ini", rules=root/L"rules.tsv";
     std::filesystem::copy_file(argv[3],rules);
     {std::ofstream out(config,std::ios::binary); out<<"version=1\nlearning=off\ndictionary="<<path_text(argv[2])<<"\nromaji="<<path_text(rules)<<'\n';}
-    SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str()); SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",nullptr);
-    SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",nullptr); SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0"); SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"0");
+    SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str());
     BYTE keyboard[256]{}; GetKeyboardState(keyboard); CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     const auto library=LoadLibraryW(argv[1]); int result=1;
     try {
@@ -62,11 +61,9 @@ int wmain(int argc,wchar_t** argv) {
             const bool shown=text&&std::wstring_view(text).find(L"読み込み失敗。内蔵ルール")!=std::wstring_view::npos; SysFreeString(text); check(shown,"rule failure hidden");
             s.type("wi"); check(s.context->doc->text.ends_with(L"ゐゐ"),"another service changed active rules");
         }
-        SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",L"builtin");
-        {Session s(factory.Get()); s.type("wi"); check(s.context->doc->text==L"うぃ","builtin override");}
         std::cout<<"PASS saved romaji rules in DLL, modes, transactional edits, Space, Shift, snapshot lifetime and failure fallback\n"; result=0;
     } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';}
     if(library)FreeLibrary(library); CoUninitialize(); SetKeyboardState(keyboard);
-    std::error_code ignored; std::filesystem::remove(rules,ignored); std::filesystem::remove(config,ignored); std::filesystem::remove(root,ignored);
+    std::error_code ignored; std::filesystem::remove_all(root,ignored);
     return result;
 }

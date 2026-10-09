@@ -3,10 +3,6 @@
 #include "tool_launcher.h"
 
 namespace nskkzime::windows {
-struct InferenceOverrides {
-    std::optional<std::wstring> dummy, delay_ms, timeout_ms, token;
-    std::filesystem::path default_server;
-};
 // Owned by one activation. The dictionary may be shared, but these settings are
 // never fetched back from another activation's shared dictionary.
 struct RuntimeConfiguration {
@@ -14,10 +10,9 @@ struct RuntimeConfiguration {
     bool broker = false;
     bool configuration_failed = false;
     std::optional<std::filesystem::path> cache_root;
-    std::optional<std::wstring> romaji_override;
     bool learning = false, learning_paths_failed = false;
     std::filesystem::path user_file, learning_helper;
-    InferenceOverrides inference;
+    std::filesystem::path inference_server; // Bundled with this build, next to the dictionary helper.
     std::array<ToolCommand, 2> tools;
 };
 RuntimeConfiguration capture_runtime_configuration(); // Activation/worker only.

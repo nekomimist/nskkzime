@@ -125,11 +125,6 @@ void reload(Editor& editor) {
                                                         : L"まだ設定は保存されていません。辞書を追加して保存してくださ"
                                                           L"い。空のまま保存すると、かな入力のみになります。";
         message += L"\r\n保存後は、IMEを使うアプリを終了して起動し直してください。";
-        for (const auto name :
-             {L"NSKKZIME_DICTIONARY", L"NSKKZIME_ROMAJI", L"NSKKZIME_LEARNING", L"NSKKZIME_INFERENCE_DUMMY"})
-            if (environment_value(name))
-                message +=
-                    L"\r\n環境変数 " + std::wstring(name) + L" があるアプリでは保存設定より優先される場合があります。";
         report(editor, message);
     } catch (const std::exception& error) {
         report(editor,

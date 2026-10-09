@@ -83,11 +83,11 @@ int main() {
             check(plan_inference(before,s.after,result,policy).has_value(),"fresh conversion cannot generate");
         }},
         {"policy/fallback-learning-opt-in-short-only",[] {
-            for(const bool enabled:{false,true}) for(const bool dummy:{false,true}) {
+            for(const bool enabled:{false,true}) {
                 auto s=start("Mikan"); InferencePolicy policy; policy.learn_fallback=enabled;
                 const auto plan=*plan_inference(s.before,s.after,s.result,policy); s.after.defer_registration();
-                check(apply_inference_result(s.after,plan,{1,{U"蜜柑"},{0}},policy,dummy),"fallback failed");
-                const auto result=s.after.handle({KeyCode::Enter}); check(result.learning.has_value()==(enabled&&!dummy),"fallback learning opt-in ignored");
+                check(apply_inference_result(s.after,plan,{1,{U"蜜柑"},{0}},policy),"fallback failed");
+                const auto result=s.after.handle({KeyCode::Enter}); check(result.learning.has_value()==enabled,"fallback learning opt-in ignored");
             }
             auto s=start("Arigatougozaimasu"); InferencePolicy policy; policy.long_min_length=0; policy.learn_fallback=true;
             const auto plan=*plan_inference(s.before,s.after,s.result,policy); s.after.defer_registration();

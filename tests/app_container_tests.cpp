@@ -227,12 +227,12 @@ int wmain(int argc, wchar_t** argv) {
         std::filesystem::create_directory(settings.zenz.log_directory);
         if (real_model) settings.zenz.model = argv[2];
         save_dictionary_settings(config, settings);
-        SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str()); SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", nullptr);
-        SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", user.c_str()); SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TOKEN", token.c_str());
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY", nullptr);
+        // Children inherit this file; its broker endpoint and inference endpoint are private to the test.
+        SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
+        const auto inference_token = current_inference_config()->token;
         std::atomic<bool> private_seen = false;
         std::future<int> inference;
-        if (!real_model) inference = std::async(std::launch::async, [&] { return serve_inference(token, [&](const InferenceRequest& request, const auto& cancelled) {
+        if (!real_model) inference = std::async(std::launch::async, [&] { return serve_inference(inference_token, [&](const InferenceRequest& request, const auto& cancelled) {
             if (request.reading == U"ひみつ") private_seen = true;
             // Scores are waited for before display and must still fit the per-key bound; generation stays asynchronous.
             const auto end = GetTickCount64() + (request.operation == InferenceOperation::Score ? 5 : 160);
@@ -245,8 +245,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             else response.candidates = {U"蜜柑", U"みかん"}; return response;
         }, "fixture", 10000, 5000); });
-        const auto instance = container_sid(allowed.name); const auto stop = container_stop_event(instance);
-        SetEnvironmentVariableW(L"NSKKZIME_BROKER_TEST_INSTANCE", instance.c_str());
+        const auto instance = config_broker_instance(config); const auto stop = container_stop_event(instance);
         const auto broker = launch(container_broker_path(), L"--config \"" + config.native() + L"\" --test-package " + allowed.name);
         int result = 1;
         try {
@@ -321,7 +320,7 @@ int wmain(int argc, wchar_t** argv) {
         if (inference.valid()) inference.get();
         if (real_model) {
             // This randomly named endpoint belongs only to this fixture.
-            NativeHandle pipe(CreateFileW(inference_pipe_name(token).c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            NativeHandle pipe(CreateFileW(inference_pipe_name(inference_token).c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                 SECURITY_SQOS_PRESENT | SECURITY_ANONYMOUS, nullptr));
             ULONG pid = 0; check(pipe.valid() && GetNamedPipeServerProcessId(pipe.get(), &pid), "fixture server identity");
             NativeHandle process(OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid));

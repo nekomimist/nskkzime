@@ -33,7 +33,7 @@ std::string read(const std::filesystem::path& file) {
 int wmain(int argc, wchar_t** argv) {
     if (argc == 2 && std::wstring_view(argv[1]) == L"--open-guis") {
         // Optional native smoke check with the caller's explicitly isolated
-        // NSKKZIME_CONFIG / NSKKZIME_USER_DICTIONARY paths; not used by CTest.
+        // NSKKZIME_CONFIG; not used by CTest.
         const auto commands = current_tool_commands();
         for (const auto& command : commands) {
             const auto error = launch_tool_process(command);
@@ -57,11 +57,9 @@ int wmain(int argc, wchar_t** argv) {
         }};
         for (const auto& command : commands) std::filesystem::copy_file(self, command.executable);
         SetEnvironmentVariableW(L"NSKKZIME_CONFIG", commands[0].file.c_str());
-        SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", commands[1].file.c_str());
         const auto captured = current_tool_commands();
         SetEnvironmentVariableW(L"NSKKZIME_CONFIG", L"relative-invalid.ini");
-        SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", L"relative-invalid.nskkdb");
-        check(captured[0].file == commands[0].file && captured[1].file == commands[1].file, "captured environment paths changed");
+        check(captured[0].file == commands[0].file && captured[1].file == files.root / L"user-dictionary.nskkdb", "captured settings paths changed");
         check(captured[0].executable.parent_path() == std::filesystem::path(self).parent_path() &&
             captured[1].executable.filename() == L"nskkzime_dictionary_gui.exe", "launcher searched outside module directory");
         const auto invalid = current_tool_commands();

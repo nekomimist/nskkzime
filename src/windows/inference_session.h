@@ -18,7 +18,7 @@ struct PendingInference {
 class InferenceSession {
 public:
     std::unique_ptr<InferenceClient> client;
-    bool dummy = false, allow_unknown_context = false;
+    bool allow_unknown_context = false;
     InferencePolicy policy;
     std::optional<PendingInference> pending;
     std::uint64_t sequence = 0, generation = 0;

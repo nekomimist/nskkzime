@@ -7,13 +7,11 @@ namespace {
 std::mutex mutex;
 std::wstring status = L"ローマ字: 内蔵ルール";
 }
-LoadedRomajiRules load_romaji_rules(const DictionaryConfiguration& configuration, const std::optional<std::wstring>& override_path) {
+LoadedRomajiRules load_romaji_rules(const DictionaryConfiguration& configuration) {
     LoadedRomajiRules loaded{RomajiRules::defaults(),L"ローマ字: 内蔵ルール",false,{}};
-    if (override_path && *override_path == L"builtin") return loaded;
-    const auto path = override_path ? std::filesystem::path(*override_path) : configuration.settings.romaji_rules;
+    const auto& path = configuration.settings.romaji_rules;
     if (path.empty()) return loaded;
     loaded.status = L"ローマ字: " + path.native();
-    if (override_path) loaded.status += L"（NSKKZIME_ROMAJI）";
     try {
         if (!path.is_absolute()) throw std::invalid_argument("romaji path must be absolute");
         std::ifstream stream(path, std::ios::binary | std::ios::ate);
@@ -37,8 +35,8 @@ std::shared_ptr<const RomajiRules> runtime_romaji_rules() {
 std::shared_ptr<const RomajiRules> runtime_romaji_rules(const RuntimeConfiguration& settings) {
     const std::lock_guard lock(mutex);
     try {
-        if (settings.configuration_failed && !settings.romaji_override) throw std::runtime_error("invalid captured settings");
-        auto loaded = load_romaji_rules(settings.dictionaries, settings.romaji_override);
+        if (settings.configuration_failed) throw std::runtime_error("invalid captured settings");
+        auto loaded = load_romaji_rules(settings.dictionaries);
         status = std::move(loaded.status); return loaded.rules;
     } catch (...) {
         status = L"ローマ字設定を読み込めません。内蔵ルールで継続します。"; return RomajiRules::defaults();

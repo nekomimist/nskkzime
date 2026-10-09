@@ -212,10 +212,6 @@ std::wstring LearningDictionary::status() const {
         std::to_wstring(state_->dropped.load()) + L"件\r\nユーザー辞書: " + state_->file.native() +
         (state_->skipped.empty() ? L"" : L"\r\n学習省略: " + state_->skipped);
 }
-std::shared_ptr<const Dictionary> with_learning(std::shared_ptr<const Dictionary> base) {
-    if (const auto setting = environment_value(L"NSKKZIME_LEARNING"); setting && *setting == L"0") return base;
-    return std::make_shared<LearningDictionary>(std::move(base), learning_file_path(), helper_path());
-}
 void publish_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
     if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary.get())) learning->learn(event);
 }

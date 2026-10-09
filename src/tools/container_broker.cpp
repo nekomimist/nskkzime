@@ -96,9 +96,8 @@ struct Broker {
             if (cancelled() || GetTickCount64() >= deadline) throw std::runtime_error("cancelled inference");
             InferenceLauncher launch;
             if (!settings->server.empty()) launch = [&](DWORD idle) {
-                return settings->model.empty() ? launch_dummy_server(settings->server, settings->token, settings->delay_ms, idle) :
-                    launch_zenz_server(settings->server, settings->model, settings->token, settings->threads,
-                        (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)), idle);
+                return launch_zenz_server(settings->server, settings->model, settings->token, settings->threads,
+                    (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)), idle);
             };
             return encode_response(inference_exchange_launching(settings->token, request, deadline, cancel.get(), launch, settings->idle_ms));
         }
@@ -134,7 +133,8 @@ int wmain(int argc, wchar_t** argv) {
             else if (arg == L"--config" && i + 1 < argc) {
                 const std::filesystem::path file(argv[++i]); if (!file.is_absolute()) throw std::runtime_error("absolute configuration required");
                 SetEnvironmentVariableW(L"NSKKZIME_CONFIG", file.c_str()); explicit_config = true;
-            } else if (arg == L"--test-package" && i + 1 < argc && explicit_config) { packages = {argv[++i]}; instance = container_sid(packages.front()); }
+                instance = config_broker_instance(file); // The same endpoint that IMEs using this file connect to.
+            } else if (arg == L"--test-package" && i + 1 < argc && explicit_config) { packages = {argv[++i]}; (void)container_sid(packages.front()); }
             else throw std::runtime_error("usage: nskkzime_broker [--replace|--stop] [--config PATH [--test-package NAME]]");
         }
         try { diagnostics = std::make_unique<BrokerDiagnostics>(dictionary_settings_path().parent_path() / L"diagnostics"); }

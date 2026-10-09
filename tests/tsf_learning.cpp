@@ -3,6 +3,7 @@
 #include "learning_ipc.h"
 #include "local_storage.h"
 #include "tsf_test_host.h"
+#include "isolated_settings.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -34,15 +35,9 @@ template<class F> void until(F test) {
 int wmain(int argc, wchar_t** argv) {
     if (argc != 3) return 2;
     const auto root = std::filesystem::current_path() / ("tsf-learning-" + learning_client_id());
-    std::filesystem::create_directory(root); const auto file = root / L"user.nskkdb";
-    // Exercise the default persistent cache through a saved, isolated config.
-    const auto config = root / L"settings.ini", cache = root / L"dictionary-cache-v1";
-    const auto dictionary_path = std::filesystem::path(argv[2]).u8string();
-    write_file_atomic(config, "version=1\ndictionary=" + std::string(dictionary_path.begin(), dictionary_path.end()) + "\n");
-    SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", nullptr);
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY_CACHE", nullptr);
-    SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"1"); SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY", file.c_str());
+    // Exercise the default user dictionary and persistent cache beside an isolated config.
+    use_isolated_settings(root, "dictionary=" + settings_path(argv[2]) + "\n");
+    const auto file = root / L"user-dictionary.nskkdb";
     BYTE previous[256]{}; GetKeyboardState(previous);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const auto library = LoadLibraryW(argv[1]); int result = 1;
@@ -242,12 +237,6 @@ int wmain(int argc, wchar_t** argv) {
     if (library && !result) FreeLibrary(library); // Worker owns a separate reference until its callback returns.
     SetKeyboardState(previous); CoUninitialize();
     Sleep(12000); // Allow worker drain and helper idle exit before removing owned test files.
-    for (const auto& path : {file, std::filesystem::path(file.native() + L".lock")}) { std::error_code ignored; std::filesystem::remove(path, ignored); }
-    std::error_code ignored;
-    for (std::filesystem::directory_iterator it(cache, ignored), end; !ignored && it != end; it.increment(ignored)) {
-        const auto name = it->path().filename().native();
-        if (name == L"build.lock" || (name.size() == 73 && name.ends_with(L"-v1.bin"))) std::filesystem::remove(it->path(), ignored);
-    }
-    std::filesystem::remove(config, ignored); std::filesystem::remove(cache, ignored); std::filesystem::remove(root, ignored);
+    std::error_code ignored; std::filesystem::remove_all(root, ignored);
     return result;
 }

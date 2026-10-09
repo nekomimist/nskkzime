@@ -50,6 +50,9 @@ using ContainerObserver = std::function<void(const ContainerDiagnostic&)>;
 // Observer failures never affect transport. Called only on broker/background threads.
 void serve_container(const std::vector<std::wstring>& packages, const ContainerHandler&, HANDLE stop,
     std::wstring_view desktop_instance = {}, const ContainerObserver& = {});
+// A broker serving an explicit configuration file (NSKKZIME_CONFIG / --config)
+// uses its own desktop endpoint, so isolated runs never reach the user's broker.
+std::wstring config_broker_instance(const std::filesystem::path& config);
 NativeHandle container_stop_event(std::wstring_view instance = {});
 NativeHandle container_instance_mutex(std::wstring_view instance = {});
 } // namespace nskkzime::windows

@@ -41,18 +41,17 @@ struct Session {
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc!=2)return 2;
-    const auto id=learning_client_id();const std::wstring token(id.begin(),id.end());
+    const auto id=learning_client_id();
     const auto root=std::filesystem::current_path()/("tsf-policy-"+id);std::filesystem::create_directory(root);
-    const auto config=root/L"settings.ini", dictionary=root/L"dictionary.skk", user=root/L"user.nskkdb";
+    const auto config=root/L"settings.ini", dictionary=root/L"dictionary.skk", user=root/L"user-dictionary.nskkdb";
     const auto log_directory = root / L"input-logs";
     {std::ofstream file(dictionary,std::ios::binary);file<<"かいとう /回答;元一/解答;元二/解凍;元三/\nありがとうございます /元一;辞書/元二/\nかk /書;文章/描;絵/\n";}
     DictionarySettings settings{{dictionary},false};settings.zenz={true,root/L"fixture.gguf",argv[1],4,1500}; settings.zenz.policy.rerank=true;
     settings.zenz.policy.rerank_wait_ms=0; // Most cases below exercise the asynchronous path; the wait is tested separately.
     save_dictionary_settings(config,settings);
-    SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str());SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",nullptr);
-    SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0");SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY",user.c_str());
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",nullptr);SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TOKEN",token.c_str());
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TIMEOUT_MS",nullptr);
+    SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str());
+    // The fixture server answers on the endpoint derived from these settings; the model is never opened.
+    const auto token=current_inference_config()->token;
     std::mutex mutex;std::vector<InferenceRequest> requests;std::atomic<DWORD> delay=180;std::atomic<bool> empty=false;std::atomic<int> count=0;
     auto server=std::async(std::launch::async,[&]{return serve_inference(token,[&](const InferenceRequest& request,const std::function<bool()>& cancelled) {
         {const std::lock_guard lock(mutex);requests.push_back(request);}++count;
@@ -198,7 +197,7 @@ int wmain(int argc,wchar_t** argv) {
         {Session s(L"無効化後"); s.start(); s.complete(); s.wait(50);}
         check(log_files().size() == 1, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
-        settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"1");
+        settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"みかん"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"short fallback did not persist");}
         // Hosts without an input scope (Office etc.) are not protected fields; they learn too.
@@ -208,10 +207,5 @@ int wmain(int argc,wchar_t** argv) {
         check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy, opt-in logging and learning\n";result=0;
     } catch(const std::exception& error) {std::cerr<<"FAIL "<<error.what()<<'\n';}
     SetKeyboardState(previous);CoUninitialize();try {server.get();}catch(...) {result=1;}Sleep(11000);
-    for(const auto& path:{config,dictionary,user,std::filesystem::path(user.native()+L".lock")}) {std::error_code ignored;std::filesystem::remove(path,ignored);}
-    if (std::filesystem::exists(log_directory)) {
-        for (const auto& entry : std::filesystem::directory_iterator(log_directory)) { std::error_code ignored; std::filesystem::remove(entry.path(), ignored); }
-        std::error_code ignored; std::filesystem::remove(log_directory, ignored);
-    }
-    std::error_code ignored;std::filesystem::remove(root,ignored);return result;
+    std::error_code ignored;std::filesystem::remove_all(root,ignored);return result;
 }

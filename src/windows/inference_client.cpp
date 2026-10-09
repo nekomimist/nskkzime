@@ -57,9 +57,8 @@ struct InferenceClient::State {
     InferenceResponse exchange(const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel) const {
         InferenceLauncher launch;
         if (!config.server.empty()) launch = [config = config](DWORD idle) {
-            return config.model.empty() ? launch_dummy_server(config.server, config.token, config.delay_ms, idle) :
-                launch_zenz_server(config.server, config.model, config.token, config.threads,
-                    (std::max)(config.timeout_ms, static_cast<DWORD>(config.policy.score_timeout_ms)), idle);
+            return launch_zenz_server(config.server, config.model, config.token, config.threads,
+                (std::max)(config.timeout_ms, static_cast<DWORD>(config.policy.score_timeout_ms)), idle);
         };
         return inference_exchange_launching(config.token, request, deadline, cancel, launch, config.idle_ms);
     }
@@ -215,56 +214,25 @@ std::optional<InferenceConfig> inference_config(const ContainerConfiguration& re
     return config;
 }
 std::optional<InferenceConfig> inference_config(const RuntimeConfiguration& runtime) {
+    const auto& settings = runtime.dictionaries.settings.zenz;
+    if (!settings.enabled) return {};
+    require_zenz_cpu(current_cpu_features());
+    validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
     InferenceConfig config;
-    if (const auto& dummy = runtime.inference.dummy) {
-        if (*dummy == L"0") return {};
-        if (*dummy != L"1") throw std::invalid_argument("invalid inference override");
-        if (runtime.inference.default_server.empty()) throw std::runtime_error("cannot locate inference server");
-        config.server = runtime.inference.default_server;
-        config.policy.long_min_length = 0; // Existing dummy fixtures exercise fallback only.
-    } else {
-        const auto& settings = runtime.dictionaries.settings.zenz;
-        if (!settings.enabled) return {};
-        require_zenz_cpu(current_cpu_features());
-        validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
-        // The server bundled with this IME build, unless a development override is saved.
-        config.server = settings.server.empty() ? runtime.inference.default_server : settings.server;
-        if (config.server.empty()) throw std::runtime_error("cannot locate inference server");
-        config.model = settings.model;
-        config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
-        config.idle_ms = settings.idle_seconds * 1000;
-        config.policy = settings.policy;
-        config.log_input = settings.log_input; config.log_directory = settings.log_directory;
-        config.allow_unknown_context = settings.allow_unknown_context;
-    }
-    for (const auto& item : {std::pair{runtime.inference.delay_ms,&config.delay_ms},std::pair{runtime.inference.timeout_ms,&config.timeout_ms}})
-        if (const auto& value = item.first) {
-            if (value->empty() || !std::all_of(value->begin(),value->end(),[](auto ch) { return ch >= L'0' && ch <= L'9'; })) throw std::invalid_argument("invalid inference limit");
-            const auto parsed = std::stoul(*value); if (parsed > 10000) throw std::invalid_argument("inference limit exceeds 10000 ms"); *item.second = parsed;
-        }
-    if (!config.timeout_ms) throw std::invalid_argument("inference timeout must be positive");
-    if (const auto& token = runtime.inference.token) config.token = *token;
-    else if (!config.model.empty()) config.token = zenz_token(config);
-    else { const auto id = learning_client_id(); config.token.assign(id.begin(),id.end()); }
+    // The server bundled with this IME build, unless a development override is saved.
+    config.server = settings.server.empty() ? runtime.inference_server : settings.server;
+    if (config.server.empty()) throw std::runtime_error("cannot locate inference server");
+    config.model = settings.model;
+    config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
+    config.idle_ms = settings.idle_seconds * 1000;
+    config.policy = settings.policy;
+    config.log_input = settings.log_input; config.log_directory = settings.log_directory;
+    config.allow_unknown_context = settings.allow_unknown_context;
+    config.token = zenz_token(config);
     (void)inference_pipe_name(config.token);
     return config;
 }
-void set_inference_status(const void* owner, const wchar_t* text) noexcept {
-    status_owner = owner; status_text = text;
-    // Explicit development-only trace. Contains fixed status messages only,
-    // never a reading, document text, candidates, or model request/response.
-    try {
-        const auto path = environment_value(L"NSKKZIME_STATUS_TRACE");
-        if (!path || !std::filesystem::path(*path).is_absolute()) return;
-        NativeHandle file(CreateFileW(path->c_str(), FILE_APPEND_DATA | FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
-        LARGE_INTEGER length{};
-        if (!file.valid() || GetFileType(file.get()) != FILE_TYPE_DISK || !GetFileSizeEx(file.get(), &length) || length.QuadPart >= 65536) return;
-        const auto line = utf8_message(std::to_wstring(GetCurrentProcessId()) + L"/" + std::to_wstring(GetCurrentThreadId()) +
-            L" " + std::to_wstring(GetTickCount64()) + L" " + text + L"\n");
-        DWORD written = 0; WriteFile(file.get(), line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
-    } catch (...) { }
-}
+void set_inference_status(const void* owner, const wchar_t* text) noexcept { status_owner = owner; status_text = text; }
 void clear_inference_status(const void* owner) noexcept { if (status_owner == owner) { status_owner = nullptr; status_text = L"推論: オフ"; } }
 std::wstring inference_status() {
     return std::wstring(status_text) + L"\r\n" + (logging_client ? logging_client->input_log_status() : L"入力ログ: オフ");

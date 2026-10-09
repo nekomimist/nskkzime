@@ -3,6 +3,7 @@
 #include "tsf_test_host.h"
 #include "inference_client.h"
 #include "candidate_ui.h"
+#include "isolated_settings.h"
 #include <iostream>
 #include <stdexcept>
 namespace nskkzime::windows { HINSTANCE module_instance=nullptr; std::atomic<long> module_objects{0},server_locks{0}; }
@@ -33,15 +34,18 @@ struct Session {
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc!=3)return 2;
-    const auto raw_id=learning_client_id(); const std::wstring id(raw_id.begin(),raw_id.end());
-    const auto root=std::filesystem::current_path()/("tsf-inference-"+raw_id); std::filesystem::create_directory(root); const auto file=root/L"user.nskkdb";
-    SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",argv[2]); SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"1"); SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY",file.c_str());
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY",L"1"); SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TOKEN",id.c_str());
-    SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TIMEOUT_MS",L"1500");
+    const auto root=std::filesystem::current_path()/("tsf-inference-"+learning_client_id()); const auto file=root/L"user-dictionary.nskkdb";
+    // The dummy server answers on the endpoint derived from these settings; the model is never opened.
+    const auto settings=[&](unsigned timeout) {
+        use_isolated_settings(root,"learning=on\ndictionary="+settings_path(argv[2])+"\ninference=zenz\nzenz-model="+settings_path(root/L"fixture.gguf")+
+            "\nzenz-server="+settings_path(argv[1])+"\ninference-timeout-ms="+std::to_string(timeout)+"\nzenz-min-length=0\n");
+    };
+    settings(1500);
     BYTE previous[256]{}; GetKeyboardState(previous); CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     int result=1;
     try {
-        const auto process=launch_dummy_server(argv[1],id,250,2000); Sleep(100);
+        // The DLL would launch the real server for this endpoint, so keep the fixture alive throughout.
+        const auto process=launch_dummy_server(argv[1],current_inference_config()->token,250,60000); Sleep(100);
         { Session s; s.start(); check(!s.registration()&&s.context->doc->text==L"前みかん後","request changed reading or entered registration early");
           s.queued(); s.context->pump(); check(s.context->doc->text==L"前試験〈みかん〉後","response not applied");
           s.key(VK_RETURN); check(!s.host->ui,"commit retained UI"); }
@@ -69,14 +73,13 @@ int wmain(int argc,wchar_t** argv) {
           s.key(VK_SPACE); s.key(VK_SPACE); check(s.registration(),"generated exhaustion requested again");
           s.wait(); check(s.registration(),"late response replaced exhausted registration"); }
         { Session s; s.start(); s.queued(); s.service->Deactivate(); s.context->pump(); check(s.context->doc->text==L"前みかん後","deactivated response returned"); }
-        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_TIMEOUT_MS",L"25");
+        settings(25);
         { Session s; s.start(); s.wait(); check(s.registration()&&s.context->doc->text==L"前みかん後","timeout fallback failed"); }
         check(module_objects==0,"inference retained COM objects");
-        check(!std::filesystem::exists(file)||nskkzime::windows::read_user_dictionary(file).revision()==0,"dummy text was learned");
-        check(WaitForSingleObject(process.get(),6000)==WAIT_OBJECT_0,"helper did not exit");
+        check(!std::filesystem::exists(file)||nskkzime::windows::read_user_dictionary(file).revision()==0,"generated text was learned by default");
+        TerminateProcess(process.get(),0); WaitForSingleObject(process.get(),5000);
         std::cout<<"PASS asynchronous TSF generation, stale edits, context changes, protected fields, fallback and no learning\n"; result=0;
     } catch(const std::exception& e) { std::cerr<<"FAIL "<<e.what()<<'\n'; }
     SetKeyboardState(previous); CoUninitialize(); Sleep(12000);
-    for(const auto& path:{file,std::filesystem::path(file.native()+L".lock")}) { std::error_code ignored; std::filesystem::remove(path,ignored); }
-    std::error_code ignored; std::filesystem::remove(root,ignored); return result;
+    std::error_code ignored; std::filesystem::remove_all(root,ignored); return result;
 }

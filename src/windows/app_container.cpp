@@ -6,6 +6,7 @@
 #include <sddl.h>
 #include <aclapi.h>
 #include <userenv.h>
+#include <bcrypt.h>
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -166,9 +167,8 @@ bool redirected_data_context() {
 }
 bool uses_data_broker() {
     if (in_app_container()) return true;
-    // Explicit development configurations remain private to their host.
-    for (const auto name : {L"NSKKZIME_CONFIG", L"NSKKZIME_DICTIONARY", L"NSKKZIME_DEMO"})
-        if (GetEnvironmentVariableW(name, nullptr, 0)) return false;
+    // An explicit configuration file remains private to its host.
+    if (GetEnvironmentVariableW(L"NSKKZIME_CONFIG", nullptr, 0)) return false;
     static const bool redirected = redirected_data_context();
     return redirected;
 }
@@ -194,10 +194,7 @@ std::wstring container_pipe_name(const ProcessIdentity& identity) {
 std::string container_exchange(std::string_view request, ULONGLONG deadline, HANDLE cancel) {
     const auto identity = process_identity();
     auto name = identity.container.empty() ? container_pipe_name(identity) : L"\\\\.\\pipe\\LOCAL\\nskkzime-broker-v1-" + identity.user;
-    if (identity.container.empty()) if (const auto instance = environment_value(L"NSKKZIME_BROKER_TEST_INSTANCE")) {
-        need(instance->size() <= 192 && instance->find_first_not_of(L"0123456789S-") == instance->npos);
-        name += *instance;
-    }
+    if (identity.container.empty() && environment_value(L"NSKKZIME_CONFIG")) name += config_broker_instance(dictionary_settings_path());
     HANDLE raw = INVALID_HANDLE_VALUE;
     for (;;) {
         need(GetTickCount64() < deadline && WaitForSingleObject(cancel, 0) != WAIT_OBJECT_0);
@@ -336,6 +333,17 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
     }
     catch (...) { SetEvent(stop); throw; }
     // Listeners live until all jthreads have joined.
+}
+std::wstring config_broker_instance(const std::filesystem::path& config) {
+    auto key = config.lexically_normal().native();
+    CharLowerBuffW(key.data(), static_cast<DWORD>(key.size()));
+    unsigned char digest[32]{};
+    need(BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(key.data()),
+        static_cast<ULONG>(key.size() * sizeof(wchar_t)), digest, sizeof(digest)) >= 0);
+    std::wstring result = L"-config-";
+    constexpr wchar_t hex[] = L"0123456789abcdef";
+    for (std::size_t i = 0; i < 16; ++i) { result += hex[digest[i] >> 4]; result += hex[digest[i] & 15]; }
+    return result;
 }
 NativeHandle container_stop_event(std::wstring_view instance) { return control_object(false, instance); }
 NativeHandle container_instance_mutex(std::wstring_view instance) { return control_object(true, instance); }

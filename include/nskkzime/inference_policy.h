@@ -19,5 +19,5 @@ struct PlannedInference {
 void validate_inference_policy(const InferencePolicy&);
 std::optional<PlannedInference> plan_inference(const Engine& before, const Engine& after, const Result&, const InferencePolicy&);
 // Only mutates on a usable result. The host validates revisions, context and deadlines first.
-bool apply_inference_result(Engine&, const PlannedInference&, const InferenceResponse&, const InferencePolicy&, bool dummy = false);
+bool apply_inference_result(Engine&, const PlannedInference&, const InferenceResponse&, const InferencePolicy&);
 }

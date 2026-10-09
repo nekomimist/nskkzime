@@ -26,7 +26,7 @@ struct DictionarySettings {
 struct DictionaryConfiguration {
     DictionarySettings settings;
     std::filesystem::path file;
-    bool demo = false, environment = false;
+    bool demo = false;
 };
 struct LoadedDictionaries {
     std::shared_ptr<const Dictionary> dictionary;
@@ -45,8 +45,7 @@ void validate_candidate_settings(const CandidateSettings&);
 std::wstring candidate_settings_status(const CandidateSettings&);
 std::wstring zenz_settings_status(const ZenzSettings&);
 // Explicit inputs keep tests independent of the user's saved configuration.
-DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file,
-    const std::optional<std::wstring>& dictionary_override, bool missing_is_demo);
+DictionaryConfiguration resolve_dictionary_configuration(const std::filesystem::path& file, bool missing_is_demo);
 DictionaryConfiguration current_dictionary_configuration();
 LoadedDictionaries load_dictionaries(const DictionaryConfiguration&, const std::optional<std::filesystem::path>& cache_root = {});
 std::optional<std::filesystem::path> dictionary_cache_path(const DictionaryConfiguration&);

@@ -22,7 +22,6 @@ private:
     struct State;
     std::shared_ptr<State> state_;
 };
-std::shared_ptr<const Dictionary> with_learning(std::shared_ptr<const Dictionary> base);
 std::filesystem::path learning_helper_path();
 void publish_learning(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
 } // namespace nskkzime::windows

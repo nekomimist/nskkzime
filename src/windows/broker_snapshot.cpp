@@ -21,7 +21,7 @@ std::string dictionary_configuration_id(const DictionaryConfiguration& config) {
 BrokerSnapshot build_broker_snapshot(const DictionaryConfiguration& config, std::string_view generation,
     const std::optional<std::filesystem::path>& cache_root, bool legacy) {
     const auto dictionaries = load_dictionaries(config, cache_root);
-    const auto romaji = load_romaji_rules(config, {});
+    const auto romaji = load_romaji_rules(config);
     // Old clients cannot represent degraded initialization or learning denial.
     if (legacy && (dictionaries.failed || romaji.failed)) throw std::runtime_error("legacy bootstrap requires valid sources");
     const bool learning = config.settings.learning && !config.demo &&
