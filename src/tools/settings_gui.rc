@@ -109,10 +109,15 @@ IDD_DIAGNOSTICS DIALOGEX 0, 0, 388, 187
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Yu Gothic UI"
 BEGIN
-    AUTOCHECKBOX "入力ログを保存する（診断用）(&L)", IDC_INPUT_LOG, 5, 5, 378, 15
-    LTEXT "読み、前後の本文、変換候補を平文で保存します。通常はオフのまま使います。\n推論応答の処理時に入力属性を再確認し、保護された入力欄は記録しません。", -1, 5, 30, 378, 28
-    LTEXT "保存先（作成済みのローカルフォルダー）(&F)", -1, 5, 67, 378, 12
-    EDITTEXT IDC_LOG_DIRECTORY, 5, 84, 303, 15, ES_AUTOHSCROLL
-    PUSHBUTTON "参照(&B)…", IDC_LOG_BROWSE, 316, 84, 66, 16
-    LTEXT "1ファイル1 MiB・同じフォルダーに64ファイルまで。上限や保存失敗で停止します。\n既存ログは自動削除しません。不要になったログは利用アプリを閉じて削除します。\n\n有効化・無効化とも、保存後にIMEを使うアプリを起動し直してください。\n推論がオフのときは記録しません。保存済みのログは無効化後も残ります。", -1, 5, 114, 378, 65
+    AUTOCHECKBOX "TSF診断ログを保存する（本文・打鍵内容なし）(&T)", IDC_TSF_LOG, 5, 5, 378, 15
+    LTEXT "未確定入力の終了理由・通知・APIの成否を記録します。推論オフでも使えます。\nAppContainerアプリでの保存は未対応です。通常はオフのまま使います。", -1, 5, 24, 378, 24
+    LTEXT "TSFログの保存先（作成済みのローカルフォルダー）(&D)", -1, 5, 51, 378, 12
+    EDITTEXT IDC_TSF_LOG_DIRECTORY, 5, 65, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照(&R)…", IDC_TSF_LOG_BROWSE, 316, 65, 66, 16
+    AUTOCHECKBOX "推論の入力ログを保存する（本文・候補を含む）(&L)", IDC_INPUT_LOG, 5, 89, 378, 15
+    LTEXT "読み・前後の本文・候補を平文で保存します。推論オフでは記録しません。\n入力属性を確認できた通常の欄だけを記録します。通常はオフのまま使います。", -1, 5, 108, 378, 24
+    LTEXT "入力ログの保存先（作成済みのローカルフォルダー）(&F)", -1, 5, 135, 378, 12
+    EDITTEXT IDC_LOG_DIRECTORY, 5, 149, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照(&B)…", IDC_LOG_BROWSE, 316, 149, 66, 16
+    LTEXT "各ログ1 MiB×64ファイルで停止。既存ログは残ります。保存後は利用アプリを再起動。", -1, 5, 173, 378, 12
 END

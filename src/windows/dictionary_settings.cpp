@@ -2,6 +2,7 @@
 #include "cpu_requirements.h"
 #include "local_storage.h"
 #include "dictionary_cache.h"
+#include "diagnostic_file.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
@@ -39,6 +40,11 @@ std::string serialize(const DictionarySettings& settings) {
         bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
     }
     validate_zenz_settings(settings.zenz);
+    validate_tsf_log_settings(settings.tsf_log);
+    if (settings.tsf_log.enabled || !settings.tsf_log.directory.empty()) {
+        bytes += settings.tsf_log.enabled ? "tsf-log=on\n" : "tsf-log=off\n";
+        if (!settings.tsf_log.directory.empty()) bytes += "tsf-log-directory=" + utf8_message(settings.tsf_log.directory.native()) + "\n";
+    }
     if (settings.zenz.allow_unknown_context) bytes += "zenz-unknown-context=on\n";
     if (settings.zenz.log_input || !settings.zenz.log_directory.empty()) {
         bytes += settings.zenz.log_input ? "input-log=on\n" : "input-log=off\n";
@@ -110,6 +116,12 @@ void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     // An empty server selects the one bundled with the IME; a path is a development override.
     if (!settings.server.empty()) check_path(settings.server);
 }
+void validate_tsf_log_settings(const DictionarySettings::TsfLogSettings& settings, bool check_files) {
+    if (settings.enabled || !settings.directory.empty()) validate_diagnostic_directory(settings.directory, check_files && settings.enabled);
+}
+std::wstring tsf_log_settings_status(const DictionarySettings::TsfLogSettings& settings) {
+    return settings.enabled ? L"TSF診断ログ: オン（本文・打鍵内容なし） / 保存先: " + settings.directory.native() : L"TSF診断ログ: オフ";
+}
 std::wstring zenz_settings_status(const ZenzSettings& settings) {
     const auto context = std::wstring(L"\r\n属性不明の周辺本文: ") + (settings.allow_unknown_context ? L"ローカル推論に利用（学習・入力ログの許可とは独立）" : L"取得しない");
     const auto logging = settings.log_input ? L"\r\n入力ログ: オン（読み・周辺本文・候補を保存） / 保存先: " + settings.log_directory.native() : std::wstring(L"\r\n入力ログ: オフ");
@@ -175,7 +187,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
     DictionarySettings settings; bool version = false, learning = false, romaji = false;
-    std::set<std::string_view> inference_keys, candidate_options;
+    std::set<std::string_view> inference_keys, candidate_options, diagnostic_options;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -201,6 +213,12 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
                 if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("invalid candidate-show-after");
                 settings.candidates.show_after = number;
             }
+        } else if (key == "tsf-log" || key == "tsf-log-directory") {
+            if (!diagnostic_options.insert(key).second) throw std::invalid_argument("duplicate TSF log setting");
+            if (key == "tsf-log") {
+                if (value != "on" && value != "off") throw std::invalid_argument("tsf-log must equal on or off");
+                settings.tsf_log.enabled = value == "on";
+            } else settings.tsf_log.directory = std::filesystem::path(wide_message(value));
         } else if (key == "romaji") {
             if (romaji) throw std::invalid_argument("romaji must appear at most once");
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
@@ -253,6 +271,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     if (!version) throw std::invalid_argument("settings version is missing");
     validate_candidate_settings(settings.candidates);
     validate_zenz_settings(settings.zenz);
+    validate_tsf_log_settings(settings.tsf_log);
     return settings;
 }
 DictionarySettings read_dictionary_settings(const std::filesystem::path& path) {

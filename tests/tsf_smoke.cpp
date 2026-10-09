@@ -136,6 +136,114 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
     context->pump(); next->pump();
     check(!host->keys && !host->events, "adapter test leaked a sink");
 }
+void focus_transition_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+    KeyboardState keyboard;
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "focus-transition activate failed"); wait_for_dictionary();
+    auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    for (const bool transitory : {false, true}) {
+        for (int missing = 0; missing != 3; ++missing) {
+            for (const auto& syllable : {std::pair{"Ku", L"く"}, std::pair{"Hu", L"ふ"}, std::pair{"Ja", L"じゃ"}}) {
+                auto context = fresh(); auto origin = transitory ? test_host::transitory_context(context.Get()) : context;
+                auto* document = static_cast<test_host::DocumentManager*>(origin->document_manager.Get());
+                type(keys, origin.Get(), std::string_view(syllable.first, 1));
+                // Excel briefly has no resolved focus after the first SetText.
+                if (missing == 1) document->top_status = E_FAIL;
+                if (missing == 2) document->top = nullptr;
+                for (int notice = 0; notice != 2; ++notice)
+                    host->events->OnSetFocus(missing == 0 ? nullptr : document, document);
+                check(context->queued.size() == 1 && context->edits, "unresolved focus was not deferred once");
+                document->top_status = S_OK; document->top = origin.Get();
+                host->events->OnSetFocus(document, nullptr);
+                context->pump(); type(keys, origin.Get(), syllable.first + 1);
+                check(context->doc->text == syllable.second, "transient document focus split the first romaji syllable");
+                key(keys, origin.Get(), VK_RETURN);
+            }
+        }
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "K");
+        host->events->OnSetFocus(nullptr, context->document_manager.Get());
+        // Synchronous input may precede the queued focus check, even if a
+        // restoring focus notification has not arrived yet.
+        type(keys, context.Get(), "u"); context->pump();
+        check(context->doc->text == L"く" && !context->composition->ended, "deferred check ended validated input");
+        key(keys, context.Get(), VK_RETURN);
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "K");
+        host->events->OnSetFocus(nullptr, context->document_manager.Get()); keys->OnSetFocus(FALSE);
+        type(keys, context.Get(), "H"); context->pump(); context->pump();
+        type(keys, context.Get(), "u"); key(keys, context.Get(), VK_RETURN);
+        check(context->doc->text == L"kふ", "old deferred check ended a new session in the same store");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "K");
+        host->events->OnSetFocus(nullptr, context->document_manager.Get());
+        context->pump(); context->pump();
+        check(context->composition->ended && !context->edits && !host->ui, "persistent focus loss retained composition");
+        type(keys, context.Get(), "u"); check(context->doc->text == L"kう", "persistent focus loss retained romaji");
+    }
+    for (int departure = 0; departure != 7; ++departure) {
+        auto first = fresh(), second = fresh(); type(keys, first.Get(), "K");
+        host->events->OnSetFocus(nullptr, first->document_manager.Get());
+        switch (departure) {
+        case 0: host->events->OnSetFocus(second->document_manager.Get(), nullptr); break;
+        case 1: host->events->OnPopContext(first.Get()); break;
+        case 2: host->events->OnUninitDocumentMgr(first->document_manager.Get()); break;
+        case 3: keys->OnSetFocus(FALSE); break;
+        case 4: first->composition->terminate(); break;
+        case 5:
+            succeeded(service->Deactivate(), "pending-focus deactivate failed");
+            succeeded(service->ActivateEx(host.Get(), 1, 0), "pending-focus reactivate failed"); break;
+        case 6: check(!key(keys, first.Get(), VK_LEFT), "pending-focus navigation consumed"); break;
+        }
+        check(!first->edits, "known departure did not detach immediately");
+        type(keys, second.Get(), "H"); first->pump(); first->pump();
+        check(second->doc->text == L"h" && !second->composition->ended, "old deferred check ended a new composition");
+        type(keys, second.Get(), "u"); key(keys, second.Get(), VK_RETURN);
+        check(first->doc->text == L"k" && first->composition->ended && second->doc->text == L"ふ", "departure carried input across fields");
+    }
+    {
+        auto first = fresh(); type(keys, first.Get(), "K");
+        host->events->OnSetFocus(nullptr, first->document_manager.Get());
+        // Moving inside the same text store must still invalidate its range/caret.
+        first->move_selection(0, 0); type(keys, first.Get(), "u");
+        first->pump(); first->pump();
+        check(first->doc->text == L"うk", "same-store caret movement retained pending romaji");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "K");
+        const auto old = context->composition;
+        context->reject_session = true; host->events->OnSetFocus(nullptr, context->document_manager.Get());
+        check(!context->edits && context->queued.empty(), "refused focus check retained its state");
+        context->reject_session = false; old->terminate();
+        type(keys, context.Get(), "u"); check(context->doc->text == L"kう", "refused check retained pending romaji");
+    }
+    for (int reentry = 0; reentry != 3; ++reentry) {
+        auto first = fresh(), second = fresh(); type(keys, first.Get(), "K");
+        auto* document = static_cast<test_host::DocumentManager*>(second->document_manager.Get());
+        document->top_query = [&] {
+            if (reentry == 1) {
+                host->events->OnSetFocus(second->document_manager.Get(), first->document_manager.Get());
+                type(keys, second.Get(), "H");
+            } else if (reentry == 2) {
+                type(keys, first.Get(), "u");
+            } else {
+                host->events->OnSetFocus(nullptr, first->document_manager.Get());
+                host->events->OnSetFocus(first->document_manager.Get(), nullptr);
+            }
+        };
+        host->events->OnSetFocus(second->document_manager.Get(), first->document_manager.Get());
+        first->pump(); first->pump();
+        auto target = reentry == 1 ? second : first;
+        check(target->composition && target->edits, "stale focus resolution ended the reentrant session");
+        if (reentry != 2) type(keys, target.Get(), "u");
+        key(keys, target.Get(), VK_RETURN);
+        check(target->doc->text == (reentry == 1 ? L"ふ" : L"く"), "focus reentry split pending romaji");
+    }
+    succeeded(service->Deactivate(), "focus-transition deactivate failed");
+}
 void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
@@ -685,7 +793,7 @@ int wmain(int argc, wchar_t** argv) {
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
             attribute_tests(service.Get());
             if (empty) missing_dictionary_tests(service.Get(), keys.Get());
-            else { adapter_tests(service.Get(), keys.Get(), true); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
+            else { adapter_tests(service.Get(), keys.Get(), true); focus_transition_tests(service.Get(), keys.Get()); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
             const auto status = status_text();
             check(status.find(L"まだ読み込んでいません") == status.npos, "activation failed to update status");
             if (!empty) check(status.find(L"読み込み済み") != status.npos && status.find(config.native()) != status.npos, "loaded configuration invisible");

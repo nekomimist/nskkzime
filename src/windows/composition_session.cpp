@@ -7,9 +7,11 @@ namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
 HRESULT PendingComposition::finish(TfEditCookie cookie) noexcept {
     if (done) return S_OK;
+    update_tsf_trace_context(context.Get(), composition.Get(), session);
     ComPtr<ITfRange> range;
     if (SUCCEEDED(composition->GetRange(&range))) clear_display_attribute(context.Get(), cookie, range.Get());
     const auto hr = composition->EndComposition(cookie);
+    trace_tsf(TsfEvent::EndComposition, TsfReason::None, hr);
     if (SUCCEEDED(hr)) { done = true; composition.Reset(); }
     return hr;
 }
@@ -17,8 +19,13 @@ HRESULT PendingComposition::finish(TfEditCookie cookie) noexcept {
 bool CompositionSession::valid(TfEditCookie cookie) const {
     const InputPhaseTiming timing(InputTimingPhase::CompositionCheck);
     ComPtr<ITfRange> range;
-    return composition && SUCCEEDED(composition->GetRange(&range)) && range &&
-        range_matches(range.Get(), cookie, expected_text) && selection_at_end(context.Get(), cookie, range.Get());
+    update_tsf_trace_context(context.Get(), composition.Get(), session);
+    if (!composition) { trace_tsf(TsfEvent::CompositionCheck, TsfReason::MissingComposition); return false; }
+    const auto hr = composition->GetRange(&range);
+    if (FAILED(hr) || !range) { trace_tsf(TsfEvent::CompositionCheck, TsfReason::MissingRange, hr); return false; }
+    const bool matches = range_matches(range.Get(), cookie, expected_text) && selection_at_end(context.Get(), cookie, range.Get());
+    trace_tsf(TsfEvent::CompositionCheck, TsfReason::None, S_OK, matches);
+    return matches;
 }
 
 void CompositionSession::release_context() noexcept {
@@ -39,7 +46,8 @@ void CompositionSession::end(TfEditCookie cookie) noexcept {
     if (composition) {
         ComPtr<ITfRange> range;
         if (SUCCEEDED(composition->GetRange(&range))) clear_display_attribute(context.Get(), cookie, range.Get());
-        ending = true; composition->EndComposition(cookie); ending = false;
+        ending = true; const auto hr = composition->EndComposition(cookie); ending = false;
+        trace_tsf(TsfEvent::EndComposition, TsfReason::None, hr);
     }
 }
 
@@ -57,7 +65,7 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
     HRESULT hr;
     if (composition) {
         hr = composition->GetRange(&range);
-        if (FAILED(hr)) return hr;
+        if (FAILED(hr)) { trace_tsf(TsfEvent::CompositionCheck, TsfReason::MissingRange, hr); return hr; }
     } else {
         if (text.empty() && !needs_composition) return S_OK;
         if (!needs_composition) {
@@ -67,6 +75,7 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
             {
                 const InputPhaseTiming write(InputTimingPhase::SetText);
                 hr = insert->InsertTextAtSelection(cookie, 0, text.c_str(), static_cast<LONG>(text.size()), &range);
+                trace_tsf(TsfEvent::InsertText, FAILED(hr) ? TsfReason::TextWriteFailed : TsfReason::None, hr, text.size());
             }
             if (FAILED(hr)) return hr;
             // The insertion succeeded; do not pass this key through on caret failure.
@@ -76,6 +85,7 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
         TF_SELECTION selection{};
         ULONG count = 0;
         hr = target->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &count);
+        trace_tsf(TsfEvent::SelectionCheck, FAILED(hr) || count != 1 || !selection.range ? TsfReason::SelectionUnavailable : TsfReason::None, hr, count);
         range.Attach(selection.range);
         if (FAILED(hr)) return hr;
         if (count != 1 || !range) return E_FAIL;
@@ -85,12 +95,15 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
         ComPtr<ITfSource> source;
         hr = target->QueryInterface(IID_PPV_ARGS(&source));
         if (SUCCEEDED(hr)) hr = source->AdviseSink(IID_ITfTextEditSink, sinks.edit, &edit_sink_cookie);
+        trace_tsf(TsfEvent::AdviseEditSink, TsfReason::None, hr);
         if (FAILED(hr)) return hr;
         context = target;
         // Layout notifications are optional: input still works if the host
         // cannot supply positions, and the candidate UI then stays hidden.
         source->AdviseSink(IID_ITfTextLayoutSink, sinks.layout, &layout_sink_cookie);
         hr = compositions->StartComposition(cookie, range.Get(), sinks.composition, &composition);
+        update_tsf_trace_context(context.Get(), composition.Get(), session);
+        trace_tsf(TsfEvent::StartComposition, FAILED(hr) || !composition ? TsfReason::StartRejected : TsfReason::None, hr);
         if (FAILED(hr) || !composition) { owner.detach_composition(); return FAILED(hr) ? hr : E_FAIL; }
         created = true;
     }
@@ -107,10 +120,12 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
     if (!unchanged) {
         const InputPhaseTiming write(InputTimingPhase::SetText);
         hr = range->SetText(cookie, 0, text.c_str(), static_cast<LONG>(text.size()));
+        trace_tsf(TsfEvent::SetText, FAILED(hr) ? TsfReason::TextWriteFailed : TsfReason::None, hr, text.size());
     } else hr = S_OK;
     if (FAILED(hr)) {
         if (created) {
-            ending = true; composition->EndComposition(cookie); ending = false;
+            ending = true; const auto end_status = composition->EndComposition(cookie); ending = false;
+            trace_tsf(TsfEvent::EndComposition, TsfReason::TextWriteFailed, end_status);
             owner.detach_composition();
         }
         return hr;
@@ -120,6 +135,7 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
     if (!needs_composition) {
         ending = true;
         post_status = composition->EndComposition(cookie);
+        trace_tsf(TsfEvent::EndComposition, TsfReason::Commit, post_status);
         ending = false;
         if (SUCCEEDED(post_status)) owner.detach_composition();
     } else if (!committed.empty()) {
@@ -131,6 +147,7 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
             post_status = start->ShiftStart(cookie, length, &shifted, nullptr);
             if (SUCCEEDED(post_status) && shifted != length) post_status = E_FAIL;
             if (SUCCEEDED(post_status)) post_status = composition->ShiftStart(cookie, start.Get());
+            trace_tsf(TsfEvent::ShiftRange, FAILED(post_status) ? TsfReason::RangeShiftFailed : TsfReason::None, post_status, shifted, length);
         }
     }
     expected_text = std::move(expected);
@@ -144,7 +161,7 @@ HRESULT CompositionSession::apply(ITfContext* target, TfEditCookie cookie, std::
         // Preserve the text as plain text and abandon this composition if the
         // host cannot maintain its range. Never overwrite committed text on
         // the next key, and never replay a key whose SetText already succeeded.
-        owner.end_composition(cookie); next.reset();
+        owner.end_composition(cookie, FAILED(post_status) ? TsfReason::RangeShiftFailed : TsfReason::SelectionWriteFailed); next.reset();
     }
     // Once text is applied or verified, consume the key even if a later host operation fails.
     return S_OK;

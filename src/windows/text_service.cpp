@@ -15,6 +15,7 @@
 #include "context_text.h"
 #include "inference_client.h"
 #include "romaji_settings.h"
+#include "tsf_diagnostics.h"
 #include "cpu_requirements.h"
 #include <wrl/client.h>
 #include <algorithm>
@@ -182,6 +183,8 @@ public:
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
             catch (...) { return E_FAIL; }
         }
+        if (!configuration_.broker) diagnostics_ = TsfDiagnosticLog::create(configuration_.dictionaries.settings.tsf_log, false);
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Activate, diagnostic_state());
         try {
             candidate_actions_ = std::make_shared<CandidateActions>();
             candidate_actions_->select = [this](std::size_t index, std::uint64_t revision) { select_candidate(index, revision); };
@@ -224,6 +227,7 @@ public:
         return hr;
     }
     HRESULT STDMETHODCALLTYPE Deactivate() override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Deactivate, diagnostic_state());
         if (tool_launcher_) { tool_launcher_->close(); tool_launcher_.reset(); }
         mode_actions_.reset();
         auto mode = std::move(input_mode_); if (mode) mode->disconnect();
@@ -232,7 +236,7 @@ public:
             preserved_[i] = false;
         }
         candidate_actions_.reset();
-        finish_composition();
+        finish_composition(TsfReason::Deactivated);
         inference_state_.client.reset(); clear_inference_status(this);
         inference_state_.allow_unknown_context = false;
         if (keys_) keys_->UnadviseKeyEventSink(client_);
@@ -242,7 +246,8 @@ public:
         }
         sink_cookie_ = TF_INVALID_COOKIE;
         keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL;
-        eaten_keys_.reset(); engine_.reset();
+        eaten_keys_.reset(); reset_engine(TsfReason::Deactivated);
+        diagnostics_.reset();
         try { if (configuration_.broker) {
             engine_ = Engine(std::make_shared<MemoryDictionary>()); dictionary_.reset();
             dictionary_loaded_ = false; container_configured_ = container_rules_configured_ = false;
@@ -250,11 +255,14 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override {
-        if (!foreground) finish_composition();
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyFocus, diagnostic_state());
+        trace_tsf(TsfEvent::KeyFocus, TsfReason::None, S_OK, foreground);
+        if (!foreground) finish_composition(TsfReason::FocusLost);
         else configure_container();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::TestKeyDown, diagnostic_state(context));
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
@@ -262,6 +270,7 @@ public:
         const auto target = editing_context(context);
         if (target.Get() != context && !editable(target.Get())) return S_OK;
         context = target.Get();
+        update_tsf_trace(diagnostic_state(context));
         if (mode_key(code, engine_.outer_mode())) { *eaten = TRUE; return S_OK; }
         const auto key = translate_key(code, parameter);
         if (key) {
@@ -275,11 +284,12 @@ public:
             // while still composing. Finish during the preflight and decline
             // the key. This lifecycle cleanup is idempotent; ordinary SKK key
             // probes never advance the engine or edit the document.
-            finish_composition(composition_state_.context.Get() == context ? TF_ES_ASYNCDONTCARE : TF_ES_ASYNC);
+            finish_composition(TsfReason::Navigation, composition_state_.context.Get() == context ? TF_ES_ASYNCDONTCARE : TF_ES_ASYNC);
         }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyDown, diagnostic_state(context));
         const KeyTiming timing;
         InputPhaseTiming setup(InputTimingPhase::KeySetup);
         if (!eaten) return E_POINTER;
@@ -290,11 +300,12 @@ public:
         const auto resolved = editing_context(context);
         if (resolved.Get() != context && !editable(resolved.Get())) return S_OK;
         context = resolved.Get();
+        update_tsf_trace(diagnostic_state(context, origin.Get()));
         if (const auto mode = mode_key(code, engine_.outer_mode())) {
             if (!(parameter & (static_cast<LPARAM>(1) << 30))) change_mode(*mode);
             *eaten = TRUE; if (code < eaten_keys_.size()) eaten_keys_.set(code); return S_OK;
         }
-        if (composition_state_.context && composition_state_.context.Get() != context) finish_composition();
+        if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
         const auto key = translate_key(code, parameter);
         if (!key || !engine_.would_handle(*key)) return S_OK;
         setup.finish();
@@ -305,6 +316,7 @@ public:
             InputPhaseTiming request(InputTimingPhase::EditRequest);
             const auto hr = request_edit(context, client_, TF_ES_SYNC | TF_ES_READWRITE,
                 [self, target, origin, key, &applied](TfEditCookie cookie) {
+                    update_tsf_trace(self->diagnostic_state(target.Get(), origin.Get()));
                     const InputPhaseTiming callback(InputTimingPhase::EditCallback);
                     for (const auto& pending : self->pending_) {
                         if (!pending->done && pending->context.Get() == target.Get()) {
@@ -313,12 +325,23 @@ public:
                         }
                     }
                     std::erase_if(self->pending_, [](const auto& pending) { return pending->done; });
-                    if (self->composition_state_.composition && !self->composition_valid(cookie)) {
-                        self->end_composition(cookie);
+                    if (self->composition_state_.composition) {
+                        const auto current = self->composition_state_.composition;
+                        const auto session = self->composition_state_.session;
+                        if (!self->composition_valid(cookie)) self->end_composition(cookie, TsfReason::InvalidBeforeKey);
+                        else if (self->composition_state_.composition.Get() == current.Get() && self->composition_state_.session == session &&
+                                 self->composition_state_.context.Get() == target.Get()) {
+                            // A synchronous key can run before queued async edits.
+                            // Valid input in this field supersedes its old null-focus notice.
+                            self->cancel_focus_finish(TsfReason::FocusValidated);
+                            ++self->focus_generation_;
+                        }
                     }
                     return self->apply_key(target.Get(), cookie, self->candidates_.selection_key(*key, self->engine_), applied, origin.Get());
                 });
             request.finish();
+            update_tsf_trace(diagnostic_state(context, origin.Get()));
+            trace_tsf(TsfEvent::KeyResult, FAILED(hr) ? TsfReason::EditRejected : TsfReason::None, hr, applied);
             // A refused synchronous session leaves both the key and engine untouched.
             if (SUCCEEDED(hr) && applied) {
                 *eaten = TRUE;
@@ -333,11 +356,13 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyUp, diagnostic_state(context));
         const auto hr = OnTestKeyUp(context, code, parameter, eaten);
         if (code < eaten_keys_.size()) eaten_keys_.reset(code);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext* context, REFGUID guid, BOOL* eaten) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::PreservedKey, diagnostic_state(context));
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
         if (!manager_ || !editable(context)) return S_OK;
@@ -350,6 +375,8 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnCompositionTerminated(TfEditCookie cookie, ITfComposition* composition) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::HostTerminated, diagnostic_state());
+        trace_tsf(TsfEvent::HostTerminated, TsfReason::HostTermination, S_OK, diagnostics_ ? diagnostics_->identity(composition) : 0);
         if (composition_state_.composition.Get() != composition || composition_state_.ending) return S_OK;
         try {
             ComPtr<ITfRange> range;
@@ -357,14 +384,15 @@ public:
                 clear_display_attribute(composition_state_.context.Get(), cookie, range.Get());
             }
         } catch (...) { /* Do not allow a C++ exception to cross the COM boundary. */ }
-        detach_composition(); engine_.reset();
+        detach_composition(); reset_engine(TsfReason::HostTermination);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnEndEdit(ITfContext* context, TfEditCookie cookie, ITfEditRecord*) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::EndEdit, diagnostic_state(context));
         if (composition_state_.ending || context != composition_state_.context.Get() || !composition_state_.composition) return S_OK;
         const ComPtr<TextService> self(this);
         try {
-            if (!composition_valid(cookie)) finish_composition();
+            if (!composition_valid(cookie)) finish_composition(TsfReason::InvalidAfterEdit);
             else if (!composition_state_.reading_context) {
                 composition_state_.reading_context = true;
                 const auto current = composition_state_.composition; const auto revision = engine_.revision();
@@ -383,10 +411,11 @@ public:
                 composition_state_.reading_context = false;
             }
         }
-        catch (...) { composition_state_.reading_context = false; clear_context_preview(this); finish_composition(); }
+        catch (...) { composition_state_.reading_context = false; clear_context_preview(this); finish_composition(TsfReason::Exception); }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnLayoutChange(ITfContext* context, TfLayoutCode code, ITfContextView*) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::LayoutChange, diagnostic_state(context));
         if (context != composition_state_.context.Get() || !composition_state_.composition) return S_OK;
         if (code == TF_LC_DESTROY) {
             cancel_inference();
@@ -401,6 +430,7 @@ public:
             layout_pending_ = true;
             const auto status = request_edit(context, client_, TF_ES_ASYNC | TF_ES_READ,
                 [self, generation](TfEditCookie cookie) {
+                    update_tsf_trace(self->diagnostic_state());
                     if (self->layout_generation_ != generation) return S_OK;
                     self->layout_pending_ = false;
                     if (self->composition_state_.composition)
@@ -419,28 +449,53 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr* document) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentUninit, diagnostic_state());
         for (const auto& context : {composition_state_.context, composition_state_.origin}) {
             if (!context) continue;
             ComPtr<ITfDocumentMgr> owner;
-            if (SUCCEEDED(context->GetDocumentMgr(&owner)) && owner.Get() == document) { finish_composition(); break; }
+            if (SUCCEEDED(context->GetDocumentMgr(&owner)) && owner.Get() == document) { finish_composition(TsfReason::DocumentRemoved); break; }
         }
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* document, ITfDocumentMgr*) override {
+    HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* document, ITfDocumentMgr* previous) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentFocus, diagnostic_state());
+        const ComPtr<TextService> self(this);
+        const auto generation = ++focus_generation_;
+        const auto current = composition_state_.composition;
+        const auto session = composition_state_.session;
+        trace_tsf(TsfEvent::DocumentFocus, TsfReason::None, S_OK,
+                  diagnostics_ ? diagnostics_->identity(document) : 0, diagnostics_ ? diagnostics_->identity(previous) : 0, 0, false);
         ComPtr<ITfContext> context;
-        if (document) document->GetTop(&context);
+        const auto status = document ? document->GetTop(&context) : S_FALSE;
+        trace_tsf(TsfEvent::DocumentTop, !context || FAILED(status) ? TsfReason::FocusUnavailable : TsfReason::None, status,
+                  diagnostics_ ? diagnostics_->identity(context.Get()) : 0, diagnostics_ ? diagnostics_->identity(document) : 0, 0, document != nullptr);
+        if (FAILED(status)) context.Reset();
         context = editing_context(context.Get());
-        if (composition_state_.context && composition_state_.context.Get() != context.Get()) finish_composition();
+        auto snapshot = diagnostic_state();
+        snapshot.context = diagnostics_ ? diagnostics_->identity(context.Get()) : 0; // Preserve a genuinely unresolved target.
+        update_tsf_trace(snapshot);
+        // GetTop/parent resolution can re-enter focus handling, accept a key or detach this session.
+        if (generation != focus_generation_ || current.Get() != composition_state_.composition.Get() || session != composition_state_.session) {
+            trace_tsf(TsfEvent::FocusResolved, TsfReason::Inactive, status, 0, 0, 0, document != nullptr); return S_OK;
+        }
+        trace_tsf(TsfEvent::FocusResolved, context ? TsfReason::None : TsfReason::FocusUnavailable, status, 0, 0, 0, document != nullptr);
+        if (!composition_state_.context) return S_OK;
+        if (!context) defer_focus_finish();
+        else if (composition_state_.context.Get() != context.Get()) finish_composition(TsfReason::ContextChanged);
+        else cancel_focus_finish(TsfReason::FocusRestored);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPush, diagnostic_state(context));
         const auto parent = editing_context(context); context = parent.Get();
-        if (composition_state_.context && composition_state_.context.Get() != context) finish_composition();
+        update_tsf_trace(diagnostic_state(context));
+        if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPop, diagnostic_state(context));
         // The parent compartment can already be gone when the origin is popped.
-        if (composition_state_.context.Get() == context || composition_state_.origin.Get() == context) finish_composition();
+        if (composition_state_.context.Get() == context || composition_state_.origin.Get() == context) finish_composition(TsfReason::ContextPopped);
         return S_OK;
     }
 private:
@@ -455,6 +510,7 @@ private:
                 container_rules_configured_ = true;
             }
             if (container_configured_) return;
+            diagnostics_ = TsfDiagnosticLog::create(remote->configuration.settings.tsf_log, in_app_container());
             candidate_settings_ = remote->configuration.settings.candidates;
             if (const auto config = inference_config(*remote)) {
                 inference_state_.configure(*config, [this](InferenceCompletion result) { receive_inference(std::move(result)); });
@@ -481,12 +537,14 @@ private:
             composition_state_.context.Get(), composition_state_.composition.Get());
     }
     void receive_inference(InferenceCompletion result) noexcept {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::InferenceResult, diagnostic_state());
         if (!inference_state_.pending || result.id != inference_state_.pending->id) return;
         const auto id = result.id;
         try {
             const ComPtr<TextService> self(this); const auto pending = *inference_state_.pending;
             const auto hr = request_edit(pending.context.Get(),client_,TF_ES_ASYNC | TF_ES_READWRITE,
                 [self,pending,result=std::move(result)](TfEditCookie cookie) {
+                    update_tsf_trace(self->diagnostic_state(pending.context.Get()));
                     if (!self->matches(pending)) return S_OK;
                     if (!editable(pending.context.Get()) || !self->composition_valid(cookie)) { self->cancel_inference(); return S_OK; }
                     ComPtr<ITfRange> range;
@@ -532,10 +590,13 @@ private:
         } catch (...) { if (inference_state_.pending && inference_state_.pending->id == id) cancel_inference(); }
     }
     void change_mode(Mode mode) noexcept {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ModeChange, diagnostic_state());
         const ComPtr<TextService> self(this);
         if (!manager_) return;
         if (engine_.mode() != mode || engine_.registering()) {
-            finish_composition(); engine_.set_mode(mode);
+            trace_tsf(TsfEvent::ModeChange, TsfReason::ModeChanged);
+            finish_composition(TsfReason::ModeChanged); engine_.set_mode(mode);
+            update_tsf_trace(diagnostic_state());
         }
         const auto binding = input_mode_; if (binding) binding->publish(engine_.mode());
     }
@@ -595,6 +656,8 @@ private:
             candidate_visibility_ = visibility;
             engine_ = std::move(next); applied = true;
             if (origin && composition_state_.composition && composition_state_.context.Get() == target) composition_state_.origin = origin;
+            update_tsf_trace(diagnostic_state(target, origin));
+            trace_tsf(TsfEvent::StateAccepted);
             if (result.forgetting && persistence_allowed && publish_runtime_forgetting(dictionary_, *result.forgetting))
                 engine_.forget_registration(*result.forgetting);
             if (result.learning && persistence_allowed) {
@@ -628,6 +691,7 @@ private:
         return status;
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
+        TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::CandidateSelect, diagnostic_state());
         if (selection_pending_ || !manager_ || !composition_state_.composition || !composition_state_.context ||
             engine_.revision() != revision || engine_.forgetting() || engine_.input_stage() != Stage::Selecting || index >= engine_.candidates().size()) return;
         cancel_inference();
@@ -639,12 +703,13 @@ private:
             const auto current = composition_state_.composition;
             const auto status = request_edit(target.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
                 [self, target, current, index, revision, request](TfEditCookie cookie) {
+                    update_tsf_trace(self->diagnostic_state(target.Get()));
                     if (self->selection_request_ != request) return S_OK;
                     self->selection_pending_ = false;
                     if (!self->manager_ || self->composition_state_.context.Get() != target.Get() ||
                         self->composition_state_.composition.Get() != current.Get() || self->engine_.revision() != revision ||
                         self->engine_.input_stage() != Stage::Selecting || !editable(target.Get())) return S_OK;
-                    if (!self->composition_valid(cookie)) { self->end_composition(cookie); return S_OK; }
+                    if (!self->composition_valid(cookie)) { self->end_composition(cookie, TsfReason::InvalidCandidateSelection); return S_OK; }
                     bool applied = false;
                     return self->apply_key(target.Get(), cookie, {KeyCode::SelectCandidate, 0, index}, applied);
                 });
@@ -669,7 +734,48 @@ private:
         }
     }
     bool composition_valid(TfEditCookie cookie) const { return composition_state_.valid(cookie); }
+    void cancel_focus_finish(TsfReason reason) noexcept {
+        if (!focus_pending_) return;
+        trace_tsf(TsfEvent::FocusCancelled, reason, S_OK, focus_request_);
+        ++focus_request_; focus_pending_ = false;
+    }
+    bool focus_finish_current(std::uint64_t request, ITfContext* target, ITfComposition* composition, std::uint64_t session) const noexcept {
+        return focus_pending_ && focus_request_ == request && manager_ && composition_state_.context.Get() == target &&
+            composition_state_.composition.Get() == composition && composition_state_.session == session;
+    }
+    void defer_focus_finish() noexcept {
+        if (focus_pending_ || !manager_ || !composition_state_.context || !composition_state_.composition) return;
+        const auto target = composition_state_.context;
+        const auto current = composition_state_.composition;
+        const auto session = composition_state_.session;
+        const auto request = ++focus_request_; focus_pending_ = true;
+        trace_tsf(TsfEvent::FocusDeferred, TsfReason::FocusUnavailable, S_OK, request, 0);
+        try {
+            const ComPtr<TextService> self(this);
+            const auto status = request_edit(target.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
+                [self, target, current, session, request](TfEditCookie) {
+                    update_tsf_trace(self->diagnostic_state(target.Get()));
+                    if (!self->focus_finish_current(request, target.Get(), current.Get(), session)) {
+                        trace_tsf(TsfEvent::FocusDeferred, TsfReason::Inactive, S_OK, request, 3); return S_OK;
+                    }
+                    self->focus_pending_ = false;
+                    trace_tsf(TsfEvent::FocusDeferred, TsfReason::FocusUnavailable, S_OK, request, 1);
+                    // Decide at this async opportunity, then use the existing detached
+                    // cleanup so host re-entry cannot redirect it into a new field.
+                    self->finish_composition(TsfReason::FocusUnavailable);
+                    return S_OK;
+                });
+            if (FAILED(status) && focus_finish_current(request, target.Get(), current.Get(), session)) {
+                trace_tsf(TsfEvent::FocusDeferred, TsfReason::EditRejected, status, request, 2);
+                finish_composition(TsfReason::FocusUnavailable);
+            }
+        } catch (...) {
+            if (focus_finish_current(request, target.Get(), current.Get(), session)) finish_composition(TsfReason::Exception);
+        }
+    }
     void detach_composition() noexcept override {
+        trace_tsf(TsfEvent::DetachComposition);
+        cancel_focus_finish(TsfReason::Inactive); ++focus_generation_;
         candidate_visibility_.reset();
         ++composition_state_.session; cancel_inference();
         clear_context_preview(this);
@@ -677,28 +783,49 @@ private:
         ++selection_request_; selection_pending_ = false;
         candidates_.close();
         composition_state_.release_context();
+        update_tsf_trace(diagnostic_state());
     }
-    void end_composition(TfEditCookie cookie) noexcept override {
+    void end_composition(TfEditCookie cookie, TsfReason reason) noexcept override {
         composition_state_.end(cookie);
-        detach_composition(); engine_.reset();
+        detach_composition(); reset_engine(reason);
     }
     HRESULT apply(ITfContext* context, TfEditCookie cookie, std::u32string_view committed, Engine& next) {
         return composition_state_.apply(context, cookie, committed, next, *this,
             {this, this, this}, input_atom_, converted_atom_);
     }
-    void finish_composition(DWORD scheduling = TF_ES_ASYNC) noexcept {
+    void finish_composition(TsfReason reason, DWORD scheduling = TF_ES_ASYNC) noexcept {
+        trace_tsf(TsfEvent::FinishComposition, reason);
+        cancel_focus_finish(reason);
         try {
-            if (!composition_state_.composition || !composition_state_.context) { engine_.reset(); return; }
+            if (!composition_state_.composition || !composition_state_.context) { reset_engine(reason); return; }
             auto pending = std::make_shared<PendingComposition>();
             pending->composition = composition_state_.composition; pending->context = composition_state_.context;
+            pending->session = composition_state_.session;
             std::erase_if(pending_, [](const auto& item) { return item->done; });
             pending_.push_back(pending);
             // Detach before scheduling: this session must never operate on a new input field.
-            detach_composition(); engine_.reset();
+            detach_composition(); reset_engine(reason);
             const auto status = request_edit(pending->context.Get(), client_, scheduling | TF_ES_READWRITE,
                 [pending](TfEditCookie cookie) { return pending->finish(cookie); });
             if (FAILED(status)) std::erase(pending_, pending);
-        } catch (...) { detach_composition(); engine_.reset(); }
+        } catch (...) { detach_composition(); reset_engine(TsfReason::Exception); }
+    }
+    TsfTraceState diagnostic_state(ITfContext* target = nullptr, ITfContext* origin = nullptr) noexcept {
+        if (!diagnostics_) return {};
+        TsfTraceState state;
+        state.context = diagnostics_->identity(target ? target : composition_state_.context.Get());
+        state.origin = diagnostics_->identity(origin ? origin : composition_state_.origin.Get());
+        state.owner_context = diagnostics_->identity(composition_state_.context.Get());
+        state.composition = diagnostics_->identity(composition_state_.composition.Get());
+        state.session = composition_state_.session; state.revision = engine_.revision();
+        state.stage = static_cast<unsigned>(engine_.stage()); state.mode = static_cast<unsigned>(engine_.mode());
+        state.pending = engine_.pending_romaji_length(); state.reading = engine_.reading_length(); state.okuri = engine_.okuri_length();
+        state.expected = composition_state_.expected_text.size(); return state;
+    }
+    void reset_engine(TsfReason reason) noexcept {
+        update_tsf_trace(diagnostic_state()); trace_tsf(TsfEvent::EngineReset, reason, S_OK, 0);
+        engine_.reset();
+        update_tsf_trace(diagnostic_state()); trace_tsf(TsfEvent::EngineReset, reason, S_OK, 1);
     }
     std::atomic<ULONG> refs_{1};
     ComPtr<ITfThreadMgr> manager_;
@@ -711,6 +838,7 @@ private:
     Engine engine_;
     std::shared_ptr<const Dictionary> dictionary_;
     RuntimeConfiguration configuration_;
+    std::shared_ptr<TsfDiagnosticLog> diagnostics_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
     CandidateSettings candidate_settings_;
@@ -725,6 +853,8 @@ private:
     bool selection_pending_ = false;
     std::uint64_t layout_generation_ = 0;
     bool layout_pending_ = false;
+    std::uint64_t focus_request_ = 0, focus_generation_ = 0;
+    bool focus_pending_ = false;
     TfGuidAtom input_atom_ = TF_INVALID_GUIDATOM;
     TfGuidAtom converted_atom_ = TF_INVALID_GUIDATOM;
     std::bitset<256> eaten_keys_;

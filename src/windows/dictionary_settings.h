@@ -22,6 +22,10 @@ struct DictionarySettings {
     std::filesystem::path romaji_rules; // Empty selects the built-in rules.
     ZenzSettings zenz;
     CandidateSettings candidates;
+    struct TsfLogSettings {
+        bool enabled = false;
+        std::filesystem::path directory;
+    } tsf_log;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;
@@ -41,6 +45,8 @@ DictionarySettings read_dictionary_settings(const std::filesystem::path&);
 std::string serialize_dictionary_settings(const DictionarySettings&);
 void save_dictionary_settings(const std::filesystem::path&, const DictionarySettings&);
 void validate_zenz_settings(const ZenzSettings&, bool check_files = false);
+void validate_tsf_log_settings(const DictionarySettings::TsfLogSettings&, bool check_files = false);
+std::wstring tsf_log_settings_status(const DictionarySettings::TsfLogSettings&);
 void validate_candidate_settings(const CandidateSettings&);
 std::wstring candidate_settings_status(const CandidateSettings&);
 std::wstring zenz_settings_status(const ZenzSettings&);

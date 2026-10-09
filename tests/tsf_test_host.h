@@ -231,6 +231,7 @@ public:
     // Context owns this manager. The non-owning top avoids a fixture cycle.
     ITfContext* top = nullptr;
     HRESULT top_status = S_OK;
+    std::function<void()> top_query;
     ComPtr<ITfCompartment> transitory_parent;
     TEST_REFS(DocumentManager);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -244,6 +245,7 @@ public:
     UNUSED_METHOD(Push, ITfContext*)
     UNUSED_METHOD(Pop, DWORD)
     HRESULT STDMETHODCALLTYPE GetTop(ITfContext** out) override {
+        auto query = std::move(top_query); top_query = nullptr; if (query) query();
         *out = nullptr; if (FAILED(top_status)) return top_status;
         *out = top; if (top) top->AddRef(); return top_status;
     }
@@ -309,7 +311,8 @@ public:
     bool defer_optional_session = false;
     bool reject_composition = false;
     bool reject_selection_read = false, interim_selection = false;
-    unsigned selection_writes = 0;
+    unsigned selection_writes = 0, selection_reads = 0;
+    bool reject_selection_write = false;
     bool readonly = false;
     DWORD static_flags = 0;
     HRESULT status_result = S_OK;
@@ -364,12 +367,14 @@ public:
         edits.Reset(); return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetSelection(TfEditCookie, ULONG, ULONG, TF_SELECTION* selection, ULONG* fetched) override {
+        ++selection_reads;
         if (reject_selection_read) { *selection = {}; *fetched = 0; return E_FAIL; }
         *selection = {new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end), {TF_AE_NONE, interim_selection ? TRUE : FALSE}};
         *fetched = 1; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetSelection(TfEditCookie, ULONG, const TF_SELECTION* selection) override {
         ++selection_writes;
+        if (reject_selection_write) return E_FAIL;
         doc->caret = static_cast<Range*>(selection->range)->start;
         doc->selection_end = static_cast<Range*>(selection->range)->end;
         interim_selection = selection->style.fInterimChar != FALSE;

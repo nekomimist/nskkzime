@@ -201,6 +201,11 @@ if(WIN32)
     target_link_libraries(tsf_romaji PRIVATE project_options ole32 oleaut32 uuid user32)
     add_dependencies(tsf_romaji nskkzime_tsf)
     add_test(NAME tsf_romaji COMMAND tsf_romaji $<TARGET_FILE:nskkzime_tsf> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/romaji.tsv)
+    add_executable(tsf_diagnostics_tests tests/tsf_diagnostics_tests.cpp src/windows/text_service.cpp
+      src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/display_attributes.cpp)
+    target_link_libraries(tsf_diagnostics_tests PRIVATE nskkzime_tsf_support oleaut32 user32 gdi32)
+    add_test(NAME tsf_diagnostics COMMAND tsf_diagnostics_tests)
+    set_tests_properties(tsf_diagnostics PROPERTIES TIMEOUT 30)
     add_test(NAME config_cli COMMAND ${CMAKE_COMMAND}
       -DCONFIG_EXE=$<TARGET_FILE:nskkzime_config>
       -DDICTIONARY=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/basic.utf8.skk

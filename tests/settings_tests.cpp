@@ -69,6 +69,20 @@ int main() {
                 rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
             settings.candidates.show_after = 0; rejects([&] { serialize_dictionary_settings(settings); });
         }},
+        {"settings/tsf-log-independent-opt-in-and-validation", [&] {
+            auto settings = parse_dictionary_settings("version=1\n");
+            require(!settings.tsf_log.enabled && settings.tsf_log.directory.empty(), "default TSF log enabled");
+            settings.tsf_log = {true, files.root};
+            const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));
+            require(loaded.tsf_log.enabled && loaded.tsf_log.directory == files.root && !loaded.zenz.enabled && !loaded.zenz.log_input, "TSF log coupled to inference");
+            validate_tsf_log_settings(loaded.tsf_log, true);
+            settings.tsf_log.enabled = false;
+            require(!parse_dictionary_settings(serialize_dictionary_settings(settings)).tsf_log.enabled, "TSF opt-out lost");
+            for (const auto invalid : {"tsf-log=on", "tsf-log=yes", "tsf-log=off\ntsf-log=on", "tsf-log-directory=relative", "tsf-log-directory=\\\\server\\share",
+                 "tsf-log-directory=C:\\a\ntsf-log-directory=C:\\b"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+            rejects([&] { validate_tsf_log_settings({true, missing}, true); });
+        }},
         {"settings/input-log-explicit-opt-in-and-path", [&] {
             auto settings = parse_dictionary_settings("version=1\n");
             require(!settings.zenz.log_input && settings.zenz.log_directory.empty(), "old settings enabled input log");

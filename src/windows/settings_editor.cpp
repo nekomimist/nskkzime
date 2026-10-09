@@ -39,8 +39,9 @@ SettingsCheck check_settings_draft(const DictionarySettings& settings) {
         const auto dictionaries = load_dictionaries(configuration);
         const auto romaji = load_romaji_rules(configuration);
         result.report = dictionaries.status + L"\r\n" + romaji.status + L"\r\n" + zenz_settings_status(settings.zenz) +
-            L"\r\n" + candidate_settings_status(settings.candidates);
+            L"\r\n" + candidate_settings_status(settings.candidates) + L"\r\n" + tsf_log_settings_status(settings.tsf_log);
         validate_zenz_settings(settings.zenz, true);
+        validate_tsf_log_settings(settings.tsf_log, true);
         result.valid = !dictionaries.failed && !romaji.failed;
         if (settings.zenz.enabled)
             result.report += L"\r\nCPU/OSの要件と、モデル・サーバーの存在を確認しました。推論動作の検証は含みません。";

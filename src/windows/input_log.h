@@ -1,5 +1,6 @@
 #pragma once
 #include "inference_ipc.h"
+#include "diagnostic_file.h"
 #include <optional>
 
 namespace nskkzime::windows {
@@ -13,17 +14,14 @@ struct InputLogRecord {
 // created until a TSF response has passed the current document/privacy checks.
 class InputLog {
 public:
-    explicit InputLog(std::filesystem::path directory) : directory_(std::move(directory)) {}
-    ~InputLog();
+    explicit InputLog(std::filesystem::path directory) : enabled_(!directory.empty()), file_(std::move(directory), L"nskkzime-input-", L"nskkzime-input-log.lock") {}
     InputLog(const InputLog&) = delete;
     InputLog& operator=(const InputLog&) = delete;
     InputLogStatus write(const InputLogRecord&) noexcept;
-    static constexpr std::size_t file_limit = 1024 * 1024, directory_files = 64;
+    static constexpr std::size_t file_limit = DiagnosticFile::file_limit, directory_files = DiagnosticFile::directory_files;
 private:
-    void open();
-    std::filesystem::path directory_;
-    HANDLE file_ = INVALID_HANDLE_VALUE;
-    std::size_t bytes_ = 0;
+    bool enabled_;
+    DiagnosticFile file_;
     InputLogStatus status_ = InputLogStatus::Ready;
 };
 const wchar_t* input_log_status_text(InputLogStatus) noexcept;

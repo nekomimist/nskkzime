@@ -61,6 +61,8 @@ void update_enabled(Editor& editor) {
     enabled(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, checked(inference, IDC_ZENZ));
     for (const auto id : {IDC_LOG_DIRECTORY, IDC_LOG_BROWSE})
         enabled(editor.pages[4], id, checked(editor.pages[4], IDC_INPUT_LOG));
+    for (const auto id : {IDC_TSF_LOG_DIRECTORY, IDC_TSF_LOG_BROWSE})
+        enabled(editor.pages[4], id, checked(editor.pages[4], IDC_TSF_LOG));
     const auto selection = SendDlgItemMessageW(editor.pages[0], IDC_DICTIONARIES, LB_GETCURSEL, 0, 0);
     enabled(editor.pages[0], IDC_REMOVE, selection != LB_ERR);
     enabled(editor.pages[0], IDC_UP, selection > 0);
@@ -119,6 +121,8 @@ void reload(Editor& editor) {
         set(advanced, IDC_MAX_GAP, std::to_wstring(zenz.policy.max_score_gap));
         check(editor.pages[4], IDC_INPUT_LOG, zenz.log_input);
         set(editor.pages[4], IDC_LOG_DIRECTORY, zenz.log_directory.native());
+        check(editor.pages[4], IDC_TSF_LOG, settings.tsf_log.enabled);
+        set(editor.pages[4], IDC_TSF_LOG_DIRECTORY, settings.tsf_log.directory.native());
         editor.valid = true;
         editor.dirty = false;
         std::wstring message = editor.document.original ? L"設定を読み込みました。"
@@ -173,6 +177,8 @@ DictionarySettings draft(Editor& editor) {
     zenz.policy.max_score_gap = number<float>(page, IDC_MAX_GAP, L"スコア差の上限", 0, 100);
     zenz.log_input = checked(editor.pages[4], IDC_INPUT_LOG);
     zenz.log_directory = get(editor.pages[4], IDC_LOG_DIRECTORY);
+    result.tsf_log.enabled = checked(editor.pages[4], IDC_TSF_LOG);
+    result.tsf_log.directory = get(editor.pages[4], IDC_TSF_LOG_DIRECTORY);
     return result;
 }
 void validate(Editor& editor, bool save) {
@@ -260,7 +266,7 @@ void browse(Editor& editor, int id) {
     const COMDLG_FILTERSPEC all[] = {{L"すべてのファイル", L"*.*"}};
     const COMDLG_FILTERSPEC model[] = {{L"GGUFモデル", L"*.gguf"}, {L"すべてのファイル", L"*.*"}};
     const auto paths = choose(editor.window, id == IDC_ADD, id == IDC_MODEL_BROWSE ? model : all,
-                              id == IDC_MODEL_BROWSE ? 2 : 1, id == IDC_LOG_BROWSE);
+                              id == IDC_MODEL_BROWSE ? 2 : 1, id == IDC_LOG_BROWSE || id == IDC_TSF_LOG_BROWSE);
     if (paths.empty())
         return;
     if (id == IDC_ADD) {
@@ -276,6 +282,8 @@ void browse(Editor& editor, int id) {
         set(editor.pages[1], IDC_ROMAJI_PATH, paths[0].native());
     else if (id == IDC_LOG_BROWSE)
         set(editor.pages[4], IDC_LOG_DIRECTORY, paths[0].native());
+    else if (id == IDC_TSF_LOG_BROWSE)
+        set(editor.pages[4], IDC_TSF_LOG_DIRECTORY, paths[0].native());
     else
         set(editor.pages[2], IDC_MODEL, paths[0].native());
     editor.dirty = true;
@@ -387,7 +395,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             } else if (id == IDOK || id == IDC_CHECK)
                 validate(*editor, id == IDOK);
             else if (!editor->work && editor->valid && !editor->loading) {
-                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_LOG_BROWSE)
+                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_LOG_BROWSE || id == IDC_TSF_LOG_BROWSE)
                     browse(*editor, id);
                 else if (id == IDC_REMOVE || id == IDC_UP || id == IDC_DOWN)
                     reorder(*editor, id);

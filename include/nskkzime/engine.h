@@ -115,6 +115,10 @@ public:
     void note_generation_attempt(); // Once per fresh conversion, even after timeout/cancellation.
     bool resume_registration(); // Empty/failed response falls back to the ordinary registration flow.
     std::uint64_t revision() const { return revision_; }
+    // Primitive diagnostics only; never construct or expose input text.
+    std::size_t pending_romaji_length() const noexcept { return input_.romaji.pending().size(); }
+    std::size_t reading_length() const noexcept { return input_.reading.size(); }
+    std::size_t okuri_length() const noexcept { return input_.okuri.size(); }
     std::u32string preedit() const;
     std::u32string composition_text() const; // Native composition, without diagnostic SKK markers.
     std::u32string literal_text() const; // No SKK markers; used on host termination.

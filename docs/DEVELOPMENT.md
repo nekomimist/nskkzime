@@ -26,12 +26,18 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 | 辞書 | `dictionary`, `compiled_dictionary`, `dictionary_cache`, `runtime_dictionary` |
 | 学習 | `learning`, `user_dictionary`, `user_dictionary_cli`, `dictionary_manager`, `tsf_learning` |
 | 設定 | `settings`, `settings_editor`, `config_cli`, `runtime_configuration`, `tool_launcher` |
-| TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_dictionary_startup` |
+| TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_diagnostics`, `tsf_dictionary_startup` |
 | 推論 | `inference`, `inference_policy`, `tsf_inference`, `tsf_inference_policy`, `zenz_backend`, `tsf_zenz` |
 | AppContainer | `app_container`（一時的なAppContainerプロファイルで実際に子プロセスを起動）, `broker_snapshot` |
 | 配布 | `package`（梱包と検査）, `installation`（登録は模擬。導入・更新・復帰・解除） |
 
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
+デスクトップ用TSFテストは通常プロセスとして実行する。AppContainer内では辞書がbroker経由になり、
+テスト専用設定のローカル辞書を待つ試験が初期化タイムアウトになる。
+`tsf_diagnostics` はログ有効・無効で本文・キーの消費・ホスト呼び出し数が変わらないこと、
+終了理由、再入・非同期通知、本文を保存しないこと、保存上限・キューの欠落を検証する。
+`tsf_smoke` は一時的なフォーカス先なし・GetTop失敗・空のtopからの復帰、次キーが先行する場合、
+継続するフォーカス離脱、別入力先への移動、古い非同期予約とGetTop中の再入による入力状態の保護も検証する。
 
 ## outの配置
 

@@ -38,6 +38,7 @@ nskkzime_config.exe --check
 | `zenz-learn-fallback` | off | 短い（9文字以下）追加生成語の学習 |
 | `zenz-unknown-context` | off | 入力属性の分からない欄でも前後の本文をzenzに渡す |
 | `input-log` / `input-log-directory` | off | 診断用の入力ログ（下記） |
+| `tsf-log` / `tsf-log-directory` | off | 本文・打鍵内容を含まないTSF診断ログ（下記） |
 
 設定ファイルがない場合は内蔵のテスト用辞書（5見出し）で動き、設定が壊れている場合はかな入力だけになる。
 複数の辞書の一部が読めない場合は、読めた辞書を使い、学習は止める。
@@ -160,6 +161,49 @@ nskkzime_user_dictionary.exe --import 'C:\辞書\my-skk-jisyo'
 変換の調査用に、設定GUIの「診断」か `--enable-input-log <フォルダー>` で有効にできる。
 推論の読み・前後各40文字の本文・候補・スコアを、指定したローカルフォルダーへ平文のJSON Linesで保存する。
 入力属性が確認できた通常の欄だけを記録し、1ファイル1 MiB・64ファイルで停止する。古いログは自動削除しない。
+
+## TSF診断ログ
+
+アプリによる入力の違いや、未確定入力が途切れる不具合を調べるためのログ。
+更新したIMEを導入したあと、設定GUIの「診断」で「TSF診断ログ」をオンにし、
+作成済みのローカルフォルダーを指定する。CLIでも設定できる。
+
+```powershell
+nskkzime_config.exe --enable-tsf-log 'C:\temp\nskkzime-tsf'
+nskkzime_config.exe --disable-tsf-log
+```
+
+保存後は対象アプリを終了して起動し直す。推論のオン・オフとは独立して動作し、既定はオフ。
+現在は通常のデスクトップアプリに対応する。AppContainerアプリでは保存未対応と表示する。
+
+`nskkzime-tsf-*.jsonl` に通知の順序、未確定入力の終了理由、APIの成否、
+入力モード・段階、ローマ字や読みの長さを記録する。アプリの実行ファイル名、PID、TIDも含む。
+本文・読みの内容・キー内容・ウィンドウのタイトル・ファイルのパスは記録しない。
+入力先や未確定入力の番号は、そのログ内だけで使うインターフェースポインターの識別子。
+COMの同一性を保証する番号ではなく、保持数の上限やポインターの再利用にも注意する。
+
+各ログ種類について1ファイル1 MiB・同じフォルダーに64ファイルまでで停止し、既存ファイルは削除しない。
+キー処理でファイルを書かず、512件までのキューから別スレッドで保存する。
+混雑時には記録を捨て、`seq` の飛びと `dropped` の累計で欠落を示す。
+検証アプリの状態欄には、そのプロセスの保存状態・上限・保存失敗・欠落数を表示する。
+
+未確定入力が途切れた場合は `finish_composition` / `engine_reset` の直前を見る。
+`range_read_failed` や `selection_unavailable` は取得失敗、`text_mismatch` / `caret_mismatch` は照合不一致、
+`host_termination` はアプリ側からの終了通知。`invalid_after_edit` は編集通知での照合から終了したことを示す。
+`engine_reset` の `detail` は0がリセット前、1がリセット後。
+`edit_request` の完了記録は `hr` が要求自体の結果、`detail` が編集セッションの結果、`detail2` が要求フラグ。
+`call` / `parent_call` / `depth` / `phase` で同じログ内の処理の入れ子を、`request` で非同期の編集要求と実行を対応付ける。
+`result_known=false` の `hr` は結果がまだない記録で、成否の判定には使わない。
+`state_source=request` は要求時点の状態。実行時に状態を更新できた記録は `current` になる。
+API診断は元の呼び出しの結果を記録し、ログのために本文や選択位置を再取得しない。
+
+`document_focus` のpoint記録の `detail` / `detail2` は新旧documentの番号。
+`document_top` は `hr` がGetTopの結果、`detail` が未解決のtop、`detail2` がdocumentの番号。
+`focus_resolved` の `context=0` は入力先を解決できなかったことを示す。
+その場合は終了判断を非同期に保留し、同じ入力先への復帰か、その入力先での正常なキー処理で取り消す。
+復帰やキー処理が非同期判断より先に来なければ未確定入力を終了する。別の入力先への移動や明確な離脱では即時に状態を破棄する。
+`focus_deferred` の `detail` は予約番号、`detail2` は0が予約・1が終了判断・2が予約失敗・3が無効な予約の破棄。
+`focus_cancelled` は取り消しの理由を記録する。
 
 ## DDSKKとの違い
 

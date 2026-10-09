@@ -1,5 +1,6 @@
 #pragma once
 #include "nskkzime/engine.h"
+#include "tsf_diagnostics.h"
 #include <msctf.h>
 #include <wrl/client.h>
 
@@ -8,7 +9,7 @@ class CompositionOwner {
 public:
     virtual std::uint64_t composition_revision() const = 0;
     virtual void detach_composition() noexcept = 0;
-    virtual void end_composition(TfEditCookie) noexcept = 0;
+    virtual void end_composition(TfEditCookie, TsfReason) noexcept = 0;
 protected:
     ~CompositionOwner() = default;
 };
@@ -21,6 +22,7 @@ struct PendingComposition {
     Microsoft::WRL::ComPtr<ITfComposition> composition;
     Microsoft::WRL::ComPtr<ITfContext> context;
     bool done = false;
+    std::uint64_t session = 0;
     HRESULT finish(TfEditCookie) noexcept;
 };
 // One host composition. The adapter invalidates inference/UI before releasing

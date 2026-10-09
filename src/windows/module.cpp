@@ -4,6 +4,7 @@
 #include "inference_client.h"
 #include "romaji_settings.h"
 #include "input_timing.h"
+#include "tsf_diagnostics.h"
 #include <new>
 
 namespace nskkzime::windows {
@@ -97,7 +98,8 @@ extern "C" HRESULT __stdcall NskkzimeGetDictionaryStatus(BSTR* output) {
     if (!output) return E_POINTER;
     *output = nullptr;
     try {
-        const auto status = nskkzime::windows::runtime_dictionary_status() + L"\r\n" + nskkzime::windows::runtime_romaji_status();
+        const auto status = nskkzime::windows::runtime_dictionary_status() + L"\r\n" + nskkzime::windows::runtime_romaji_status() +
+            L"\r\n" + nskkzime::windows::tsf_diagnostics_status();
         *output = SysAllocStringLen(status.data(), static_cast<UINT>(status.size()));
         return *output ? S_OK : E_OUTOFMEMORY;
     } catch (...) { return E_OUTOFMEMORY; }
