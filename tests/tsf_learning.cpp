@@ -4,6 +4,7 @@
 #include "local_storage.h"
 #include "tsf_test_host.h"
 #include "isolated_settings.h"
+#include "helper_cleanup.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -236,7 +237,7 @@ int wmain(int argc, wchar_t** argv) {
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     if (library && !result) FreeLibrary(library); // Worker owns a separate reference until its callback returns.
     SetKeyboardState(previous); CoUninitialize();
-    Sleep(12000); // Allow worker drain and helper idle exit before removing owned test files.
+    Sleep(300); stop_dictionary_helper(file); // Release the helper's lock before removing owned test files.
     std::error_code ignored; std::filesystem::remove_all(root, ignored);
     return result;
 }

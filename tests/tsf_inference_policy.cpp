@@ -4,6 +4,7 @@
 #include "inference_client.h"
 #include "dictionary_settings.h"
 #include "candidate_ui.h"
+#include "helper_cleanup.h"
 #include <atomic>
 #include <fstream>
 #include <future>
@@ -206,6 +207,6 @@ int wmain(int argc,wchar_t** argv) {
         {Session s;s.start("Arigatougozaimasu");s.complete();s.key(VK_RETURN);s.wait(250);check(read_user_dictionary(user).lookup({U"ありがとうございます"}).empty(),"long generation polluted dictionary");}
         check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy, opt-in logging and learning\n";result=0;
     } catch(const std::exception& error) {std::cerr<<"FAIL "<<error.what()<<'\n';}
-    SetKeyboardState(previous);CoUninitialize();try {server.get();}catch(...) {result=1;}Sleep(11000);
+    SetKeyboardState(previous);CoUninitialize();try {server.get();}catch(...) {result=1;}Sleep(300);stop_dictionary_helper(user);
     std::error_code ignored;std::filesystem::remove_all(root,ignored);return result;
 }

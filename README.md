@@ -11,7 +11,7 @@ nskkzime（**nekomimist's skk zenz ime**）は、DDSKK風の操作で入力し�
 
 ## ビルド
 
-PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake tools）、Python 3.11以上、`hf` CLIが必要。
+PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake tools）、`hf` CLIが必要。
 
 ```powershell
 .\scripts\prepare-zenz.ps1

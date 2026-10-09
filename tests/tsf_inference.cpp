@@ -4,6 +4,7 @@
 #include "inference_client.h"
 #include "candidate_ui.h"
 #include "isolated_settings.h"
+#include "helper_cleanup.h"
 #include <iostream>
 #include <stdexcept>
 namespace nskkzime::windows { HINSTANCE module_instance=nullptr; std::atomic<long> module_objects{0},server_locks{0}; }
@@ -80,6 +81,6 @@ int wmain(int argc,wchar_t** argv) {
         TerminateProcess(process.get(),0); WaitForSingleObject(process.get(),5000);
         std::cout<<"PASS asynchronous TSF generation, stale edits, context changes, protected fields, fallback and no learning\n"; result=0;
     } catch(const std::exception& e) { std::cerr<<"FAIL "<<e.what()<<'\n'; }
-    SetKeyboardState(previous); CoUninitialize(); Sleep(12000);
+    SetKeyboardState(previous); CoUninitialize(); Sleep(300); stop_dictionary_helper(file);
     std::error_code ignored; std::filesystem::remove_all(root,ignored); return result;
 }

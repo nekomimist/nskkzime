@@ -3,7 +3,7 @@
 ## ビルドとテスト
 
 PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake tools）、
-自動テスト用のPython 3.11以上（標準ライブラリのみ）、モデル取得用のHugging Face `hf` CLIを使う。
+モデル取得用のHugging Face `hf` CLIを使う。
 
 ```powershell
 .\scripts\prepare-zenz.ps1                 # 固定版のllama.cppとモデルを out/ へ取得・検査
@@ -28,8 +28,8 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 | 設定 | `settings`, `settings_editor`, `config_cli`, `runtime_configuration`, `tool_launcher` |
 | TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_dictionary_startup` |
 | 推論 | `inference`, `inference_policy`, `tsf_inference`, `tsf_inference_policy`, `zenz_backend`, `tsf_zenz` |
-| AppContainer | `app_container`（一時的なAppContainerプロファイルで実際に子プロセスを起動）, `broker_snapshot`, `broker_diagnostics` |
-| 配布 | `package`, `installation`（登録は模擬）, `build_metadata`, `stage_dev` |
+| AppContainer | `app_container`（一時的なAppContainerプロファイルで実際に子プロセスを起動）, `broker_snapshot` |
+| 配布 | `package`（梱包と検査）, `installation`（登録は模擬。導入・更新・復帰・解除） |
 
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
 
@@ -90,7 +90,7 @@ python -B scripts\evaluate.py --dictionary SKK-JISYO.utf8.L --ajimee out\referen
 - AJIMEE-Bench 200例（左文脈あり）: 生成の第一候補が173例で正解、IMEの候補統合規則まで適用すると145例。
 - 自作の診断28例: 辞書候補の採点で第一候補の正解が11例から27例へ（文脈なしでは10例に悪化）。
 - 128文字以上の長い読みの生成は失敗するか、内容が欠ける。
-- 結果は `out/` に出力する。本文を含むのでリポジトリには入れない。
+- 評価スクリプトにはPython 3.11以上（標準ライブラリのみ）が必要。結果は `out/` に出力し、本文を含むのでリポジトリには入れない。
 
 ### DDSKKとの比較
 

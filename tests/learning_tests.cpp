@@ -1,6 +1,7 @@
 #include "learning_ipc.h"
 #include "learning_client.h"
 #include "local_storage.h"
+#include "helper_cleanup.h"
 #include <algorithm>
 #include <chrono>
 #include <functional>
@@ -277,7 +278,8 @@ int wmain(int argc, wchar_t** argv) {
         catch (const std::exception& error) { std::cerr << "FAIL " << name << ": " << error.what() << '\n'; }
     }
     std::cout << passed << '/' << cases.size() << " passed\n";
-    // Detached workers have a bounded drain period; helper exits after idle.
-    Sleep(12000);
+    // Release the helpers' locks so the fixture files can be removed.
+    Sleep(300);
+    for (const auto name : {L"user.nskkdb", L"forget.nskkdb", L"queued.nskkdb", L"notify.nskkdb"}) stop_dictionary_helper(files.root / name);
     return passed == cases.size() ? 0 : 1;
 }
