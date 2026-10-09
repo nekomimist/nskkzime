@@ -6,7 +6,7 @@ param(
     [string]$Ddskk = (Join-Path $PSScriptRoot '../out/reference/ddskk'),
     [switch]$CoreOnly,
     [string]$Cases = (Join-Path $PSScriptRoot '../tests/fixtures/ddskk-comparison.json'),
-    [string]$OutputRoot = (Join-Path $PSScriptRoot '../out')
+    [string]$OutputRoot = (Join-Path $PSScriptRoot '../out/reports')
 )
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))

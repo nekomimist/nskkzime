@@ -328,7 +328,7 @@ def evaluate(args):
     model_hash = digest(args.model)
     if model_hash != MODEL_SHA256:
         raise ValueError("Model differs from the pinned Q5_K_M baseline")
-    output = Path(args.output) if args.output else ROOT / "out" / ("evaluation-" + uuid.uuid4().hex)
+    output = Path(args.output) if args.output else ROOT / "out/reports" / ("evaluation-" + uuid.uuid4().hex)
     output.mkdir(parents=True, exist_ok=False)
     metadata = dict(timestamp=datetime.now(timezone.utc).isoformat(), complete=False,
                     model_sha256=model_hash, dictionary_sha256=digest(args.dictionary),

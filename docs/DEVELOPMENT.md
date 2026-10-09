@@ -33,6 +33,27 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
 
+## outの配置
+
+`out/` はGitの管理外。直下には用途別のフォルダーだけを置く。
+
+| フォルダー | 内容 |
+|---|---|
+| `build/` | CMakeのビルド先。配置を変える場合は再configureが必要 |
+| `deps/` | llama.cppなどの依存ソースと取得したアーカイブ |
+| `models/` | zenzモデル。IMEの設定からも参照する |
+| `reference/` | DDSKKやAJIMEE-Benchなどの比較資料 |
+| `huggingface/` | モデル取得時のhfキャッシュ（必要時に作成） |
+| `packages/` | 明示的に作成した配布用ZIPとその展開先 |
+| `reports/` | 評価・比較・ベンチマークの結果と保存する検証ログ |
+| `tmp/` | 一時的な検証・導入作業。作業ごとにサブフォルダーを作る |
+| `archive/` | 過去の作業ファイルの退避先 |
+
+手動の検証ログは `out/reports/<検証名>/`、使い捨ての設定や作業ファイルは `out/tmp/<作業名>/` に置く。
+`register-dev.ps1` は `tmp/` 内で梱包・展開し、導入成功時に作業フォルダーを削除する。
+失敗時は調査用に残し、場所を表示する。AppContainerテストも成功時は自分の作業フォルダーを削除する。
+退避した古いビルドや設定には元の絶対パスが含まれるため、そのままの再実行は想定しない。
+
 ## 手元での確認
 
 | ツール | 用途 |
@@ -79,10 +100,10 @@ skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Kanji<Space><Enter>'
 ### zenzの品質・遅延（2026-10-06）
 
 ```powershell
-.\scripts\bench-zenz.ps1 -Rounds 30 -Output out\zenz-benchmark.json
+.\scripts\bench-zenz.ps1 -Rounds 30 -Output out\reports\zenz-benchmark.json
 git clone https://github.com/azooKey/AJIMEE-Bench.git out\reference\AJIMEE-Bench
 git -C out\reference\AJIMEE-Bench checkout --detach 401666cd56d1a570c2021798b64b6da4396bfd45
-python -B scripts\evaluate.py --dictionary SKK-JISYO.utf8.L --ajimee out\reference\AJIMEE-Bench\JWTD_v2\v1\evaluation_items.json --rounds 3 --stress-rounds 5 --key-rounds 1000 --output out\evaluation-new
+python -B scripts\evaluate.py --dictionary SKK-JISYO.utf8.L --ajimee out\reference\AJIMEE-Bench\JWTD_v2\v1\evaluation_items.json --rounds 3 --stress-rounds 5 --key-rounds 1000 --output out\reports\evaluation-new
 ```
 
 - 単体の計測（Ryzen 9 7950X3D、4スレッド）: 5候補の生成 p50 45ms／p95 70ms、3候補の採点 p50 27ms／p95 29ms、
@@ -90,7 +111,7 @@ python -B scripts\evaluate.py --dictionary SKK-JISYO.utf8.L --ajimee out\referen
 - AJIMEE-Bench 200例（左文脈あり）: 生成の第一候補が173例で正解、IMEの候補統合規則まで適用すると145例。
 - 自作の診断28例: 辞書候補の採点で第一候補の正解が11例から27例へ（文脈なしでは10例に悪化）。
 - 128文字以上の長い読みの生成は失敗するか、内容が欠ける。
-- 評価スクリプトにはPython 3.11以上（標準ライブラリのみ）が必要。結果は `out/` に出力し、本文を含むのでリポジトリには入れない。
+- 評価スクリプトにはPython 3.11以上（標準ライブラリのみ）が必要。結果は既定で `out/reports/` に出力し、本文を含むのでリポジトリには入れない。
 
 ### DDSKKとの比較
 

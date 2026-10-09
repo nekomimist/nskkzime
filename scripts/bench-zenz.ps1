@@ -81,7 +81,11 @@ try {
         startup_ms=[Math]::Round($startupMs,3); fixtures=$fixtures.Count; rounds=$Rounds; metrics=$metrics;
         notes='Process startup/model load is measured with the current OS file cache; this is not a cold disk test. Request times include PowerShell/JSON/stdio overhead. Fixed smoke examples do not measure general conversion quality.'
     } | ConvertTo-Json -Depth 6
-    if ($Output) { [IO.File]::WriteAllText([IO.Path]::GetFullPath($Output),$result,[Text.UTF8Encoding]::new($false)) }
+    if ($Output) {
+        $outputPath = [IO.Path]::GetFullPath($Output)
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($outputPath)) | Out-Null
+        [IO.File]::WriteAllText($outputPath,$result,[Text.UTF8Encoding]::new($false))
+    }
     $result
 } finally {
     if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
