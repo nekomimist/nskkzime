@@ -78,23 +78,16 @@ int wmain(int argc, wchar_t** argv) {
             context.Attach(new test_host::Context); context->input_scope = scope;
             type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_RETURN);
         }
-        context.Attach(new test_host::Context); context->unknown_scope = true;
-        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_RETURN);
-        for (const bool unknown : {false, true}) {
-            context.Attach(new test_host::Context); context->unknown_scope = unknown;
-            if (!unknown) context->input_scope = IS_PRIVATE;
+        {
+            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE;
             const auto origin = test_host::transitory_context(context.Get());
             type(keys.Get(), origin.Get(), "Kanji"); key(keys.Get(), origin.Get(), VK_SPACE); key(keys.Get(), origin.Get(), VK_RETURN);
             check(context->composition->ended && origin->doc->text.empty(), "parent learning check did not edit the parent");
         }
-        for (const auto status : {E_FAIL, S_FALSE}) { // Failure, absent scope, or mixed values must never permit persistence.
-            context.Attach(new test_host::Context); context->scope_value_status = status;
-            type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_RETURN);
-        }
         context.Attach(new test_host::Context);
         type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
         Sleep(1200);
-        check(read_user_dictionary(file).revision() == 1, "failed/private/unknown/canceled edit leaked learning");
+        check(read_user_dictionary(file).revision() == 1, "failed/private/canceled edit leaked learning");
         type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
         check(context->doc->text == L"感じ", "updated snapshot not used by next conversion");
         key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
@@ -145,10 +138,10 @@ int wmain(int argc, wchar_t** argv) {
         check(context->doc->text == L"aborted" && !host->ui, "focus loss inserted registration draft or retained UI");
         context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "a");
         check(context->doc->text == L"あ", "registration followed focus into another field");
-        for (const bool unknown : {false, true}) {
-            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE; context->unknown_scope = unknown;
+        {
+            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE;
             type(keys.Get(), context.Get(), "/secret"); key(keys.Get(), context.Get(), VK_SPACE);
-            check(context->doc->text == L"secret" && !host->ui, "private/unknown field started registration");
+            check(context->doc->text == L"secret" && !host->ui, "private field started registration");
             key(keys.Get(), context.Get(), VK_RETURN); type(keys.Get(), context.Get(), "kana");
             check(context->doc->text == L"secretかな", "private field lost normal input");
         }
@@ -184,10 +177,10 @@ int wmain(int argc, wchar_t** argv) {
         check(!host->ui && context->doc->text == L"感じ", "focus loss retained prompt or inserted answer");
         context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "a");
         check(context->doc->text == L"あ", "deletion confirmation followed input focus");
-        for (const bool unknown : {false, true}) {
-            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE; context->unknown_scope = unknown;
+        {
+            context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE;
             type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); type(keys.Get(), context.Get(), "X");
-            check(host->ui && SUCCEEDED(host->ui.As(&list)), "private/unknown field opened deletion prompt");
+            check(host->ui && SUCCEEDED(host->ui.As(&list)), "private field opened deletion prompt");
             list.Reset(); key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
         }
         context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
@@ -209,8 +202,41 @@ int wmain(int argc, wchar_t** argv) {
         key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
         until([&] { return read_user_dictionary(file).revision() == 5; });
         check(read_user_dictionary(file).lookup({U"みち"}).empty(), "registered word deletion not durable");
+
+        // Hosts without a usable input scope (Office etc.) learn, register and delete like ordinary fields.
+        context.Attach(new test_host::Context); context->unknown_scope = true;
+        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"漢字", "deleted learning still ranked first");
+        key(keys.Get(), context.Get(), VK_RETURN);
+        until([&] { return read_user_dictionary(file).revision() == 6; });
+        check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"漢字", "unknown-scope commit not learned");
+        context.Attach(new test_host::Context); context->unknown_scope = true;
+        type(keys.Get(), context.Get(), "/unscoped"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"unscoped" && host->ui, "unknown-scope field did not open registration");
+        type(keys.Get(), context.Get(), "kana"); key(keys.Get(), context.Get(), VK_RETURN);
+        check(context->doc->text == L"かな", "unknown-scope registration not applied");
+        until([&] { return read_user_dictionary(file).revision() == 7; });
+        check(read_user_dictionary(file).lookup({U"unscoped"})[0].text == U"かな", "unknown-scope registration not saved");
+        context.Attach(new test_host::Context); context->unknown_scope = true;
+        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); type(keys.Get(), context.Get(), "X");
+        check(host->ui && host->ui.As(&list) == E_NOINTERFACE, "unknown-scope field did not open deletion prompt");
+        type(keys.Get(), context.Get(), "yes"); key(keys.Get(), context.Get(), VK_RETURN);
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        until([&] { return read_user_dictionary(file).revision() == 8; });
+        check(read_user_dictionary(file).lookup({U"かんじ"}).empty(), "unknown-scope deletion not saved");
+        for (const auto status : {E_FAIL, S_FALSE}) { // Failed or mixed scope values are also not a protected field.
+            context.Attach(new test_host::Context); context->scope_value_status = status;
+            type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_RETURN);
+        }
+        {
+            context.Attach(new test_host::Context); context->unknown_scope = true;
+            const auto origin = test_host::transitory_context(context.Get());
+            type(keys.Get(), origin.Get(), "Kanji"); key(keys.Get(), origin.Get(), VK_SPACE); key(keys.Get(), origin.Get(), VK_RETURN);
+            check(context->composition->ended && origin->doc->text.empty(), "unknown parent learning did not edit the parent");
+        }
+        until([&] { return read_user_dictionary(file).revision() == 11; });
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
-        std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private scopes, focus/UI failure\n";
+        std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private and unknown scopes, focus/UI failure\n";
         result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     if (library && !result) FreeLibrary(library); // Worker owns a separate reference until its callback returns.

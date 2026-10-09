@@ -187,12 +187,11 @@ int wmain(int argc,wchar_t** argv) {
         check(log_files().size() == 1, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
         settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"1");
-        for(const bool allow_context:{false,true}) {
-         settings.zenz.allow_unknown_context=allow_context;save_dictionary_settings(config,settings);
-         Session s;s.context->unknown_scope=true;s.start("Mikan");s.complete();s.key(VK_RETURN);s.wait(250);
-         check(!std::filesystem::exists(user)||read_user_dictionary(user).lookup({U"みかん"}).empty(),"unknown field persisted a generated candidate");}
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"みかん"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"short fallback did not persist");}
+        // Hosts without an input scope (Office etc.) are not protected fields; they learn too.
+        {Session s;s.context->unknown_scope=true;s.start("Ringo");s.complete();check(s.context->doc->text==L"前有難うございます後","unknown-scope fallback missing");s.key(VK_RETURN);
+         const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"りんご"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"unknown-scope field did not persist a short fallback");}
         {Session s;s.start("Arigatougozaimasu");s.complete();s.key(VK_RETURN);s.wait(250);check(read_user_dictionary(user).lookup({U"ありがとうございます"}).empty(),"long generation polluted dictionary");}
         check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy, opt-in logging and learning\n";result=0;
     } catch(const std::exception& error) {std::cerr<<"FAIL "<<error.what()<<'\n';}

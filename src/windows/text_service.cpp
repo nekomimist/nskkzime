@@ -120,14 +120,13 @@ std::optional<Mode> mode_key(WPARAM code, Mode current) {
 
 bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCookie cookie, std::wstring& reason) {
     // Inspect the entire conversion before modifying it. A caret at its end can
-    // be outside the scope. Mixed/absent/failed values suppress persistence.
+    // be outside the scope. Only an explicit password/private scope suppresses
+    // persistence: many hosts (Office etc.) expose no input scope at all.
     reason = L"変換範囲を取得できません";
     ComPtr<ITfRange> range;
     if (!composition || FAILED(composition->GetRange(&range)) || !range) return false;
-    const auto permission = input_permission(context, range.Get(), cookie);
-    reason = L"入力属性が不明または範囲内で異なる入力欄";
-    if (permission == InputPermission::Restricted) reason = L"パスワードまたはプライベート入力欄";
-    return permission == InputPermission::Allowed;
+    reason = L"パスワードまたはプライベート入力欄";
+    return input_permission(context, range.Get(), cookie) != InputPermission::Restricted;
 }
 
 bool finishes_before_key(WPARAM code) {
