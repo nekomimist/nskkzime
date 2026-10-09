@@ -18,6 +18,7 @@ private:
     HANDLE value_;
 };
 std::filesystem::path learning_file_path();
+std::filesystem::path learning_file_path(const std::filesystem::path& settings_file);
 std::wstring learning_pipe_name(const std::filesystem::path&);
 std::string learning_client_id();
 UserDictionary read_user_dictionary(const std::filesystem::path&);

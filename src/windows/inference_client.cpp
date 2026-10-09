@@ -1,5 +1,6 @@
 #include "inference_client.h"
 #include "container_runtime.h"
+#include "runtime_configuration.h"
 #include <nlohmann/json.hpp>
 #include "dictionary_settings.h"
 #include "cpu_requirements.h"
@@ -191,25 +192,31 @@ LRESULT CALLBACK InferenceClient::window_proc(HWND window, UINT message, WPARAM 
     return DefWindowProcW(window,message,wparam,lparam);
 }
 std::optional<InferenceConfig> current_inference_config() {
-    InferenceConfig config;
     if (uses_data_broker()) {
         const auto remote = container_configuration();
-        if (!remote || !remote->configuration.settings.zenz.enabled) return {};
-        const auto& settings = remote->configuration.settings.zenz;
-        config.container = true; config.timeout_ms = settings.timeout_ms; config.policy = settings.policy;
-        config.container_generation = remote->generation;
-        config.log_input = settings.log_input; config.allow_unknown_context = settings.allow_unknown_context;
-        return config;
+        return remote ? inference_config(*remote) : std::nullopt;
     }
-    if (const auto dummy = environment_value(L"NSKKZIME_INFERENCE_DUMMY")) {
+    return inference_config(capture_runtime_configuration());
+}
+std::optional<InferenceConfig> inference_config(const ContainerConfiguration& remote) {
+    const auto& settings = remote.configuration.settings.zenz;
+    if (!settings.enabled) return {};
+    InferenceConfig config;
+    config.container = true; config.timeout_ms = settings.timeout_ms; config.policy = settings.policy;
+    config.container_generation = remote.generation;
+    config.log_input = settings.log_input; config.allow_unknown_context = settings.allow_unknown_context;
+    return config;
+}
+std::optional<InferenceConfig> inference_config(const RuntimeConfiguration& runtime) {
+    InferenceConfig config;
+    if (const auto& dummy = runtime.inference.dummy) {
         if (*dummy == L"0") return {};
         if (*dummy != L"1") throw std::invalid_argument("invalid inference override");
-        wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module(false),path,ARRAYSIZE(path));
-        if (!size || size == ARRAYSIZE(path)) throw std::runtime_error("cannot locate inference server");
-        config.server = std::filesystem::path(path).parent_path() / L"nkkz-ime-server.exe";
+        if (runtime.inference.default_server.empty()) throw std::runtime_error("cannot locate inference server");
+        config.server = runtime.inference.default_server;
         config.policy.long_min_length = 0; // Existing dummy fixtures exercise fallback only.
     } else {
-        const auto settings = current_dictionary_configuration().settings.zenz;
+        const auto& settings = runtime.dictionaries.settings.zenz;
         if (!settings.enabled) return {};
         require_zenz_cpu(current_cpu_features());
         validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
@@ -219,13 +226,13 @@ std::optional<InferenceConfig> current_inference_config() {
         config.log_input = settings.log_input; config.log_directory = settings.log_directory;
         config.allow_unknown_context = settings.allow_unknown_context;
     }
-    for (const auto item : {std::pair{L"NSKKZIME_INFERENCE_DELAY_MS",&config.delay_ms},std::pair{L"NSKKZIME_INFERENCE_TIMEOUT_MS",&config.timeout_ms}})
-        if (const auto value = environment_value(item.first)) {
+    for (const auto& item : {std::pair{runtime.inference.delay_ms,&config.delay_ms},std::pair{runtime.inference.timeout_ms,&config.timeout_ms}})
+        if (const auto& value = item.first) {
             if (value->empty() || !std::all_of(value->begin(),value->end(),[](auto ch) { return ch >= L'0' && ch <= L'9'; })) throw std::invalid_argument("invalid inference limit");
             const auto parsed = std::stoul(*value); if (parsed > 10000) throw std::invalid_argument("inference limit exceeds 10000 ms"); *item.second = parsed;
         }
     if (!config.timeout_ms) throw std::invalid_argument("inference timeout must be positive");
-    if (const auto token = environment_value(L"NSKKZIME_INFERENCE_TOKEN")) config.token = *token;
+    if (const auto& token = runtime.inference.token) config.token = *token;
     else if (!config.model.empty()) config.token = zenz_token(config);
     else { const auto id = learning_client_id(); config.token.assign(id.begin(),id.end()); }
     (void)inference_pipe_name(config.token);

@@ -73,6 +73,10 @@ std::filesystem::path learning_file_path() {
     if (const auto file = environment_value(L"NSKKZIME_USER_DICTIONARY")) return checked_path(*file);
     return checked_path(dictionary_settings_path().parent_path() / L"user-dictionary.nskkdb");
 }
+std::filesystem::path learning_file_path(const std::filesystem::path& settings_file) {
+    if (const auto file = environment_value(L"NSKKZIME_USER_DICTIONARY")) return checked_path(*file);
+    return checked_path(settings_file.parent_path() / L"user-dictionary.nskkdb");
+}
 std::wstring learning_pipe_name(const std::filesystem::path& file) {
     auto name = checked_path(file).native();
     need(name.size() <= 32767, "user dictionary path too long");

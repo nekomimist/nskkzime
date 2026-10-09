@@ -10,6 +10,7 @@ class CompiledDictionary final : public Dictionary {
     static std::string compile(const SkkDictionary &);
     std::vector<Candidate> lookup(const LookupKey &, std::u32string_view okuri = {}) const override;
     const DictionaryReport &report() const { return report_; }
+    std::string_view image() const { return bytes_; } // Immutable, validated transport image.
 
   private:
     std::uint32_t word(std::size_t offset) const;

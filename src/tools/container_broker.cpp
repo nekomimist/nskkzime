@@ -1,4 +1,7 @@
 #include "app_container.h"
+#include "broker_snapshot.h"
+#include "broker_diagnostics.h"
+#include "runtime_configuration.h"
 #include "dictionary_settings.h"
 #include "inference_client.h"
 #include "learning_client.h"
@@ -15,55 +18,42 @@
 using namespace nskkzime;
 using namespace nskkzime::windows;
 namespace {
-std::string generation(const DictionaryConfiguration& config) {
-    auto bytes = serialize_dictionary_settings(config.settings) + utf8_message(config.file.native());
-    unsigned char digest[32]{};
-    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(bytes.data()), static_cast<ULONG>(bytes.size()), digest, 32) < 0)
-        throw std::runtime_error("cannot identify settings");
-    std::string result; constexpr char hex[] = "0123456789abcdef";
-    for (auto b : digest) { result += hex[b >> 4]; result += hex[b & 15]; } return result;
-}
-std::string read_romaji(const std::filesystem::path& path) {
-    if (path.empty()) return {};
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    const auto size = file.tellg();
-    if (!file || size < 0 || size > 1024 * 1024) throw std::runtime_error("invalid romaji file");
-    std::string bytes(static_cast<std::size_t>(size), '\0'); file.seekg(0);
-    if (!file.read(bytes.data(), size)) throw std::runtime_error("cannot read romaji file");
-    RomajiRules::parse(bytes); return bytes;
-}
 struct Broker {
+    BrokerDiagnostics* diagnostics = nullptr;
     std::mutex snapshot_mutex, log_mutex;
-    std::string snapshot_key, snapshot_bytes, log_key;
+    std::string log_key;
+    std::string snapshot_generation;
+    bool snapshot_learning = false;
     std::unique_ptr<InputLog> logger;
-    std::string snapshot(const DictionaryConfiguration& config, const std::string& id) {
+    std::string snapshot(const DictionaryConfiguration& config, const std::string& id, bool legacy = false) {
         // Only configured paths are opened; no file path comes from a client.
-        auto key = id;
-        for (const auto& path : config.settings.dictionaries) {
-            key += std::to_string(std::filesystem::file_size(path));
-            key += std::to_string(std::filesystem::last_write_time(path).time_since_epoch().count());
-        }
-        if (!config.settings.romaji_rules.empty()) key += std::to_string(std::filesystem::last_write_time(config.settings.romaji_rules).time_since_epoch().count());
         const std::lock_guard lock(snapshot_mutex);
-        if (key == snapshot_key && !snapshot_bytes.empty()) return snapshot_bytes;
-        nlohmann::json response{{"version", 1}, {"settings", serialize_dictionary_settings(config.settings)},
-            {"file", utf8_message(config.file.native())}, {"demo", config.demo}, {"generation", id},
-            {"romaji", read_romaji(config.settings.romaji_rules)}, {"images", nlohmann::json::array()}};
-        std::size_t total = 0;
-        for (const auto& path : config.settings.dictionaries) {
-            const auto image = CompiledDictionary::compile(*SkkDictionary::load(path));
-            total += image.size(); if (total > container_response_limit - 1024 * 1024) throw std::runtime_error("snapshot too large");
-            response["images"].push_back(nlohmann::json::binary(std::vector<std::uint8_t>(image.begin(), image.end())));
+        // Read source bytes on every bootstrap. The shared dictionary cache
+        // hashes those exact bytes, including same-size/same-time replacements.
+        auto loaded = build_broker_snapshot(config, id, dictionary_cache_path(config), legacy);
+        snapshot_generation = id; snapshot_learning = loaded.learning_allowed;
+        if (diagnostics) {
+            ContainerDiagnostic event{ContainerEvent::Snapshot}; event.phase = ContainerPhase::Handle;
+            event.sources = loaded.sources; event.failed_sources = loaded.failed_sources;
+            event.romaji_fallback = loaded.romaji_fallback ? 1 : 0; diagnostics->record(event);
         }
-        const auto encoded = nlohmann::json::to_cbor(response);
-        if (encoded.size() > container_response_limit) throw std::runtime_error("snapshot too large");
-        snapshot_bytes.assign(encoded.begin(), encoded.end()); snapshot_key = key; return snapshot_bytes;
+        return std::move(loaded.bytes);
+    }
+    bool learning_allowed(const DictionaryConfiguration& config, const std::string& id) {
+        {
+            const std::lock_guard lock(snapshot_mutex);
+            if (snapshot_generation == id) return snapshot_learning;
+        }
+        (void)snapshot(config, id);
+        const std::lock_guard lock(snapshot_mutex);
+        return snapshot_generation == id && snapshot_learning;
     }
     std::string handle(std::string_view bytes, const std::function<bool()>& cancelled) {
-        const auto config = current_dictionary_configuration(); const auto id = generation(config);
-        if (bytes == "INIT") return snapshot(config, id);
+        const auto config = current_dictionary_configuration(); const auto id = dictionary_configuration_id(config);
+        if (bytes == "INIT" || bytes == "INI2") return snapshot(config, id, bytes == "INIT");
         if (bytes.size() < 68 || bytes.substr(4, 64) != id) throw std::runtime_error("stale settings");
         const auto operation = bytes.substr(0, 4), body = bytes.substr(68);
+        const auto runtime = capture_runtime_configuration(config);
         if (operation == "GUI1") {
             // The transport rejects this operation from AppContainer peers.
             // No caller-supplied path or command line crosses the boundary.
@@ -72,20 +62,20 @@ struct Broker {
                 command.tool = ImeTool::Settings; command.file = config.file;
                 command.executable = container_broker_path().parent_path() / L"nskkzime_settings.exe";
             } else if (body == "dictionary") {
-                command.tool = ImeTool::Dictionary; command.file = learning_file_path();
+                command.tool = ImeTool::Dictionary; command.file = runtime.user_file;
                 command.executable = container_broker_path().parent_path() / L"nskkzime_dictionary_gui.exe";
             } else throw std::runtime_error("unknown GUI");
             if (launch_tool_process(command) != ERROR_SUCCESS) throw std::runtime_error("GUI unavailable");
             return "OKAY";
         }
         if (operation == "LRN1") {
-            if (!config.settings.learning || config.demo || config.settings.dictionaries.empty()) throw std::runtime_error("learning disabled");
+            if (!learning_allowed(config, id)) throw std::runtime_error("learning disabled");
             if (body.starts_with("NKL1") || body.starts_with("NKF1")) (void)decode_learning(body);
             else if (body.size() != 12 || !body.starts_with("GET1")) throw std::runtime_error("unsupported learning operation");
-            const auto file = learning_file_path();
+            const auto& file = runtime.user_file;
             try { return learning_exchange(file, body); }
             catch (...) {
-                const auto child = launch_dictionary_server(learning_helper_path(), file);
+                const auto child = launch_dictionary_server(runtime.learning_helper, file);
                 for (int i = 0; i < 100 && !cancelled(); ++i) {
                     try { return learning_exchange(file, body); } catch (...) { Sleep(10); }
                 }
@@ -93,7 +83,7 @@ struct Broker {
             }
         }
         if (operation == "INF1") {
-            const auto settings = current_inference_config(); if (!settings) throw std::runtime_error("inference disabled");
+            const auto settings = inference_config(runtime); if (!settings) throw std::runtime_error("inference disabled");
             const auto request = decode_request(std::string(body));
             const auto timeout = request.operation == InferenceOperation::Score ? settings->policy.score_timeout_ms : settings->timeout_ms;
             const auto deadline = GetTickCount64() + timeout;
@@ -138,6 +128,10 @@ struct Broker {
 };
 }
 int wmain(int argc, wchar_t** argv) {
+    std::unique_ptr<BrokerDiagnostics> diagnostics;
+    const auto record = [&](ContainerEvent event, ContainerReason reason = ContainerReason::None) {
+        if (diagnostics) { ContainerDiagnostic item{event}; item.reason = reason; diagnostics->record(item); }
+    };
     try {
         bool replace = false, stop_only = false; auto packages = supported_container_packages();
         bool explicit_config = false; std::wstring instance;
@@ -151,21 +145,29 @@ int wmain(int argc, wchar_t** argv) {
             } else if (arg == L"--test-package" && i + 1 < argc && explicit_config) { packages = {argv[++i]}; instance = container_sid(packages.front()); }
             else throw std::runtime_error("usage: nskkzime_broker [--replace|--stop] [--config PATH [--test-package NAME]]");
         }
+        try { diagnostics = std::make_unique<BrokerDiagnostics>(dictionary_settings_path().parent_path() / L"diagnostics"); }
+        catch (...) { /* Diagnostics cannot prevent startup. */ }
+        record(ContainerEvent::Start);
         if (in_app_container()) throw std::runtime_error("broker requires a desktop process");
         if (!explicit_config && redirected_data_context()) throw std::runtime_error("broker requires an unvirtualized desktop process");
         const auto stop = container_stop_event(instance);
-        if (stop_only) { SetEvent(stop.get()); return 0; }
+        if (stop_only) { record(ContainerEvent::Stop); SetEvent(stop.get()); record(ContainerEvent::Exit); return 0; }
         const auto mutex = container_instance_mutex(instance);
         auto acquired = WaitForSingleObject(mutex.get(), 0);
-        if (acquired == WAIT_TIMEOUT && !replace) return 0;
-        if (acquired == WAIT_TIMEOUT) { SetEvent(stop.get()); acquired = WaitForSingleObject(mutex.get(), 35000); }
+        if (acquired == WAIT_TIMEOUT && !replace) { record(ContainerEvent::Existing); record(ContainerEvent::Exit); return 0; }
+        if (acquired == WAIT_TIMEOUT) { record(ContainerEvent::Replace); SetEvent(stop.get()); acquired = WaitForSingleObject(mutex.get(), 35000); }
         if (acquired != WAIT_OBJECT_0 && acquired != WAIT_ABANDONED) throw std::runtime_error("broker is busy");
         ResetEvent(stop.get());
-        Broker broker;
-        try { serve_container(packages, [&](auto request, const auto& cancelled) { return broker.handle(request, cancelled); }, stop.get(), instance); }
+        Broker broker; broker.diagnostics = diagnostics.get();
+        const ContainerObserver observer = [&](const ContainerDiagnostic& item) { if (diagnostics) diagnostics->record(item); };
+        try { serve_container(packages, [&](auto request, const auto& cancelled) { return broker.handle(request, cancelled); }, stop.get(), instance, observer); }
         catch (...) { ReleaseMutex(mutex.get()); throw; }
-        ReleaseMutex(mutex.get()); return 0;
-    } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+        ReleaseMutex(mutex.get()); record(ContainerEvent::Exit); return 0;
+    } catch (const ContainerFailure& error) {
+        if (diagnostics) { ContainerDiagnostic item{ContainerEvent::Failed}; item.reason = error.reason;
+            item.error = error.error; diagnostics->record(item); }
+        std::cerr << error.what() << '\n'; return 1;
+    } catch (const std::exception& error) { record(ContainerEvent::Failed, ContainerReason::Internal); std::cerr << error.what() << '\n'; return 1; }
 }
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     int count = 0; auto args = CommandLineToArgvW(GetCommandLineW(), &count);

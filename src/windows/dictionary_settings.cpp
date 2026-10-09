@@ -333,7 +333,8 @@ LoadedDictionaries load_dictionaries(const DictionaryConfiguration& configuratio
         }
     }
     if (dictionaries.empty()) loaded.status += L"\r\n使用できる辞書は0件です。かな入力は利用できます。";
-    loaded.dictionary = std::make_shared<DictionarySet>(std::move(dictionaries));
+    loaded.sources = std::move(dictionaries);
+    loaded.dictionary = std::make_shared<DictionarySet>(loaded.sources);
     return loaded;
 }
 } // namespace nskkzime::windows

@@ -9,31 +9,45 @@
 #include <array>
 #include <thread>
 #include <stdexcept>
+#include <atomic>
+#include <memory>
 
 namespace nskkzime::windows {
 namespace {
 int anchor;
-void need(bool ok) { if (!ok) throw std::runtime_error("AppContainer broker unavailable"); }
+using Failure = ContainerFailure;
+void need(bool ok) { if (!ok) throw Failure(ContainerReason::Validation); }
+void native_need(bool ok) { if (!ok) throw Failure(ContainerReason::Win32, GetLastError()); }
+void check_deadline(ULONGLONG deadline, HANDLE cancel) {
+    const auto waited = WaitForSingleObject(cancel, 0);
+    if (waited == WAIT_FAILED) throw Failure(ContainerReason::Win32, GetLastError());
+    if (waited == WAIT_OBJECT_0) throw Failure(ContainerReason::Cancelled);
+    if (GetTickCount64() >= deadline) throw Failure(ContainerReason::Timeout);
+}
+void emit(const ContainerObserver& observer, const ContainerDiagnostic& event) noexcept {
+    try { if (observer) observer(event); } catch (...) {}
+}
 std::wstring sid_text(PSID sid) {
-    LPWSTR raw = nullptr; need(ConvertSidToStringSidW(sid, &raw) != FALSE);
+    LPWSTR raw = nullptr; native_need(ConvertSidToStringSidW(sid, &raw) != FALSE);
     try { std::wstring result(raw); LocalFree(raw); return result; }
     catch (...) { LocalFree(raw); throw; }
 }
 std::vector<unsigned char> token_info(HANDLE token, TOKEN_INFORMATION_CLASS kind) {
     DWORD size = 0; GetTokenInformation(token, kind, nullptr, 0, &size);
     need(size && size <= 65536); std::vector<unsigned char> bytes(size);
-    need(GetTokenInformation(token, kind, bytes.data(), size, &size) != FALSE); return bytes;
+    native_need(GetTokenInformation(token, kind, bytes.data(), size, &size) != FALSE); return bytes;
 }
 struct Descriptor {
     PSECURITY_DESCRIPTOR value = nullptr;
     explicit Descriptor(const std::wstring& sddl) {
-        need(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &value, nullptr) != FALSE);
+        native_need(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &value, nullptr) != FALSE);
     }
     ~Descriptor() { LocalFree(value); }
 };
 void grant_query(HANDLE object, DWORD rights, const std::vector<std::wstring>& sids) {
     PACL previous = nullptr, next = nullptr; PSECURITY_DESCRIPTOR raw = nullptr;
-    need(GetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &previous, nullptr, &raw) == ERROR_SUCCESS);
+    const auto read_error = GetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &previous, nullptr, &raw);
+    if (read_error != ERROR_SUCCESS) throw Failure(ContainerReason::Win32, read_error);
     try {
         std::vector<EXPLICIT_ACCESSW> entries(sids.size()); std::vector<PSID> parsed(sids.size());
         try {
@@ -42,44 +56,52 @@ void grant_query(HANDLE object, DWORD rights, const std::vector<std::wstring>& s
                 auto& e = entries[i]; e.grfAccessPermissions = rights; e.grfAccessMode = GRANT_ACCESS;
                 e.Trustee.TrusteeForm = TRUSTEE_IS_SID; e.Trustee.ptstrName = static_cast<LPWSTR>(parsed[i]);
             }
-            need(SetEntriesInAclW(static_cast<ULONG>(entries.size()), entries.data(), previous, &next) == ERROR_SUCCESS);
+            const auto acl_error = SetEntriesInAclW(static_cast<ULONG>(entries.size()), entries.data(), previous, &next);
+            if (acl_error != ERROR_SUCCESS) throw Failure(ContainerReason::Win32, acl_error);
         } catch (...) { for (auto p : parsed) LocalFree(p); throw; }
         for (auto p : parsed) LocalFree(p);
-        need(SetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, next, nullptr) == ERROR_SUCCESS);
+        const auto write_error = SetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, next, nullptr);
+        if (write_error != ERROR_SUCCESS) throw Failure(ContainerReason::Win32, write_error);
     } catch (...) { LocalFree(next); LocalFree(raw); throw; }
     LocalFree(next); LocalFree(raw);
 }
-void check_peer(HANDLE pipe, bool server, const ProcessIdentity& expected) {
-    ULONG pid = 0; need((server ? GetNamedPipeClientProcessId(pipe, &pid) : GetNamedPipeServerProcessId(pipe, &pid)) != FALSE);
-    NativeHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)); need(process.valid());
+DWORD check_peer(HANDLE pipe, bool server, const ProcessIdentity& expected) {
+    ULONG pid = 0; native_need((server ? GetNamedPipeClientProcessId(pipe, &pid) : GetNamedPipeServerProcessId(pipe, &pid)) != FALSE);
+    NativeHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)); native_need(process.valid());
     const auto identity = process_identity(process.get());
     need(identity.user == expected.user && identity.session == expected.session);
     if (server) need(identity.container == expected.container);
     else {
         need(identity.container.empty());
         std::wstring path(32768, L'\0'); DWORD size = static_cast<DWORD>(path.size());
-        need(QueryFullProcessImageNameW(process.get(), 0, path.data(), &size) != FALSE); path.resize(size);
+        native_need(QueryFullProcessImageNameW(process.get(), 0, path.data(), &size) != FALSE); path.resize(size);
         const auto wanted = container_broker_path().native();
         need(CompareStringOrdinal(path.c_str(), -1, wanted.c_str(), -1, TRUE) == CSTR_EQUAL);
     }
+    return pid;
 }
 DWORD finish(HANDLE pipe, OVERLAPPED& operation, BOOL started, ULONGLONG deadline, HANDLE cancel) {
-    const auto error = started ? ERROR_SUCCESS : GetLastError(); need(started || error == ERROR_IO_PENDING);
+    const auto error = started ? ERROR_SUCCESS : GetLastError();
+    if (!started && error != ERROR_IO_PENDING) throw Failure(ContainerReason::Win32, error);
     DWORD count = 0;
     if (!started) {
         const HANDLE events[]{cancel, operation.hEvent}; const auto now = GetTickCount64();
         const auto waited = WaitForMultipleObjects(2, events, FALSE, now < deadline ? static_cast<DWORD>(deadline - now) : 0);
         if (waited != WAIT_OBJECT_0 + 1) {
-            CancelIoEx(pipe, &operation); GetOverlappedResult(pipe, &operation, &count, TRUE); need(false);
+            const auto wait_error = waited == WAIT_FAILED ? GetLastError() : 0;
+            CancelIoEx(pipe, &operation); GetOverlappedResult(pipe, &operation, &count, TRUE);
+            if (waited == WAIT_TIMEOUT) throw Failure(ContainerReason::Timeout);
+            if (waited == WAIT_OBJECT_0) throw Failure(ContainerReason::Cancelled);
+            throw Failure(ContainerReason::Win32, wait_error);
         }
     }
-    need(GetOverlappedResult(pipe, &operation, &count, FALSE) != FALSE);
-    need(WaitForSingleObject(cancel, 0) != WAIT_OBJECT_0 && GetTickCount64() < deadline); return count;
+    native_need(GetOverlappedResult(pipe, &operation, &count, FALSE) != FALSE);
+    check_deadline(deadline, cancel); return count;
 }
 void transfer(HANDLE pipe, char* bytes, std::size_t size, bool write, ULONGLONG deadline, HANDLE cancel) {
     while (size) {
-        need(GetTickCount64() < deadline && WaitForSingleObject(cancel, 0) != WAIT_OBJECT_0);
-        NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr)); need(event.valid());
+        check_deadline(deadline, cancel);
+        NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr)); native_need(event.valid());
         OVERLAPPED operation{}; operation.hEvent = event.get();
         const auto amount = static_cast<DWORD>((std::min)(size, std::size_t(65536)));
         const auto started = write ? WriteFile(pipe, bytes, amount, nullptr, &operation) : ReadFile(pipe, bytes, amount, nullptr, &operation);
@@ -103,11 +125,11 @@ NativeHandle control_object(bool mutex, std::wstring_view instance) {
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor.value, FALSE};
     const auto name = L"Local\\nskkzime-container-v1-" + identity.user + std::wstring(instance) + (mutex ? L"-instance" : L"-stop");
     NativeHandle result(mutex ? CreateMutexW(&attributes, FALSE, name.c_str()) : CreateEventW(&attributes, TRUE, FALSE, name.c_str()));
-    need(result.valid()); return result;
+    native_need(result.valid()); return result;
 }
 }
 ProcessIdentity process_identity(HANDLE process) {
-    HANDLE raw = nullptr; need(OpenProcessToken(process, TOKEN_QUERY, &raw) != FALSE); NativeHandle token(raw);
+    HANDLE raw = nullptr; native_need(OpenProcessToken(process, TOKEN_QUERY, &raw) != FALSE); NativeHandle token(raw);
     ProcessIdentity result;
     const auto user = token_info(token.get(), TokenUser); result.user = sid_text(reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid);
     const auto session = token_info(token.get(), TokenSessionId); result.session = *reinterpret_cast<const DWORD*>(session.data());
@@ -189,7 +211,8 @@ std::string container_exchange(std::string_view request, ULONGLONG deadline, HAN
     auto response = receive(pipe.get(), container_response_limit, deadline, cancel);
     char ack = 1; transfer(pipe.get(), &ack, 1, true, deadline, cancel); return response;
 }
-void serve_container(const std::vector<std::wstring>& packages, const ContainerHandler& handler, HANDLE stop, std::wstring_view desktop_instance) {
+void serve_container(const std::vector<std::wstring>& packages, const ContainerHandler& handler, HANDLE stop,
+    std::wstring_view desktop_instance, const ContainerObserver& observer) {
     auto own = process_identity(); need(own.container.empty() && !packages.empty() && packages.size() <= 16);
     std::vector<std::wstring> sids;
     for (const auto& package : packages) {
@@ -198,45 +221,118 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
     // Clients can verify our token and exact executable path, but cannot inspect
     // memory, duplicate handles, write the process, or change its token.
     grant_query(GetCurrentProcess(), PROCESS_QUERY_LIMITED_INFORMATION, sids);
-    HANDLE raw = nullptr; need(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | READ_CONTROL | WRITE_DAC, &raw) != FALSE);
+    HANDLE raw = nullptr; native_need(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | READ_CONTROL | WRITE_DAC, &raw) != FALSE);
     NativeHandle token(raw); grant_query(token.get(), TOKEN_QUERY, sids);
     sids.push_back(L""); // Normal desktop peers: same user/session, no AppContainer.
-    struct Listener { NativeHandle pipe; ProcessIdentity peer; };
+    struct State { std::atomic<bool> active{false}; std::atomic<ContainerPhase> phase{ContainerPhase::Create}; };
+    struct Listener { NativeHandle pipe; ProcessIdentity peer; int instance; std::shared_ptr<State> state; };
+    struct Endpoint { std::wstring name, sid; std::vector<std::shared_ptr<State>> states; DWORD last_error = MAXDWORD; ULONGLONG next_report = 0; };
     std::vector<Listener> listeners;
+    std::vector<Endpoint> endpoints;
     for (const auto& sid : sids) {
         auto peer = own; peer.container = sid; auto name = container_pipe_name(peer);
         if (sid.empty()) name += desktop_instance;
         Descriptor descriptor(L"D:P(A;;GA;;;" + own.user + L")" +
             (sid.empty() ? std::wstring{} : L"(A;;0x12019b;;;" + sid + L")S:(ML;;NW;;;LW)"));
         SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor.value, FALSE};
+        Endpoint endpoint{name, sid};
         for (int i = 0; i < 4; ++i) {
             NativeHandle pipe(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (i ? 0 : FILE_FLAG_FIRST_PIPE_INSTANCE),
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 65536, 65536, 0, &attributes));
-            need(pipe.valid()); listeners.push_back({std::move(pipe), peer});
+            const auto error = pipe.valid() ? 0 : GetLastError();
+            ContainerDiagnostic event{pipe.valid() ? ContainerEvent::ListenerCreated : ContainerEvent::ListenerFailed};
+            event.phase = ContainerPhase::Create; event.container = sid; event.instance = i; event.error = error;
+            if (error) event.reason = ContainerReason::Win32;
+            emit(observer, event);
+            if (!pipe.valid()) throw Failure(ContainerReason::Win32, error);
+            auto state = std::make_shared<State>(); endpoint.states.push_back(state);
+            listeners.push_back({std::move(pipe), peer, i, std::move(state)});
         }
+        endpoints.push_back(std::move(endpoint));
     }
     auto run = [&](Listener& listener) {
+        listener.state->active = true;
+        struct OnExit { Listener& listener; const ContainerObserver& observer; ~OnExit() {
+            listener.state->active = false;
+            ContainerDiagnostic event{ContainerEvent::ListenerExit}; event.container = listener.peer.container;
+            event.instance = listener.instance; event.phase = listener.state->phase; emit(observer, event);
+        } } on_exit{listener, observer};
         while (WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
-            NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr)); if (!event.valid()) return;
+            ContainerDiagnostic diagnostic{ContainerEvent::RequestFailed}; diagnostic.container = listener.peer.container;
+            diagnostic.instance = listener.instance; diagnostic.phase = ContainerPhase::Accept;
+            listener.state->phase = diagnostic.phase;
+            NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+            if (!event.valid()) {
+                diagnostic.event = ContainerEvent::ListenerFailed; diagnostic.error = GetLastError();
+                diagnostic.reason = ContainerReason::Win32; emit(observer, diagnostic); return;
+            }
             OVERLAPPED operation{}; operation.hEvent = event.get();
             const auto connected = ConnectNamedPipe(listener.pipe.get(), &operation); const auto error = connected ? ERROR_SUCCESS : GetLastError();
+            auto started = GetTickCount64();
+            const auto phase = [&](ContainerPhase value) { diagnostic.phase = value; listener.state->phase = value; };
             try {
-                if (!connected && error != ERROR_PIPE_CONNECTED) finish(listener.pipe.get(), operation, connected, GetTickCount64() + 60000, stop);
-                check_peer(listener.pipe.get(), true, listener.peer);
+                if (!connected && error != ERROR_PIPE_CONNECTED) {
+                    const auto deadline = GetTickCount64() + 60000; SetLastError(error);
+                    finish(listener.pipe.get(), operation, connected, deadline, stop);
+                }
+                started = GetTickCount64();
+                phase(ContainerPhase::Authenticate); diagnostic.client = check_peer(listener.pipe.get(), true, listener.peer);
+                phase(ContainerPhase::Read);
                 const auto request = receive(listener.pipe.get(), container_request_limit, GetTickCount64() + 2000, stop);
+                diagnostic.operation = request == "INIT" ? ContainerOperation::Init : request == "INI2" ? ContainerOperation::Init2 :
+                    request.starts_with("LRN1") ? ContainerOperation::Learning : request.starts_with("INF1") ? ContainerOperation::Inference :
+                    request.starts_with("LOG1") ? ContainerOperation::Log : request.starts_with("GUI1") ? ContainerOperation::Gui : ContainerOperation::Unknown;
+                const bool bootstrap = diagnostic.operation == ContainerOperation::Init || diagnostic.operation == ContainerOperation::Init2;
+                phase(ContainerPhase::Handle);
+                if (bootstrap) { auto received = diagnostic; received.event = ContainerEvent::BootstrapReceived; emit(observer, received); }
                 need(listener.peer.container.empty() || !request.starts_with("GUI1"));
                 const auto deadline = GetTickCount64() + 30000;
                 const auto cancelled = [&] { return GetTickCount64() >= deadline || WaitForSingleObject(stop, 0) == WAIT_OBJECT_0 ||
                     !PeekNamedPipe(listener.pipe.get(), nullptr, 0, nullptr, nullptr, nullptr); };
-                const auto response = handler(request, cancelled); need(!cancelled());
+                const auto response = handler(request, cancelled);
+                check_deadline(deadline, stop); native_need(PeekNamedPipe(listener.pipe.get(), nullptr, 0, nullptr, nullptr, nullptr));
+                phase(ContainerPhase::Write);
                 send(listener.pipe.get(), response, container_response_limit, deadline, stop);
+                phase(ContainerPhase::Acknowledge);
                 char ack = 0; transfer(listener.pipe.get(), &ack, 1, false, GetTickCount64() + 1000, stop);
-            } catch (...) { /* Reject malformed, disconnected or unauthorized requests without logging text. */ }
+                if (bootstrap) { diagnostic.event = ContainerEvent::BootstrapComplete; diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic); }
+            } catch (const Failure& failure) {
+                // Ordinary idle accept deadlines and shutdown are not faults.
+                if (!(diagnostic.phase == ContainerPhase::Accept && failure.reason == ContainerReason::Timeout) &&
+                    WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
+                    diagnostic.reason = failure.reason; diagnostic.error = failure.error;
+                    diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic);
+                }
+            } catch (...) {
+                if (WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
+                    diagnostic.reason = ContainerReason::Internal; diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic);
+                }
+            }
             DisconnectNamedPipe(listener.pipe.get());
         }
     };
     std::vector<std::jthread> threads;
-    try { for (auto& listener : listeners) threads.emplace_back(run, std::ref(listener)); }
+    try {
+        for (auto& listener : listeners) threads.emplace_back(run, std::ref(listener));
+        if (observer) threads.emplace_back([&] {
+            while (WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
+                for (auto& endpoint : endpoints) {
+                    const auto available = WaitNamedPipeW(endpoint.name.c_str(), 1);
+                    const auto error = available ? 0 : GetLastError(); const auto now = GetTickCount64();
+                    if (error == endpoint.last_error && now < endpoint.next_report) continue;
+                    endpoint.last_error = error; endpoint.next_report = now + 60000;
+                    ContainerDiagnostic event{ContainerEvent::EndpointState}; event.phase = ContainerPhase::Probe;
+                    event.container = endpoint.sid; event.error = error; event.active = 0;
+                    if (error) event.reason = ContainerReason::Win32;
+                    for (const auto& state : endpoint.states) if (state->active.load()) {
+                        ++event.active; ++event.phases[static_cast<std::size_t>(state->phase.load())];
+                    }
+                    emit(observer, event);
+                }
+                if (WaitForSingleObject(stop, 5000) == WAIT_OBJECT_0) return;
+            }
+        });
+    }
     catch (...) { SetEvent(stop); throw; }
     // Listeners live until all jthreads have joined.
 }

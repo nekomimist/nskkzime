@@ -6,6 +6,8 @@
 #include <memory>
 #include <optional>
 namespace nskkzime::windows {
+struct RuntimeConfiguration;
+struct ContainerConfiguration;
 struct InferenceConfig {
     std::wstring token;
     std::filesystem::path server; // Empty: connect only. Always an explicit executable path.
@@ -54,6 +56,8 @@ private:
 };
 // Off by default. Saved zenz settings or an explicit development dummy override.
 std::optional<InferenceConfig> current_inference_config();
+std::optional<InferenceConfig> inference_config(const RuntimeConfiguration&);
+std::optional<InferenceConfig> inference_config(const ContainerConfiguration&);
 void set_inference_status(const void* owner, const wchar_t*) noexcept;
 void clear_inference_status(const void* owner) noexcept;
 std::wstring inference_status();

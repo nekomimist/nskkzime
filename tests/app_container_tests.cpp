@@ -9,6 +9,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <nlohmann/json.hpp>
 
 namespace nskkzime::windows { HINSTANCE module_instance = nullptr; std::atomic<long> module_objects{0}, server_locks{0}; }
 using namespace nskkzime;
@@ -149,14 +150,17 @@ int container_test(bool denied, bool real_model) {
         check(session.context->queued.empty(), "protected field sent inference");
     }
     {
+        Session session;
+        const auto config = container_configuration();
+        check(config != nullptr, "security checks require a live bootstrap");
         bool rejected = false;
         try { container_exchange("INF1" + std::string(64, '0') + "{}", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "stale settings accepted");
         rejected = false;
-        try { container_operation("FILE", "C:\\private.txt", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
+        try { container_operation(config->generation, "FILE", "C:\\private.txt", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "arbitrary file operation accepted");
         rejected = false;
-        try { container_operation("GUI1", "settings", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
+        try { container_operation(config->generation, "GUI1", "settings", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "AppContainer launched desktop GUI");
     }
     CoUninitialize(); return 0;
@@ -164,6 +168,32 @@ int container_test(bool denied, bool real_model) {
 }
 int wmain(int argc, wchar_t** argv) {
     try {
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--updated") {
+            const auto dictionary = container_runtime_dictionary();
+            wait_for_dictionary([&] { return dictionary->ready(); });
+            const auto words = dictionary->lookup({U"かんじ", 0});
+            check(!words.empty() && words.front().text == U"新字", "broker retained same-size/time dictionary");
+            const auto config = container_configuration();
+            check(config && config->romaji->find("wi")->output == U"ヰ", "broker retained same-time rules");
+            return 0;
+        }
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--degraded") {
+            const auto dictionary = container_runtime_dictionary();
+            wait_for_dictionary([&] { return dictionary->ready(); });
+            check(!dictionary->lookup({U"かんじ", 0}).empty(), "degraded broker lost valid dictionary");
+            check(!dictionary->registration_allowed(), "degraded broker enabled learning");
+            const auto config = container_configuration();
+            check(config && config->romaji->find("wi")->output == U"うぃ", "degraded broker lost built-in rules");
+            const auto runtime = std::dynamic_pointer_cast<const RuntimeDictionary>(dictionary);
+            check(runtime->status().find(L"読み込み失敗") != std::wstring::npos &&
+                runtime->status().find(L"内蔵ルールで継続") != std::wstring::npos, "degraded broker lost diagnostics");
+            NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+            bool rejected = false;
+            try { (void)container_operation(config->generation, "LRN1", snapshot_request(0), GetTickCount64() + 1500, cancel.get()); }
+            catch (...) { rejected = true; }
+            check(rejected, "broker accepted learning from a degraded snapshot");
+            return 0;
+        }
         if (argc == 2 && std::wstring_view(argv[1]) == L"--desktop") {
             check(!in_app_container(), "desktop client unexpectedly restricted");
             const auto dictionary = container_runtime_dictionary();
@@ -220,10 +250,60 @@ int wmain(int argc, wchar_t** argv) {
             }
             bool logged = false; for (const auto& item : std::filesystem::directory_iterator(root / L"logs")) if (item.path().extension() == L".jsonl") logged = true;
             check(logged, "broker input log missing");
+            auto degraded = settings;
+            degraded.dictionaries.push_back(root / L"missing.skk");
+            degraded.romaji_rules = root / L"missing-romaji.tsv";
+            save_dictionary_settings(config, degraded);
+            auto partial_desktop = launch(executable, L"--degraded");
+            check(wait_child(partial_desktop.get()) == 0, "degraded desktop broker client failed");
+            auto partial_container = launch(executable, L"--degraded", allowed.sid);
+            check(wait_child(partial_container.get()) == 0, "degraded AppContainer client failed");
+            save_dictionary_settings(config, settings);
+            auto updated = settings; updated.learning = false;
+            updated.romaji_rules = root / L"romaji.tsv";
+            { std::ofstream out(updated.romaji_rules, std::ios::binary); out << "version=1\nwi\tゐ\n"; }
+            save_dictionary_settings(config, updated);
+            NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+            (void)container_exchange("INI2", GetTickCount64() + 5000, cancel.get());
+            const auto dictionary_time = std::filesystem::last_write_time(dict);
+            const auto dictionary_size = std::filesystem::file_size(dict);
+            { std::ofstream out(dict, std::ios::binary); out << "かんじ /新字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
+            std::filesystem::last_write_time(dict, dictionary_time);
+            const auto romaji_time = std::filesystem::last_write_time(updated.romaji_rules);
+            { std::ofstream out(updated.romaji_rules, std::ios::binary); out << "version=1\nwi\tヰ\n"; }
+            std::filesystem::last_write_time(updated.romaji_rules, romaji_time);
+            check(std::filesystem::file_size(dict) == dictionary_size, "fixture size changed");
+            auto refreshed = launch(executable, L"--updated");
+            check(wait_child(refreshed.get()) == 0, "updated broker client failed");
+            save_dictionary_settings(config, settings);
             auto blocked = launch(executable, L"--denied", denied.sid); check(wait_child(blocked.get()) == 0, "unlisted container connected");
             result = 0;
         } catch (...) { SetEvent(stop.get()); WaitForSingleObject(broker.get(), 35000); throw; }
         SetEvent(stop.get()); check(WaitForSingleObject(broker.get(), 35000) == WAIT_OBJECT_0, "broker did not stop");
+        {
+            std::ifstream log(root / L"diagnostics" / L"broker.jsonl", std::ios::binary); std::string line;
+            bool created = false, probe = false, received = false, acked = false, failed = false, degraded = false;
+            while (std::getline(log, line)) {
+                const auto event = nlohmann::json::parse(line); const auto kind = event.at("event").get<std::string>();
+                created |= kind == "listener_created";
+                probe |= kind == "endpoint_state" && event.at("listeners_expected") == 4;
+                received |= kind == "bootstrap_received" && event.at("operation") == "INI2";
+                acked |= kind == "bootstrap_response_acked" && event.at("operation") == "INI2";
+                failed |= kind == "request_failed" && event.at("phase") == "handle";
+                degraded |= kind == "snapshot_ready" && event.at("failed_sources") == 1;
+                check(!event.contains("request") && !event.contains("response"), "diagnostics included input payload");
+            }
+            check(created && probe && received && acked && failed && degraded, "broker diagnostic stages missing");
+        }
+        // A broken log destination must not prevent real broker bootstrap.
+        std::filesystem::rename(root / L"diagnostics", root / L"saved-diagnostics");
+        { std::ofstream log(root / L"diagnostics"); log << "unwritable directory fixture"; }
+        ResetEvent(stop.get());
+        const auto no_log_broker = launch(container_broker_path(), L"--config \"" + config.native() + L"\" --test-package " + allowed.name);
+        try {
+            auto desktop = launch(executable, L"--desktop"); check(wait_child(desktop.get()) == 0, "logging failure prevented bootstrap");
+        } catch (...) { SetEvent(stop.get()); WaitForSingleObject(no_log_broker.get(), 35000); throw; }
+        SetEvent(stop.get()); check(WaitForSingleObject(no_log_broker.get(), 35000) == WAIT_OBJECT_0, "logging failure prevented stop");
         ResetEvent(stop.get()); std::atomic<bool> spoof_received = false;
         auto spoof = std::async(std::launch::async, [&] { serve_container({allowed.name}, [&](auto, const auto&) { spoof_received = true; return std::string("wrong server"); }, stop.get(), instance); });
         auto client = launch(executable, L"--denied", allowed.sid); const auto code = wait_child(client.get()); SetEvent(stop.get()); spoof.get();

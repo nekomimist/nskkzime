@@ -2,10 +2,13 @@
 #include "nskkzime/engine.h"
 #include <functional>
 namespace nskkzime::windows {
+struct RuntimeConfiguration;
+struct ContainerConfiguration;
 struct RuntimeDictionarySnapshot {
     std::shared_ptr<const Dictionary> dictionary;
     std::wstring status;
     bool registration = false;
+    std::shared_ptr<const ContainerConfiguration> container;
 };
 // Publish one complete snapshot off-thread. Destruction never joins a worker
 // or calls back into a TSF object. Lookup/status only read memory.
@@ -23,12 +26,14 @@ public:
     void learn(const LearningEvent&) const noexcept;
     void skipped(std::wstring reason) const noexcept;
     std::wstring status() const;
+    std::shared_ptr<const ContainerConfiguration> container_configuration() const;
 private:
     struct State;
     std::shared_ptr<State> state_;
 };
 // Reads the small settings file on activation; dictionary bodies load off-thread.
 std::shared_ptr<const Dictionary> runtime_dictionary();
+std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration&);
 // Last snapshot loaded in this process. Diagnostics only; performs no file I/O.
 std::wstring runtime_dictionary_status();
 bool runtime_dictionary_ready();

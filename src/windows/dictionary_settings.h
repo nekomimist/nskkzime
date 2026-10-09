@@ -30,6 +30,7 @@ struct LoadedDictionaries {
     std::shared_ptr<const Dictionary> dictionary;
     std::wstring status;
     bool failed = false;
+    std::vector<std::shared_ptr<const Dictionary>> sources; // Successful sources, in priority order.
 };
 std::optional<std::wstring> environment_value(const wchar_t* name);
 std::filesystem::path dictionary_settings_path();

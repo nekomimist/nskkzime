@@ -1,4 +1,5 @@
 #include "runtime_dictionary.h"
+#include "runtime_configuration.h"
 #include "container_runtime.h"
 #include "dictionary_settings.h"
 #include "learning_client.h"
@@ -17,7 +18,7 @@ bool requested = false;
 int module_anchor = 0;
 RuntimeDictionarySnapshot failed_snapshot() {
     return {std::make_shared<MemoryDictionary>(),
-        L"辞書設定を読み込めません。nskkzime_config --check で設定を確認してください。かな入力は利用できます。",false};
+        L"辞書設定を読み込めません。nskkzime_config --check で設定を確認してください。かな入力は利用できます。",false,{}};
 }
 void append_key(std::wstring& key, std::wstring_view value) {
     key += std::to_wstring(value.size()) + L":"; key += value;
@@ -101,7 +102,14 @@ std::wstring RuntimeDictionary::status() const {
     return snapshot->status;
 }
 std::shared_ptr<const Dictionary> runtime_dictionary() {
-    if (uses_data_broker()) {
+    return runtime_dictionary(capture_runtime_configuration());
+}
+std::shared_ptr<const ContainerConfiguration> RuntimeDictionary::container_configuration() const {
+    const auto snapshot = state_->snapshot.load();
+    return snapshot ? snapshot->container : nullptr;
+}
+std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration& settings) {
+    if (settings.broker) {
         auto result = std::dynamic_pointer_cast<const RuntimeDictionary>(container_runtime_dictionary());
         const std::lock_guard lock(cache_mutex); latest = result; requested = true; return result;
     }
@@ -109,14 +117,13 @@ std::shared_ptr<const Dictionary> runtime_dictionary() {
     // never redirect an in-flight load or its learning writer.
     std::shared_ptr<const RuntimeDictionary> result;
     try {
-        const auto configuration = current_dictionary_configuration();
-        const auto cache_root = dictionary_cache_path(configuration);
-        const auto override_learning = environment_value(L"NSKKZIME_LEARNING");
-        const bool learning = !configuration.demo && !configuration.settings.dictionaries.empty() &&
-            (override_learning ? *override_learning == L"1" : configuration.settings.learning);
-        std::filesystem::path user_file, helper;
-        bool learning_paths_failed = false;
-        if (learning) try { user_file = learning_file_path(); helper = learning_helper_path(); } catch (...) { learning_paths_failed = true; }
+        if (settings.configuration_failed) throw std::runtime_error("invalid captured settings");
+        const auto& configuration = settings.dictionaries;
+        const auto& cache_root = settings.cache_root;
+        const bool learning = settings.learning;
+        const auto user_file = learning ? settings.user_file : std::filesystem::path{};
+        const auto helper = learning ? settings.learning_helper : std::filesystem::path{};
+        const bool learning_paths_failed = learning && settings.learning_paths_failed;
         std::wstring key = configuration.demo ? L"demo" : configuration.environment ? L"env" : L"file";
         append_key(key,configuration.file.native());
         for (const auto& path : configuration.settings.dictionaries) append_key(key,path.native());
@@ -139,7 +146,7 @@ std::shared_ptr<const Dictionary> runtime_dictionary() {
                         registration = true;
                     } catch (...) { loaded.status += L"\r\n学習: 初期化に失敗（通常の変換は利用できます）"; }
                 } else loaded.status += L"\r\n学習: 無効、または辞書未設定・読み込み失敗のため停止";
-                return RuntimeDictionarySnapshot{std::move(loaded.dictionary),std::move(loaded.status),registration};
+                return RuntimeDictionarySnapshot{std::move(loaded.dictionary),std::move(loaded.status),registration,{}};
             };
             // Demo/empty configurations have no dictionary file to open.
             result = configuration.demo || configuration.settings.dictionaries.empty() ?

@@ -46,14 +46,22 @@ void report_failure(ImeTool tool, DWORD error) {
 }
 }
 std::array<ToolCommand, 2> current_tool_commands() noexcept {
+    std::filesystem::path settings, user;
+    try { settings = dictionary_settings_path(); } catch (...) {}
+    try { user = learning_file_path(); } catch (...) {}
+    return tool_commands(settings, user);
+}
+std::array<ToolCommand, 2> tool_commands(const std::filesystem::path& settings,
+    const std::filesystem::path& user, std::string generation) noexcept {
     std::array<ToolCommand, 2> commands;
     commands[1].tool = ImeTool::Dictionary;
     try {
         const auto directory = module_directory();
         commands[0].executable = directory / L"nskkzime_settings.exe";
         commands[1].executable = directory / L"nskkzime_dictionary_gui.exe";
-        try { commands[0].file = dictionary_settings_path(); } catch (...) {}
-        try { commands[1].file = learning_file_path(); } catch (...) {}
+        commands[0].file = settings; commands[1].file = user;
+        commands[0].broker_generation = generation;
+        commands[1].broker_generation = std::move(generation);
     } catch (...) {}
     return commands;
 }
@@ -66,9 +74,9 @@ std::wstring tool_command_line(const ToolCommand& command) {
 DWORD launch_tool_process(const ToolCommand& command) noexcept {
     try {
         auto line = tool_command_line(command);
-        if (uses_data_broker()) {
+        if (!command.broker_generation.empty()) {
             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-            return container_operation("GUI1", command.tool == ImeTool::Settings ? "settings" : "dictionary",
+            return container_operation(command.broker_generation, "GUI1", command.tool == ImeTool::Settings ? "settings" : "dictionary",
                 GetTickCount64() + 5000, cancel.get()) == "OKAY" ? ERROR_SUCCESS : ERROR_GEN_FAILURE;
         }
         STARTUPINFOW start{}; start.cb = sizeof(start); start.dwFlags = STARTF_USESHOWWINDOW; start.wShowWindow = SW_SHOWNORMAL;
