@@ -27,7 +27,7 @@ The checksum was verified against the upstream release. Builds do not download d
 - License: [MIT](skk-zenz/LICENSE), Copyright (c) 2026 Hiroyuki Ishikura.
 - Source archive SHA-256: `434c090f47934fecdb54304a871e17f7fed423d65a1c5138b1754b08402b0c7c`.
 - Local changes: model abort callback, cancellation checks in generation/scoring and before decode. Prompt and upstream tests are unchanged.
-- The original protocol implementation is not copied. Our bounded protocol supports its `convert` and `score` concepts, with the differences documented in [INFERENCE.md](../docs/INFERENCE.md).
+- The original protocol implementation is not copied. Our bounded protocol supports its `convert` and `score` concepts, with the differences documented in [ARCHITECTURE.md](../docs/ARCHITECTURE.md#推論).
 
 ## azooKey llama.cpp (optional CPU backend)
 

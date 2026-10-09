@@ -1,0 +1,131 @@
+# 構成
+
+nskkzimeはWindows x64向けのTSF IME。SKK風の入力コアを各アプリのプロセスに読み込み、
+辞書の学習とzenzによる推論は別プロセスで行う。推論が止まっても辞書入力は続けられる。
+
+## プロセス
+
+```text
+各アプリ ── nskkzime_tsf.dll（x64／x86）
+   ├─ 共有メモリー: 解析済みの読み取り専用辞書（ユーザー・セッション単位）
+   ├─ ファイル読み取り＋名前付きイベント: ユーザー辞書の同期
+   ├─ 名前付きパイプ ─ nskkzime_dictionary_server.exe（ユーザー辞書への書き込み）
+   ├─ 名前付きパイプ ─ nkkz-ime-server.exe（zenzの生成・採点）
+   └─ AppContainer／仮想化されたアプリ ─ nskkzime_broker.exe ─ 上記へ中継
+GUI: nskkzime_settings.exe（設定）、nskkzime_dictionary_gui.exe（学習辞書の管理）
+CLI: nskkzime_config.exe、nskkzime_user_dictionary.exe、skk_trace.exe
+```
+
+| プロセス | 起動と終了 | 役割 |
+|---|---|---|
+| TSF DLL | 各アプリが読み込む | キー処理、composition、候補UI、入力モード |
+| `nskkzime_dictionary_server` | 未保存の学習・削除があるときにDLLが起動。無通信10秒で終了 | ユーザー辞書の唯一の書き手。保存ごとに世代の変更を通知 |
+| `nkkz-ime-server` | 推論要求時にDLLが起動。無通信 `zenz-idle-seconds`（既定30分）で終了 | llama.cppでモデルを保持し、convert／scoreを1要求ずつ処理 |
+| `nskkzime_broker` | サインイン時（HKCU Run）と導入時に起動して常駐 | AppContainer（Windows検索・Store）と、設定が仮想化されたアプリに設定・辞書・学習・推論を中継 |
+
+サーバーはDLLと同じ版のフォルダーにあるものを使う（x86 DLLからはx64版）。
+`zenz-server` を設定ファイルに書いた場合だけ、開発用の上書きとして別のサーバーを使う。
+
+## ソースの構成
+
+| ディレクトリ | 内容 |
+|---|---|
+| `include/nskkzime`, `src/core` | OSに依存しない入力コア（`Engine`）、ローマ字、文字列変換 |
+| `src/dictionary` | SKK辞書の読み込み、解析済み辞書、ユーザー辞書の形式と順位 |
+| `src/server` | 推論プロトコル、推論の方針（生成・採点の判断）、zenzバックエンド |
+| `src/windows` | TSF、設定、辞書キャッシュ、学習・推論・brokerのIPC |
+| `src/tools` | CLI、GUI、補助プロセス、入力検証アプリ |
+| `third_party` | nlohmann/json、JIS X 0212対応表、skk-zenzのprompt/model |
+
+## 入力コアとTSF
+
+`Engine` はキーを受け取り、未確定文字列・確定文字列・学習イベントを返す。
+TSF側は次の状態をコピー上で計算し、本文の編集が成功したときだけ採用する。
+編集に失敗したキーは消費しない。学習・削除のイベントも編集成功後にだけ配送する。
+
+`text_service` はTSFの通知とキー処理、`tsf_edit` は編集セッション、`composition_session` は
+本文への反映とcompositionの寿命、`inference_session` は推論の待機・識別・取消を担当する。
+矢印やアプリのショートカットを渡す前には、`OnTestKeyDown` 内でcompositionを終了する。
+標準EDITのように一時contextの親文書を公開するホストでは、親の本文・選択・通知を使う。
+
+初回のActivateで設定を取得し（`runtime_configuration`）、辞書・ローマ字・推論・候補表示・
+GUIの保存先へ同じ値を渡す。辞書本体はバックグラウンドで読み込み、読み込み中もかな入力は使える。
+
+## 辞書
+
+- 読み取り専用のSKK辞書は解析済みの形式にコンパイルし、設定ファイルと同じフォルダーの
+  `dictionary-cache-v1` に保存する。同じユーザー・セッションのアプリは共有メモリーで参照する。
+  元ファイルの内容ハッシュでキャッシュを選ぶため、起動ごとに元ファイルを読む。
+- ユーザー辞書（`user-dictionary.nskkdb`）は独自のバイナリー形式。読み・送りキー・送り仮名ごとに
+  確定した候補を先頭にし、1組32候補・50,000組・16 MiBまで。
+- 書き込みは補助プロセスに集約する。各IMEは保存ファイルを直接読み、手元の世代の名前付きイベントを待つ。
+  補助プロセスは保存のたびに、置き換えた世代のイベントを通知する。取りこぼしに備えて60秒ごとに
+  ファイル先頭の世代だけを確認する。保存はPOSIX方式のリネームで行い、読み手がいても失敗しない。
+- 再送の重複排除のため、送り手ID（プロセスごと）と連番を保存する。IDは最近の1,024個だけ保持する。
+- IMEは未保存の学習・削除を受付順に検索結果へ反映し、選択中の候補一覧は変えない。
+
+## 推論
+
+`plan_inference` が要求の種類を決める。
+
+| 種類 | 条件 | 結果の扱い |
+|---|---|---|
+| 生成（Fallback） | 辞書に候補がない、または候補を使い切った | 生成候補を末尾へ追加 |
+| 長い読みの生成 | 読みが `zenz-min-length`（既定10）文字以上 | 候補を操作する前なら先頭へ追加 |
+| 採点（Rerank） | `zenz-rerank=on` で変換を開始した | 最良の候補が第一候補を閾値より上回れば先頭へ移す |
+
+採点は最初の候補を表示する前に、最大 `zenz-rerank-wait-ms`（既定100ms）待つ。
+サーバーがなければその間に起動する。間に合わなければ辞書順で表示し、非同期で採点を続ける。
+生成と遅れた採点は、作業スレッドからUIスレッドへ戻り、非同期の編集セッションで反映する。
+反映前に要求ID・コアのrevision・composition・文脈世代・前後の本文・入力属性・期限を照合し、
+入力が変わっていれば捨てる。候補を操作した後は順位を変えない。
+
+推論サーバーのパイプ名は、モデル・サーバー・スレッド数・期限から求めたハッシュを含む。
+同じ設定のアプリは1つのサーバーを共有する。パイプは同一ユーザーだけに許可し、相手プロセスのSIDを照合する。
+
+プロトコルはskk-zenzのprotocol 2を基にしたUTF-8 JSON Linesで、互換サーバーではない。
+1接続でhello → 要求 → 応答の1往復だけを行い、クライアントが閉じると計算も取り消す。
+
+```json
+{"hello":"nkkz-ime-server","protocol":2,"backend":"zenz","version":"0.0.1"}
+{"id":1,"op":"convert","kana":"かいとう","left":"試験問題の","right":"","n":5}
+{"id":2,"op":"score","kana":"かいとう","left":"試験問題の","right":"","candidates":["回答","解答","解凍"]}
+```
+
+1行16 KiB、生成候補1〜8、採点候補0〜64、読み・候補1024文字、文脈は片側40文字まで。
+`--stdio` では複数の要求を1行ずつ処理する。`--dummy` はテスト用の固定応答。
+
+## 入力属性とプライバシー
+
+- 入力欄の `InputScope` がパスワード・private・PINなら、推論・文脈取得・学習・単語登録をしない。
+  標準EDITの `ES_PASSWORD` ではIMEがキーを処理しない。
+- 属性を返さない欄（Officeなど）は通常の欄として学習・登録する。推論には読みだけを渡し、
+  `zenz-unknown-context=on` のときだけ前後各40文字の本文も渡す。
+- 入力ログ（`input-log=on`）は既定でオフ。属性が確認できた通常の欄だけを記録する。
+- brokerの診断ログ（`diagnostics/broker.jsonl`）は本文・読み・候補を記録しない。
+
+## AppContainer
+
+Windows検索（`MicrosoftWindows.Client.CBS_cw5n1h2txyewy`）とMicrosoft Store
+（`Microsoft.WindowsStore_8wekyb3d8bbwe`）のAppContainerでは、DLLが私用ファイルを読めない。
+brokerは通常権限で常駐し、コンテナーSIDとセッションごとの名前空間にパイプを作る。
+初回に設定・ローマ字・解析済み辞書をCBORでまとめて渡し、以後は学習・推論・入力ログを中継する。
+接続はユーザー・セッション・コンテナーSIDと、DLLと同じフォルダーのbroker実行ファイルであることを相互に確認する。
+任意のファイルやコマンドの要求は受け付けず、AppContainerからはGUIを起動しない。
+`NSKKZIME_CONFIG` を指定したプロセスは、その設定ファイルに対応する別のbrokerにつなぐ。
+
+## 保存場所
+
+| パス | 内容 |
+|---|---|
+| `%LOCALAPPDATA%\nskkzime\settings.ini` | 設定（`NSKKZIME_CONFIG` で別のファイルを指定できる） |
+| 設定と同じフォルダーの `user-dictionary.nskkdb` | ユーザー辞書（学習・登録した語） |
+| 設定と同じフォルダーの `dictionary-cache-v1\` | 解析済み辞書のキャッシュ |
+| `%LOCALAPPDATA%\nskkzime\diagnostics\` | brokerの診断ログ |
+| `%ProgramFiles%\nskkzime\versions\<版ID>\` | 導入した各版のプログラム |
+
+## 主な制約
+
+- x64 Windows専用。zenzサーバーはAVX2/FMA/F16C/BMI2が必要（`nskkzime_config --check-cpu` で確認）。
+- 設定・辞書の変更は、利用するアプリを起動し直すと反映される（ファイルの監視はしない）。
+- 許可したAppContainer以外のUWPアプリとARM64は対象外。管理者として実行したアプリ・低整合性プロセスとの連携は未検証。
