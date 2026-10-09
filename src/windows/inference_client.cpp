@@ -227,7 +227,10 @@ std::optional<InferenceConfig> inference_config(const RuntimeConfiguration& runt
         if (!settings.enabled) return {};
         require_zenz_cpu(current_cpu_features());
         validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
-        config.server = settings.server; config.model = settings.model;
+        // The server bundled with this IME build, unless a development override is saved.
+        config.server = settings.server.empty() ? runtime.inference.default_server : settings.server;
+        if (config.server.empty()) throw std::runtime_error("cannot locate inference server");
+        config.model = settings.model;
         config.threads = settings.threads; config.timeout_ms = settings.timeout_ms;
         config.idle_ms = settings.idle_seconds * 1000;
         config.policy = settings.policy;

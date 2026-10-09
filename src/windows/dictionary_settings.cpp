@@ -101,18 +101,21 @@ void validate_zenz_settings(const ZenzSettings& settings, bool check_files) {
     if (settings.threads < 1 || settings.threads > 64 || settings.timeout_ms < 1 || settings.timeout_ms > 10000)
         throw std::invalid_argument("inference threads must be 1..64; timeout must be 1..10000 ms");
     if (settings.idle_seconds < 1 || settings.idle_seconds > 86400) throw std::invalid_argument("zenz idle time must be 1..86400 seconds");
-    for (const auto& path : {settings.model,settings.server}) {
-        if (path.empty() && !settings.enabled) continue;
+    const auto check_path = [&](const std::filesystem::path& path) {
         validate_path(path);
         if (path.native().find(L'\"') != std::wstring::npos || path.filename().empty()) throw std::invalid_argument("invalid inference file path");
         if (check_files && settings.enabled && !std::filesystem::is_regular_file(path)) throw std::invalid_argument("inference model/server file is missing");
-    }
+    };
+    if (settings.enabled || !settings.model.empty()) check_path(settings.model);
+    // An empty server selects the one bundled with the IME; a path is a development override.
+    if (!settings.server.empty()) check_path(settings.server);
 }
 std::wstring zenz_settings_status(const ZenzSettings& settings) {
     const auto context = std::wstring(L"\r\n属性不明の周辺本文: ") + (settings.allow_unknown_context ? L"ローカル推論に利用（学習・入力ログの許可とは独立）" : L"取得しない");
     const auto logging = settings.log_input ? L"\r\n入力ログ: オン（読み・周辺本文・候補を保存） / 保存先: " + settings.log_directory.native() : std::wstring(L"\r\n入力ログ: オフ");
     if (!settings.enabled) return L"推論設定: オフ（入力ログも動作しません）" + context + logging;
-    return L"推論設定: zenz / モデル: " + settings.model.native() + L"\r\nサーバー: " + settings.server.native() +
+    return L"推論設定: zenz / モデル: " + settings.model.native() + L"\r\nサーバー: " +
+        (settings.server.empty() ? std::wstring(L"IMEと同じ版を使用") : L"開発用の上書き " + settings.server.native()) +
         L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms" +
         L" / サーバー待機: " + std::to_wstring(settings.idle_seconds) + L" 秒"+
         L"\r\n長い読みの生成: "+std::to_wstring(settings.policy.long_min_length)+L"文字（0は無効） / 候補採点: "+(settings.policy.rerank ? L"on" : L"off")+

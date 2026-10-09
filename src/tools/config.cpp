@@ -24,7 +24,8 @@ void help() {
         "  --reset-romaji            Use built-in romaji rules\n"
         "  --set-candidate-show-after N  Show the list on conversion step N (1..99)\n"
         "  --set-candidate-keys numbers|asdfjkl  Choose visible candidate selection keys\n"
-        "  --set-zenz MODEL SERVER    Enable zenz using absolute model and server file paths\n"
+        "  --set-zenz MODEL [SERVER]  Enable zenz with an absolute model path; the bundled server is used\n"
+        "                            unless SERVER (a development override) is given\n"
         "  --disable-inference       Disable zenz and clear its saved paths\n"
         "  --set-zenz-min-length N   Prefer generation for N or more kana (0 disables)\n"
         "  --set-zenz-rerank on|off  Promote the best dictionary candidate when confident\n"
@@ -65,7 +66,7 @@ int wmain(int argc, wchar_t** argv) {
         const bool learning = action == L"--set-learning";
         const bool romaji = action == L"--set-romaji", reset_romaji = action == L"--reset-romaji";
         const bool zenz = action == L"--set-zenz", disable_inference = action == L"--disable-inference";
-        if ((!candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && index != argc) || (set && index == argc) || ((candidates || learning || romaji || policy || enable_log) && index + 1 != argc) || (zenz && index + 2 != argc)) { help(); return 2; }
+        if ((!candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && index != argc) || (set && index == argc) || ((candidates || learning || romaji || policy || enable_log) && index + 1 != argc) || (zenz && index + 1 != argc && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
@@ -94,7 +95,10 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (zenz || disable_inference || policy || enable_log || disable_log) {
             auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
-            if (zenz) { settings.zenz.enabled = true; settings.zenz.model = argv[index]; settings.zenz.server = argv[index+1]; }
+            if (zenz) {
+                settings.zenz.enabled = true; settings.zenz.model = argv[index];
+                settings.zenz.server = index + 1 < argc ? std::filesystem::path(argv[index+1]) : std::filesystem::path{};
+            }
             else if (disable_inference) settings.zenz = {};
             else if (enable_log) { settings.zenz.log_input = true; settings.zenz.log_directory = argv[index]; }
             else if (disable_log) settings.zenz.log_input = false;

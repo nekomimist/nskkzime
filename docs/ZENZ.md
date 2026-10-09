@@ -111,12 +111,15 @@ AJIMEEの左文脈条件はモデル生成top1が173/200、IMEの対象文字・
 2026-10-06には別の隔離設定を使った登録版プローブで、RichEditの文脈付き採点と標準EDITの長い読みの生成を
 実キー入力・画面で確認した。手順と確認範囲は [TSFの検証](TSF_VALIDATION.md) を参照。
 
-通常利用では、新しいDLLへ登録を更新した後に、設定CLIから絶対パスを保存する。
+通常利用では、新しいDLLへ登録を更新した後に、設定CLIからモデルの絶対パスを保存する。
+推論サーバーはIMEと同じ版に同梱されたもの（32bit DLLからはx64版）を使い、更新後も設定を変える必要はない。
 旧DLLは新しい設定キーを認識できないため、登録更新を先に行う。
 
 ```powershell
 $build = (Resolve-Path '.\out\build\windows-x64-zenz\Release').Path
 $model = (Resolve-Path '.\out\models\zenz-v3.2-small\ggml-model-Q5_K_M.gguf').Path
+& "$build\nskkzime_config.exe" --set-zenz $model
+# 開発用: 別ビルドのサーバーを試す場合だけ、2番目の引数で上書きする
 & "$build\nskkzime_config.exe" --set-zenz $model "$build\nkkz-ime-server.exe"
 & "$build\nskkzime_config.exe" --check
 # 無効化する場合
@@ -128,16 +131,18 @@ $model = (Resolve-Path '.\out\models\zenz-v3.2-small\ggml-model-Q5_K_M.gguf').Pa
 設定変更後は対象アプリを起動し直す。必要なら `--config 絶対パス` で別設定へ保存できる。
 
 `nskkzime_settings.exe` の「推論」「詳細」タブからも同じ項目を編集できる。
-モデルとサーバーは絶対パスを入力するか「参照」で選ぶ。推論をオフにして保存してもパスと方針は保持する。
+モデルは絶対パスを入力するか「参照」で選ぶ。推論をオフにして保存してもパスと方針は保持する。
+GUIにはサーバーの欄がなく、保存すると開発用のサーバー上書きも外して同梱版に戻す。
 GUIの検査もファイルの存在確認までで、モデル読み込みやサーバー実行は行わない。
 起動方法と保存時の動作は [設定GUI](DICTIONARIES.md#設定gui) を参照。
 
 ```ini
 inference=zenz
 zenz-model=C:\models\ggml-model-Q5_K_M.gguf
-zenz-server=C:\nskkzime\nkkz-ime-server.exe
 inference-threads=4
 inference-timeout-ms=1000
+# 開発用の上書き。通常は書かない（省略時はIMEと同じ版の同梱サーバー）
+# zenz-server=C:\nskkzime-dev\nkkz-ime-server.exe
 ```
 
 スレッド数は1〜64、期限は1〜10000ms。IMEでは接続・モデルの起動待ち・計算・編集待ちを含む絶対期限を使う。

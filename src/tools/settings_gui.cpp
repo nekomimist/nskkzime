@@ -56,7 +56,7 @@ void update_enabled(Editor& editor) {
     const auto romaji = editor.pages[1], inference = editor.pages[2];
     enabled(romaji, IDC_ROMAJI_PATH, checked(romaji, IDC_CUSTOM_ROMAJI));
     enabled(romaji, IDC_ROMAJI_BROWSE, checked(romaji, IDC_CUSTOM_ROMAJI));
-    for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_SERVER, IDC_SERVER_BROWSE, IDC_RERANK, IDC_LEARN_GENERATED})
+    for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_RERANK, IDC_LEARN_GENERATED})
         enabled(inference, id, checked(inference, IDC_ZENZ));
     enabled(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, checked(inference, IDC_ZENZ));
     for (const auto id : {IDC_LOG_DIRECTORY, IDC_LOG_BROWSE})
@@ -104,7 +104,6 @@ void reload(Editor& editor) {
         const auto& zenz = settings.zenz;
         check(editor.pages[2], IDC_ZENZ, zenz.enabled);
         set(editor.pages[2], IDC_MODEL, zenz.model.native());
-        set(editor.pages[2], IDC_SERVER, zenz.server.native());
         check(editor.pages[2], IDC_RERANK, zenz.policy.rerank);
         check(editor.pages[2], IDC_LEARN_GENERATED, zenz.policy.learn_fallback);
         check(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, zenz.allow_unknown_context);
@@ -163,7 +162,7 @@ DictionarySettings draft(Editor& editor) {
     auto& zenz = result.zenz;
     zenz.enabled = checked(editor.pages[2], IDC_ZENZ);
     zenz.model = get(editor.pages[2], IDC_MODEL);
-    zenz.server = get(editor.pages[2], IDC_SERVER);
+    zenz.server.clear(); // Always the bundled server; an override is development-only (settings file).
     zenz.policy.rerank = checked(editor.pages[2], IDC_RERANK);
     zenz.policy.learn_fallback = checked(editor.pages[2], IDC_LEARN_GENERATED);
     zenz.allow_unknown_context = checked(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT);
@@ -265,11 +264,7 @@ std::vector<std::filesystem::path> choose(HWND window, bool multiple, const COMD
 void browse(Editor& editor, int id) {
     const COMDLG_FILTERSPEC all[] = {{L"すべてのファイル", L"*.*"}};
     const COMDLG_FILTERSPEC model[] = {{L"GGUFモデル", L"*.gguf"}, {L"すべてのファイル", L"*.*"}};
-    const COMDLG_FILTERSPEC server[] = {{L"実行ファイル", L"*.exe"}};
-    const auto paths = choose(editor.window, id == IDC_ADD,
-                              id == IDC_MODEL_BROWSE    ? model
-                              : id == IDC_SERVER_BROWSE ? server
-                                                        : all,
+    const auto paths = choose(editor.window, id == IDC_ADD, id == IDC_MODEL_BROWSE ? model : all,
                               id == IDC_MODEL_BROWSE ? 2 : 1, id == IDC_LOG_BROWSE);
     if (paths.empty())
         return;
@@ -287,7 +282,7 @@ void browse(Editor& editor, int id) {
     else if (id == IDC_LOG_BROWSE)
         set(editor.pages[4], IDC_LOG_DIRECTORY, paths[0].native());
     else
-        set(editor.pages[2], id == IDC_MODEL_BROWSE ? IDC_MODEL : IDC_SERVER, paths[0].native());
+        set(editor.pages[2], IDC_MODEL, paths[0].native());
     editor.dirty = true;
     update_enabled(editor);
 }
@@ -397,7 +392,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             } else if (id == IDOK || id == IDC_CHECK)
                 validate(*editor, id == IDOK);
             else if (!editor->work && editor->valid && !editor->loading) {
-                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_SERVER_BROWSE || id == IDC_LOG_BROWSE)
+                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_LOG_BROWSE)
                     browse(*editor, id);
                 else if (id == IDC_REMOVE || id == IDC_UP || id == IDC_DOWN)
                     reorder(*editor, id);

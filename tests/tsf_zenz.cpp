@@ -47,7 +47,8 @@ int wmain(int argc,wchar_t** argv) {
     const auto root=std::filesystem::current_path()/("tsf-zenz-"+raw); std::filesystem::create_directory(root);
     const auto file=root/L"設定.ini";
     const auto dictionary=root/L"辞書.skk";
-    DictionarySettings settings; settings.learning=false; settings.zenz={true,argv[3],argv[2],4,2000};
+    // No server path: the DLL must find the server bundled next to it (x64 for the x86 DLL).
+    DictionarySettings settings; settings.learning=false; settings.zenz={true,argv[3],{},4,2000};
     settings.zenz.idle_seconds=10; // Launched servers must idle out within the test.
     save_dictionary_settings(file,settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG",file.c_str()); SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",nullptr);

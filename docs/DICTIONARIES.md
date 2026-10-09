@@ -68,7 +68,7 @@ dictionary=C:\辞書\SKK-JISYO.L
 `learning=on` / `off` を指定でき、省略時はon。辞書設定を変更してもこの値は保持する。
 `romaji=絶対パス` で独自のローマ字ルールも指定できる。設定CLIの `--set-romaji` / `--reset-romaji` で
 切り替えられ、辞書や学習の設定を変更しても保持する。詳細は [ローマ字ルール](ROMAJI.md) を参照。
-推論は省略時に無効。`--set-zenz モデル サーバー` / `--disable-inference` で設定できる。
+推論は省略時に無効。`--set-zenz モデル` / `--disable-inference` で設定できる（サーバーは同梱版。2番目の引数は開発用の上書き）。
 対応キーと登録DLLの更新順序は [zenz CPUサーバー](ZENZ.md) を参照。推論設定も辞書の変更時に保持する。
 最大32辞書、設定全体は64 KiBまで。未知のキー、重複したversion・learning・romaji、不正なUTF-8、
 相対パス、制御文字を含むパスは拒否する。行の前後の空白は除く。
