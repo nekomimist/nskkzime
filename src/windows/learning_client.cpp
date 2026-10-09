@@ -60,10 +60,26 @@ struct LearningDictionary::State {
         NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         return container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + 1500, cancel.get());
     }
+    // Desktop readers use the saved file directly, so only writes need the
+    // helper process and it can exit when idle. AppContainers ask the broker.
+    std::shared_ptr<UserDictionary> refresh(std::uint64_t revision) {
+        if (container_generation.empty()) {
+            if (user_dictionary_revision(file) == revision) return nullptr;
+            return std::make_shared<UserDictionary>(read_user_dictionary(file));
+        }
+        const auto response = exchange(snapshot_request(revision));
+        if (response == "SAME") return nullptr;
+        if (!response.starts_with("DATA")) throw std::runtime_error("dictionary snapshot rejected");
+        return std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
+    }
+    NativeHandle listen(std::uint64_t revision) const noexcept {
+        try { return learning_change_event(file, revision); } catch (...) { return NativeHandle{}; }
+    }
     void run() noexcept {
         try {
-            std::uint64_t revision = std::numeric_limits<std::uint64_t>::max();
-            ULONGLONG last_launch = 0, stop_deadline = 0;
+            constexpr std::uint64_t none = std::numeric_limits<std::uint64_t>::max();
+            std::uint64_t revision = none;
+            ULONGLONG next_launch = 0, stop_deadline = 0; DWORD launch_delay = 5000, retry_delay = 250;
             for (;;) {
                 std::optional<LearningRequest> request;
                 {
@@ -72,41 +88,50 @@ struct LearningDictionary::State {
                     if (stop && (queue.empty() || GetTickCount64() >= stop_deadline)) break;
                     if (!queue.empty()) request = queue.front();
                 }
+                // Listen before reading the file, so a later change cannot be missed.
+                NativeHandle changed(container_generation.empty() && revision != none ? listen(revision) : NativeHandle{});
                 try {
                     if (request) {
                         const auto response = exchange(encode_learning(*request));
                         if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
                     }
-                    const auto response = exchange(snapshot_request(revision));
-                    std::shared_ptr<UserDictionary> next;
-                    if (response.starts_with("DATA")) {
-                        next = std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
-                        revision = next->revision();
-                    } else if (response != "SAME") throw std::runtime_error("dictionary snapshot rejected");
+                    auto next = refresh(revision);
+                    const bool published = next != nullptr;
                     // Keep the event pending until its acknowledged generation
                     // has been published. Engine caches can then safely retire,
                     // even if the word was deleted before the next lookup.
                     {
                         const std::lock_guard lock(mutex);
-                        if (next) snapshot.store(std::move(next));
+                        if (next) { revision = next->revision(); snapshot.store(std::move(next)); }
                         if (request) queue.pop_front();
                     }
                     update_status(L"学習: 保存済み・同期済み（世代 " + std::to_wstring(revision) + L"）");
+                    launch_delay = 5000; retry_delay = 250;
+                    if (published && container_generation.empty()) continue; // Listen on the new revision's event.
                 } catch (const std::exception&) {
-                    update_status(L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）");
+                    update_status(request ? L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）"
+                                          : L"学習: ユーザー辞書を読めません。再試行中（通常の変換は利用できます）");
+                    // Only a pending write needs the helper. If it cannot start
+                    // (e.g. a corrupt file it refuses to open), back off instead
+                    // of spawning a process every few seconds from every app.
                     const auto now = GetTickCount64();
-                    if (now - last_launch > 5000 && container_generation.empty()) {
-                        last_launch = now;
+                    if (request && container_generation.empty() && now >= next_launch) {
+                        next_launch = now + launch_delay; launch_delay = (std::min)(launch_delay * 2, DWORD{300000});
                         try { const auto process = launch_dictionary_server(server, file); } catch (...) {}
                     }
-                    WaitForSingleObject(wake.get(), 250);
+                    WaitForSingleObject(wake.get(), retry_delay);
+                    retry_delay = (std::min)(retry_delay * 2, request ? DWORD{5000} : DWORD{60000});
                     continue;
                 }
                 {
                     const std::lock_guard lock(mutex);
                     if (!queue.empty()) continue;
                 }
-                WaitForSingleObject(wake.get(), 1000);
+                if (changed.valid()) {
+                    // A long timeout only guards against a missed signal; it reads a file header, not the helper.
+                    const HANDLE events[]{wake.get(), changed.get()};
+                    WaitForMultipleObjects(2, events, FALSE, 60000);
+                } else WaitForSingleObject(wake.get(), container_generation.empty() ? 5000 : 1000);
             }
         } catch (...) { /* Background failure must never unwind through Windows. */ }
     }

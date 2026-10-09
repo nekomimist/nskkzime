@@ -42,8 +42,11 @@ private:
         std::u32string okuri;
         auto operator<=>(const Key&) const = default;
     };
+    void acknowledge(const std::string& client, std::uint64_t sequence);
     std::map<Key, std::vector<Candidate>> entries_;
-    std::map<std::string, std::uint64_t> clients_;
+    // Least recently written first. Only recent producers can still retry, so
+    // older IDs are retired instead of accumulating for every process lifetime.
+    std::vector<std::pair<std::string, std::uint64_t>> clients_;
     std::uint64_t revision_ = 0;
 };
 } // namespace nskkzime

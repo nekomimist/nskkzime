@@ -22,6 +22,12 @@ std::filesystem::path learning_file_path(const std::filesystem::path& settings_f
 std::wstring learning_pipe_name(const std::filesystem::path&);
 std::string learning_client_id();
 UserDictionary read_user_dictionary(const std::filesystem::path&);
+// Header-only read: lets readers skip unchanged generations without the server.
+std::uint64_t user_dictionary_revision(const std::filesystem::path&);
+// SAME/DATA answer for a GET1 request, read directly from the saved file.
+std::string learning_snapshot_response(const std::filesystem::path&, std::string_view request);
+// Signaled once the server replaces this revision. Open it before re-reading the file.
+NativeHandle learning_change_event(const std::filesystem::path&, std::uint64_t revision);
 // All synchronous functions below run off the input thread. Transport failures
 // may follow a committed write; retry using the identical client/sequence.
 std::string learning_exchange(const std::filesystem::path&, std::string_view request, DWORD timeout_ms = 1500);

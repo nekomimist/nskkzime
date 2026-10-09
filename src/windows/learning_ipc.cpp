@@ -4,6 +4,7 @@
 #include <bcrypt.h>
 #include <combaseapi.h>
 #include <sddl.h>
+#include <cstring>
 #include <stdexcept>
 
 namespace nskkzime::windows {
@@ -77,17 +78,39 @@ std::filesystem::path learning_file_path(const std::filesystem::path& settings_f
     if (const auto file = environment_value(L"NSKKZIME_USER_DICTIONARY")) return checked_path(*file);
     return checked_path(settings_file.parent_path() / L"user-dictionary.nskkdb");
 }
-std::wstring learning_pipe_name(const std::filesystem::path& file) {
+namespace {
+// Shared by the pipe and change events: one endpoint per user and dictionary path.
+std::wstring endpoint_name(const std::filesystem::path& file) {
     auto name = checked_path(file).native();
     need(name.size() <= 32767, "user dictionary path too long");
     CharLowerBuffW(name.data(), static_cast<DWORD>(name.size()));
     unsigned char hash[32]{};
     need(BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(name.data()),
         static_cast<ULONG>(name.size() * sizeof(wchar_t)), hash, sizeof(hash)) >= 0, "cannot hash dictionary path");
-    std::wstring result = L"\\\\.\\pipe\\nskkzime-dictionary-v1-" + user_sid() + L"-";
+    std::wstring result = L"nskkzime-dictionary-v1-" + user_sid() + L"-";
     constexpr wchar_t hex[] = L"0123456789abcdef";
     for (const auto byte : hash) { result += hex[byte >> 4]; result += hex[byte & 15]; }
     return result;
+}
+// A manual-reset event per published revision. The server sets the event of
+// the revision it replaces; a waiter opens it before re-reading the file, so a
+// change can never fall between its read and its wait.
+NativeHandle change_event(const std::filesystem::path& file, std::uint64_t revision, DWORD access) {
+    const auto name = L"Local\\" + endpoint_name(file) + L"-r" + std::to_wstring(revision);
+    Descriptor descriptor(user_sid());
+    SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), descriptor.value, FALSE};
+    return NativeHandle(CreateEventExW(&attributes, name.c_str(), CREATE_EVENT_MANUAL_RESET, access));
+}
+void signal_change(const std::filesystem::path& file, std::uint64_t replaced) noexcept {
+    try { const auto event = change_event(file, replaced, EVENT_MODIFY_STATE); if (event.valid()) SetEvent(event.get()); }
+    catch (...) { /* Readers also re-check on a long timeout. */ }
+}
+}
+std::wstring learning_pipe_name(const std::filesystem::path& file) {
+    return L"\\\\.\\pipe\\" + endpoint_name(file);
+}
+NativeHandle learning_change_event(const std::filesystem::path& file, std::uint64_t revision) {
+    return change_event(file, revision, SYNCHRONIZE);
 }
 std::string learning_client_id() {
     GUID guid{}; need(SUCCEEDED(CoCreateGuid(&guid)), "cannot create learning client ID");
@@ -111,6 +134,28 @@ UserDictionary read_user_dictionary(const std::filesystem::path& file) {
     std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0'); DWORD count = 0;
     need(ReadFile(stream.get(), bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr) && count == bytes.size(), "cannot read user dictionary");
     return UserDictionary::parse(bytes);
+}
+std::uint64_t user_dictionary_revision(const std::filesystem::path& file) {
+    NativeHandle stream(CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!stream.valid()) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return UserDictionary{}.revision();
+        throw std::runtime_error("cannot open user dictionary");
+    }
+    // Magic (5 bytes) followed by the little-endian revision. The full parse
+    // still validates the checksum whenever this differs from a known value.
+    unsigned char header[13]{}; DWORD count = 0;
+    need(ReadFile(stream.get(), header, sizeof(header), &count, nullptr) && count == sizeof(header) &&
+        (!std::memcmp(header, "NKUD1", 5) || !std::memcmp(header, "NKUD2", 5)), "invalid user dictionary header");
+    std::uint64_t revision = 0;
+    for (int i = 7; i >= 0; --i) revision = (revision << 8) | header[5 + i];
+    return revision;
+}
+std::string learning_snapshot_response(const std::filesystem::path& file, std::string_view request) {
+    need(request.size() == 12 && request.starts_with("GET1"), "invalid snapshot request");
+    if (request == snapshot_request(user_dictionary_revision(file))) return "SAME";
+    return "DATA" + read_user_dictionary(file).serialize();
 }
 std::string snapshot_request(std::uint64_t revision) {
     std::string bytes = "GET1";
@@ -172,13 +217,18 @@ int serve_dictionary(const std::filesystem::path& path, DWORD idle_ms) {
             const auto request = receive_frame(pipe.get(), GetTickCount64() + 15000, learning_max_bytes);
             std::string response;
             try {
+                const auto commit = [&](UserDictionary next) {
+                    write_file_atomic(file, next.serialize());
+                    const auto replaced = dictionary.revision(); dictionary = std::move(next);
+                    signal_change(file, replaced);
+                };
                 if (request.starts_with("NKL1") || request.starts_with("NKF1")) {
                     const auto update = decode_learning(request); auto next = dictionary;
-                    if (next.apply(update)) { write_file_atomic(file, next.serialize()); dictionary = std::move(next); }
+                    if (next.apply(update)) commit(std::move(next));
                     response = "OKAY";
                 } else if (request.starts_with("NKI1")) {
                     const auto update = decode_import(request); auto next = dictionary;
-                    if (next.apply(update)) { write_file_atomic(file,next.serialize()); dictionary = std::move(next); }
+                    if (next.apply(update)) commit(std::move(next));
                     response = "OKAY";
                 } else if (request.size() == 12 && request.starts_with("GET1")) {
                     if (request == snapshot_request(dictionary.revision())) response = "SAME";

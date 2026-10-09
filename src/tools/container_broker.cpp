@@ -70,9 +70,11 @@ struct Broker {
         }
         if (operation == "LRN1") {
             if (!learning_allowed(config, id)) throw std::runtime_error("learning disabled");
-            if (body.starts_with("NKL1") || body.starts_with("NKF1")) (void)decode_learning(body);
-            else if (body.size() != 12 || !body.starts_with("GET1")) throw std::runtime_error("unsupported learning operation");
             const auto& file = runtime.user_file;
+            // Snapshots come from the saved file, so polling containers never keep the helper alive.
+            if (body.size() == 12 && body.starts_with("GET1")) return learning_snapshot_response(file, body);
+            if (!body.starts_with("NKL1") && !body.starts_with("NKF1")) throw std::runtime_error("unsupported learning operation");
+            (void)decode_learning(body);
             try { return learning_exchange(file, body); }
             catch (...) {
                 const auto child = launch_dictionary_server(runtime.learning_helper, file);

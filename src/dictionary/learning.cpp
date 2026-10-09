@@ -1,11 +1,13 @@
 #include "nskkzime/learning.h"
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <stdexcept>
 
 namespace nskkzime {
 namespace {
-constexpr std::size_t max_entries = 50000, max_clients = 65536, max_candidates = 32;
+// Older files may hold up to max_clients IDs; writes keep only retained_clients.
+constexpr std::size_t max_entries = 50000, max_clients = 65536, retained_clients = 1024, max_candidates = 32;
 void check(bool ok) { if (!ok) throw std::invalid_argument("invalid or oversized user dictionary data"); }
 void text_check(std::u32string_view text, bool empty = false) {
     check((empty || !text.empty()) && text.size() <= 1024);
@@ -94,11 +96,21 @@ ImportRequest decode_import(std::string_view bytes) {
     for (std::uint64_t i = 0; i < count; ++i) request.entries.push_back(r.event(true));
     check(r.bytes.empty()); validate_import(request); return request;
 }
+namespace {
+template<class Clients> auto find_client(Clients& clients, std::string_view client) {
+    return std::find_if(clients.begin(), clients.end(), [&](const auto& item) { return item.first == client; });
+}
+}
+void UserDictionary::acknowledge(const std::string& client, std::uint64_t sequence) {
+    if (const auto found = find_client(clients_, client); found != clients_.end()) clients_.erase(found);
+    clients_.emplace_back(client, sequence);
+    if (clients_.size() > retained_clients)
+        clients_.erase(clients_.begin(), clients_.begin() + static_cast<std::ptrdiff_t>(clients_.size() - retained_clients));
+}
 bool UserDictionary::apply(const ImportRequest& request) {
     validate_import(request);
-    const auto previous = clients_.find(request.client);
+    const auto previous = find_client(clients_, request.client);
     if (previous != clients_.end() && previous->second >= request.sequence) return false;
-    check(previous != clients_.end() || clients_.size() < max_clients);
     check(revision_ != std::numeric_limits<std::uint64_t>::max());
     auto next = *this;
     for (const auto& entry : request.entries) {
@@ -108,15 +120,14 @@ bool UserDictionary::apply(const ImportRequest& request) {
         if (std::any_of(candidates.begin(),candidates.end(),[&](const Candidate& old) { return old.text == entry.candidate.text; })) continue;
         check(candidates.size() < max_candidates); candidates.push_back(entry.candidate);
     }
-    next.clients_[request.client] = request.sequence; ++next.revision_;
+    next.acknowledge(request.client, request.sequence); ++next.revision_;
     (void)next.serialize(); // Validate the complete transaction before changing this instance.
     *this = std::move(next); return true;
 }
 bool UserDictionary::apply(const LearningRequest& request) {
     validate_learning(request);
-    const auto previous = clients_.find(request.client);
+    const auto previous = find_client(clients_, request.client);
     if (previous != clients_.end() && previous->second >= request.sequence) return false;
-    check(previous != clients_.end() || clients_.size() < max_clients);
     Key key{request.event.key, request.event.okuri};
     check(request.action == DictionaryAction::Forget || entries_.contains(key) || entries_.size() < max_entries);
     check(revision_ != std::numeric_limits<std::uint64_t>::max());
@@ -131,7 +142,7 @@ bool UserDictionary::apply(const LearningRequest& request) {
         candidates.insert(candidates.begin(), request.event.candidate);
         if (candidates.size() > max_candidates) candidates.resize(max_candidates);
     }
-    clients_[request.client] = request.sequence; ++revision_; return true;
+    acknowledge(request.client, request.sequence); ++revision_; return true;
 }
 std::vector<Candidate> UserDictionary::lookup_scope(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find({key, std::u32string(okuri)});
@@ -177,9 +188,10 @@ UserDictionary UserDictionary::parse(std::string_view bytes) {
     Reader trailer{bytes.substr(bytes.size() - 8)}; check(trailer.number() == checksum(bytes.substr(0, bytes.size() - 8)));
     Reader r{bytes.substr(5, bytes.size() - 13)}; UserDictionary result; result.revision_ = r.number();
     const auto clients = r.number(); check(clients <= max_clients);
+    std::set<std::string> seen;
     for (std::uint64_t i = 0; i < clients; ++i) {
-        const auto id = r.string(32); client_check(id); const auto sequence = r.number(); check(sequence != 0);
-        check(result.clients_.emplace(id, sequence).second);
+        auto id = r.string(32); client_check(id); const auto sequence = r.number(); check(sequence != 0);
+        check(seen.insert(id).second); result.clients_.emplace_back(std::move(id), sequence);
     }
     const auto entries = r.number(); check(entries <= max_entries);
     for (std::uint64_t i = 0; i < entries; ++i) {

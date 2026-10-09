@@ -26,7 +26,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -80,6 +80,18 @@ int wmain(int argc, wchar_t** argv) {
             check(data.lookup({U"かんじ"})[0].text == U"漢字", "retry reordered newer candidate");
             auto okuri = update(std::string(32, 'a'), 2, U"描"); okuri.event.key = {U"か", 'k'}; okuri.event.okuri = U"く"; data.apply(okuri);
             check(data.lookup({U"か", 'k'}, U"く")[0].text == U"描" && data.lookup({U"か", 'k'}, U"け").empty(), "okuri preference leaked");
+        }},
+        {"store/retire-old-client-ids", [] {
+            // Every process lifetime has a new ID; the store must not fill up and refuse learning.
+            UserDictionary data; std::string latest;
+            for (unsigned i = 0; i < 2000; ++i) {
+                latest = std::to_string(i); latest.insert(0, 32 - latest.size(), '0');
+                check(data.apply(update(latest, 1, U"候補" + ascii(std::to_string(i % 7)))), "new client rejected");
+            }
+            const auto bytes = data.serialize();
+            check(data.revision() == 2000 && bytes.size() < 60000, "client IDs were not retired");
+            auto parsed = UserDictionary::parse(bytes);
+            check(!parsed.apply(update(latest, 1)) && parsed.revision() == 2000, "recent retry applied twice");
         }},
         {"store/reject-invalid-and-forbidden-learning", [] {
             for (int mode = 0; mode < 5; ++mode) {
@@ -146,6 +158,24 @@ int wmain(int argc, wchar_t** argv) {
             for (const auto ch : std::string("Michi")) immediate.handle({KeyCode::Character, ch});
             immediate.handle({KeyCode::Space});
             check(immediate.registering(), "temporary cache resurrected a deleted registration");
+        }},
+        {"client/change-notification-lets-idle-helper-exit", [&] {
+            const auto isolated = files.root / L"notify.nskkdb";
+            Child helper{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
+            auto observer = std::make_shared<LearningDictionary>(demo_dictionary(), isolated, server);
+            check(learning_exchange(isolated, encode_learning(update(std::string(32, '7'), 1, U"通知"))) == "OKAY", "notified update failed");
+            until([&] { return observer->lookup({U"かんじ"})[0].text == U"通知"; });
+            check(WaitForSingleObject(helper.process.get(), 5000) == WAIT_OBJECT_0, "idle reader kept the helper alive");
+            DWORD exit = 1; GetExitCodeProcess(helper.process.get(), &exit); check(exit == 0, "helper was not the idle writer");
+            Child restarted{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
+            {
+                // An open reader (FILE_SHARE_DELETE) must not make the next save fail.
+                NativeHandle reader(CreateFileW(isolated.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, 0, nullptr));
+                check(reader.valid(), "cannot open reader");
+                check(learning_exchange(isolated, encode_learning(update(std::string(32, '7'), 2, U"再通知"))) == "OKAY", "open reader blocked a save");
+            }
+            until([&] { return observer->lookup({U"かんじ"})[0].text == U"再通知"; });
         }},
         {"ipc/forget-save-failure-retry-and-restart", [&] {
             const auto isolated = files.root / L"forget.nskkdb";
