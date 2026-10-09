@@ -9,13 +9,14 @@ Import-Module (Join-Path $repository 'scripts/installation.psm1') -Force
 $fixture = Join-Path ([IO.Path]::GetFullPath($BuildDirectory)) ('install-test 日本語 space-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($fixture) | Out-Null
 $root = Join-Path $fixture 'managed'
-$state = @{ Dll = $null; Startup = $null; StartupFailure = $false; Calls = [Collections.Generic.List[string]]::new(); Failures = [Collections.Generic.List[object]]::new() }
+$state = @{ Dll = $null; X86Dll = $null; Startup = $null; StartupFailure = $false; Calls = [Collections.Generic.List[string]]::new(); Failures = [Collections.Generic.List[object]]::new() }
 $setStartup = {
     param([string]$Broker)
     $state.Startup = $Broker
     if ($state.StartupFailure) { $state.StartupFailure = $false; throw 'startup write interrupted' }
 }.GetNewClosure()
 $readRegistration = { return $state.Dll }.GetNewClosure()
+$readX86Registration = { return $state.X86Dll }.GetNewClosure()
 $registrar = {
     param([string]$Dll, [bool]$Unregister)
     $operation = if ($Unregister) { 'remove' } else { 'add' }
@@ -26,7 +27,8 @@ $registrar = {
     }
     if ($failure -and $failure.Mode -eq 'before') { return 5 }
     if ($failure -and $failure.Mode -eq 'lie') { return 0 }
-    $state.Dll = if ($Unregister) { $null } else { $Dll }
+    $slot = if ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($Dll)) -eq 'x86') { 'X86Dll' } else { 'Dll' }
+    $state[$slot] = if ($Unregister) { $null } else { $Dll }
     if ($failure -and $failure.Mode -eq 'foreign') { $state.Dll = 'C:\foreign\nskkzime_tsf.dll'; return 5 }
     if ($failure) { return 5 }
     return 0
@@ -37,13 +39,13 @@ function Expect-Failure([scriptblock]$Action, [string]$Expected) {
     try { & $Action | Out-Null } catch { $message = $_.Exception.Message }
     Assert-Install ($message.Contains($Expected)) "Expected '$Expected', got '$message'."
 }
-function Transition([string]$Target) { Invoke-NskkzimeTransition $root $Target $verifier $readRegistration $registrar $setStartup }
-function Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup }
+function Transition([string]$Target) { Invoke-NskkzimeTransition $root $Target $verifier $readRegistration $registrar $setStartup $readX86Registration }
+function Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup $readX86Registration }
 function Fail-Next([string]$Dll, [string]$Operation, [string]$Mode) {
     $state.Failures.Add(@{ Dll = $Dll; Operation = $Operation; Mode = $Mode })
 }
 function Journal([string]$Previous, [string]$Target) {
-    @{ format_version = 1; previous = $(if ($Previous) { $Previous } else { $null });
+    @{ format_version = 2; previous = $(if ($Previous) { $Previous } else { $null });
         target = $(if ($Target) { $Target } else { $null }) } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'transaction.json')
 }
 try {
@@ -60,10 +62,14 @@ try {
     # Simulate an existing format-2 install: no broker, but identical trusted
     # binary metadata. New installations must still be able to roll back to it.
     [IO.File]::Delete((Join-Path $first 'bin/nskkzime_broker.exe'))
+    [IO.File]::Delete((Join-Path $first 'bin/x86/nskkzime_tsf.dll'))
+    [IO.File]::Delete((Join-Path $first 'bin/x86/ime_probe.exe'))
+    [IO.Directory]::Delete((Join-Path $first 'bin/x86'))
     $legacyPath = Join-Path $first 'manifest.json'
     $legacy = Get-Content -LiteralPath $legacyPath -Raw | ConvertFrom-Json
     $legacy.format_version = 2
-    $legacy.files = @($legacy.files | Where-Object path -ne 'bin/nskkzime_broker.exe')
+    $legacy.files = @($legacy.files | Where-Object { $_.path -ne 'bin/nskkzime_broker.exe' -and -not $_.path.StartsWith('bin/x86/') })
+    $legacy.PSObject.Properties.Remove('x86_build_metadata')
     $legacy | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyPath
     $readme = Join-Path $second 'README.md'
     [IO.File]::AppendAllText($readme, "`nFixture second version.`n")
@@ -88,10 +94,10 @@ try {
     $count = $state.Calls.Count
     Assert-Install ((Transition $a.Version).Result -eq 'Unchanged' -and $state.Calls.Count -eq $count) 'Same version was re-registered.'
     Transition $b.Version | Out-Null
-    Assert-Install ($state.Dll -eq $b.Dll) 'Update failed.'
+    Assert-Install ($state.Dll -eq $b.Dll -and $state.X86Dll -eq $b.X86Dll) 'Paired update failed.'
     Assert-Install ($state.Startup -eq $b.Broker -and $b.Broker) 'Broker startup missing after update.'
     Transition $a.Version | Out-Null
-    Assert-Install ($state.Dll -eq $a.Dll) 'Explicit rollback failed.'
+    Assert-Install ($state.Dll -eq $a.Dll -and -not $state.X86Dll) 'Rollback to x64-only bundle failed.'
     Assert-Install (-not $state.Startup) 'Rollback to legacy version retained broker startup.'
     $state.StartupFailure = $true
     Expect-Failure { Transition $b.Version } '変更前の登録へ復帰'
@@ -125,7 +131,7 @@ try {
     Assert-Install ((Recover).Result -eq 'NoPendingTransaction') 'Recovery was not idempotent.'
     foreach ($current in @($null, $a.Dll, $b.Dll)) {
         Journal $a.Version $b.Version
-        $state.Dll = $current
+        $state.Dll = $current; $state.X86Dll = $null
         Recover | Out-Null
         Assert-Install ($state.Dll -eq $a.Dll) 'Interrupted update recovery failed.'
     }
@@ -147,6 +153,62 @@ try {
     Assert-Install ($state.Calls.Count -eq $count) 'Recovery touched concurrent foreign registration.'
     $state.Dll = $b.Dll
     Recover | Out-Null
+    foreach ($mode in @('before', 'after', 'lie')) {
+        Fail-Next $b.X86Dll add $mode
+        Expect-Failure { Transition $b.Version } '変更前の登録へ復帰'
+        Assert-Install ($state.Dll -eq $a.Dll -and -not $state.X86Dll) "Failed x86 registration $mode was not restored."
+    }
+    Transition $b.Version | Out-Null
+    foreach ($mode in @('before', 'after')) {
+        Fail-Next $b.X86Dll remove $mode
+        Expect-Failure { Transition $a.Version } '変更前の登録へ復帰'
+        Assert-Install ($state.Dll -eq $b.Dll -and $state.X86Dll -eq $b.X86Dll) "Failed x86 removal $mode lost pair."
+    }
+    foreach ($native in @($null, $a.Dll, $b.Dll)) {
+        foreach ($companion in @($null, $b.X86Dll)) {
+            Journal $b.Version $a.Version
+            $state.Dll = $native; $state.X86Dll = $companion
+            Recover | Out-Null
+            Assert-Install ($state.Dll -eq $b.Dll -and $state.X86Dll -eq $b.X86Dll) 'Interrupted paired rollback did not restore both views.'
+        }
+    }
+    Transition $a.Version | Out-Null
+    $state.X86Dll = 'C:\foreign\x86\nskkzime_tsf.dll'
+    $count = $state.Calls.Count
+    Expect-Failure { Transition $b.Version } '登録先が変更'
+    Assert-Install ($state.Calls.Count -eq $count -and $state.Dll -eq $a.Dll) 'Foreign x86 owner changed x64 registration.'
+    $state.X86Dll = $null
+    $third = Join-Path $fixture 'third'
+    [IO.Compression.ZipFile]::ExtractToDirectory($zip.Path, $third)
+    $thirdReadme = Join-Path $third 'README.md'
+    [IO.File]::AppendAllText($thirdReadme, "`nPaired fixture third version.`n")
+    $thirdManifestPath = Join-Path $third 'manifest.json'
+    $thirdManifest = Get-Content $thirdManifestPath -Raw | ConvertFrom-Json
+    $thirdEntry = $thirdManifest.files | Where-Object path -eq 'README.md'
+    $thirdEntry.size = (Get-Item $thirdReadme).Length
+    $thirdEntry.sha256 = (Get-FileHash $thirdReadme).Hash.ToLowerInvariant()
+    $thirdManifest | ConvertTo-Json -Depth 8 | Set-Content $thirdManifestPath
+    $c = Add-NskkzimeVersion $root $third $verifier
+    Transition $b.Version | Out-Null
+    Transition $c.Version | Out-Null
+    Assert-Install ($state.Dll -eq $c.Dll -and $state.X86Dll -eq $c.X86Dll) 'Paired to paired update failed.'
+    $count = $state.Calls.Count
+    Assert-Install ((Transition $c.Version).Result -eq 'Unchanged' -and $state.Calls.Count -eq $count) 'Paired unchanged version re-registered.'
+    Journal $c.Version $b.Version
+    $state.Dll = $b.Dll; $state.X86Dll = $c.X86Dll
+    Recover | Out-Null
+    Assert-Install ($state.Dll -eq $c.Dll -and $state.X86Dll -eq $c.X86Dll) 'Mixed paired update did not restore coherent pair.'
+    Journal $c.Version $b.Version
+    $recordPath = Join-Path $root 'transaction.json'
+    $oldRecord = Get-Content $recordPath -Raw | ConvertFrom-Json
+    $oldRecord.format_version = 1
+    $oldRecord | ConvertTo-Json | Set-Content $recordPath
+    $state.Dll = $c.Dll; $state.X86Dll = $c.X86Dll
+    $count = $state.Calls.Count
+    Expect-Failure { Recover } '旧形式'
+    Assert-Install ($state.Calls.Count -eq $count) 'Legacy journal removed companion.'
+    [IO.File]::Delete($recordPath)
+    Transition $a.Version | Out-Null
     foreach ($bundle in @($a, $b)) {
         $path = Join-Path $bundle.Directory 'README.md'
         $bytes = [IO.File]::ReadAllBytes($path)
@@ -166,7 +228,7 @@ try {
     Assert-Install ($state.Calls.Count -eq $count) 'Invalid journal reached registrar.'
     [IO.File]::Delete((Join-Path $root 'transaction.json'))
     $status = Get-NskkzimeInstallStatus $root $readRegistration
-    Assert-Install ($status.ManagedVersion -eq $a.Version -and $status.AvailableVersions.Count -eq 2 -and -not $status.Pending) 'Status is inconsistent.'
+    Assert-Install ($status.ManagedVersion -eq $a.Version -and $status.AvailableVersions.Count -eq 3 -and -not $status.Pending) 'Status is inconsistent.'
     Assert-Install ((Get-FileHash -LiteralPath $sentinel).Hash -eq $sentinelHash) 'User data changed.'
     Write-Output 'PASS install/update/rollback/unregister, exclusive lock, hash checks, foreign registration, partial failures, interrupted recovery, preserved journals, read-only status and retained files'
 } finally {

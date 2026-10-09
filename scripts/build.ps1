@@ -3,9 +3,11 @@ param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
     [switch]$Zenz, # Accepted for compatibility; zenz is now the default.
     [switch]$TestOnly,
+    [switch]$X86, # Build/test only the companion; x64 services must already exist.
     [ValidateRange(1, 64)][int]$Jobs = [Math]::Min(8, [Environment]::ProcessorCount)
 )
 $ErrorActionPreference = 'Stop'
+if ($X86 -and ($TestOnly -or $Zenz)) { throw '-X86 は -TestOnly / -Zenz と併用しません。' }
 if ($Zenz -and $TestOnly) { throw '-Zenz と -TestOnly は同時に指定できません。' }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -18,6 +20,7 @@ if (-not (Test-Path -LiteralPath $cmake)) { throw 'Build Tools の C++ CMake too
 $preset = $Configuration.ToLowerInvariant()
 $configurePreset = 'windows-x64'
 if ($TestOnly) { $preset += '-test-only'; $configurePreset += '-test-only' }
+if ($X86) { $preset += '-x86'; $configurePreset = 'windows-x86' }
 # Some launcher environments contain both PATH and Path. Legacy MSBuild's
 # ProcessStartInfo rejects that environment. Normalize only our child process,
 # without changing the caller's environment or the user's persisted settings.
@@ -41,5 +44,10 @@ Push-Location $repoRoot
 try {
     Invoke-BuildTool $cmake @('--preset', $configurePreset, "-DCMAKE_GENERATOR_INSTANCE=$vsRoot")
     Invoke-BuildTool $cmake @('--build', '--preset', $preset, '--parallel', "$Jobs")
+    if (-not $TestOnly -and -not $X86) {
+        Invoke-BuildTool $cmake @('--preset', 'windows-x86', "-DCMAKE_GENERATOR_INSTANCE=$vsRoot")
+        Invoke-BuildTool $cmake @('--build', '--preset', ($preset + '-x86'), '--parallel', "$Jobs")
+        Invoke-BuildTool $ctest @('--preset', ($preset + '-x86'))
+    }
     Invoke-BuildTool $ctest @('--preset', $preset)
 } finally { Pop-Location }

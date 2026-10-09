@@ -1,7 +1,7 @@
 # nskkzime
 
 nskkzimeは **nekomimist's skk zenz ime** の略です。SKK風の操作に、[skk-zenz](https://github.com/nekomimist/skk-zenz) の
-zenzによる変換・候補採点を組み合わせる日本語IME。最初の対象はWindows / x64です。
+zenzによる変換・候補採点を組み合わせる日本語IME。対象OSはWindows / x64で、64bit・32bitアプリ用のTSF DLLを含みます。
 製品のビルド・配布はzenz入りの一種類です。辞書だけの入力は推論停止時にも使える基礎機能として維持します。
 
 現在は **最初の開発用プロトタイプ** です。OS非依存の入力コア、キー列を再生するCLI、
@@ -29,6 +29,9 @@ MSBuildを実行できます。ユーザーの永続的な環境変数は変更�
 名前付きパイプ・共有メモリーを含むテストには、それらを利用できる通常のWindows実行環境が必要です。
 
 出力先は `out/build/windows-x64-zenz/Debug/` または `Release/` です。
+通常ビルドはx64本体とx86追加DLLの両方をビルド・テストします。32bit DLLと入力検証アプリは
+その配下の `x86/` に置き、辞書・推論サーバーとGUIはx64版を共用します。
+本体のビルド後、32bit側だけを更新する場合は `-X86` を指定できます。
 追加オプションなしで実モデル対応のCPUサーバーを含みます。従来の `-Zenz` 指定も互換用に受け付けます。
 準備・変換CLI・IMEの接続設定は [zenz CPUサーバー](docs/ZENZ.md) を参照してください。
 Release成果物を開発用ZIPへまとめるには [パッケージの作成と検査](docs/DISTRIBUTION.md) を参照してください。
@@ -50,7 +53,8 @@ Release成果物を開発用ZIPへまとめるには [パッケージの作成�
 | `nkkz-ime-server.exe` | 実モデルの変換・採点。パイプ／標準入出力。テスト用の `--dummy` も備える |
 | `nskkzime_user_dictionary.exe` | 登録・学習語の一覧、削除、SKKファイルの書き出し・一括取り込み |
 | `nskkzime_dictionary_gui.exe` | 学習辞書の一覧・絞り込み・送り別の削除・SKK取り込み／書き出しを行うGUI |
-| `nskkzime_tsf.dll` | 開発用のTSF Text Input Processor |
+| `nskkzime_tsf.dll` | x64アプリ用のTSF Text Input Processor |
+| `x86/nskkzime_tsf.dll`、`x86/ime_probe.exe` | 32bitアプリ用DLLと標準EDIT／RichEditの入力検証アプリ |
 | `tsf_smoke.exe` | DLLのCOMインターフェースとTSFアダプターの契約テスト |
 | `ime_probe.exe` | 標準EDIT／RichEditを使う、登録後の実入力検証アプリ |
 | `ime_probe_local.exe` | 同じ検証をビルド先のDLLで行うアプリ。初回のIME登録は必要 |

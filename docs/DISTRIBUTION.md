@@ -34,21 +34,21 @@ zenz有効（`NSKKZIME_WITH_ZENZ=ON`）である必要がある。軽量テス�
 | 導入・更新・復帰スクリプトと処理モジュール | あり |
 | モデル、SKK辞書、ユーザー設定、学習データ | なし |
 
-形式2の `manifest.json` を除くファイル数は16。外部データや個別評価結果を誤って梱包しない。
-登録用DLLとその補助プロセス・GUIは全て `bin/` に置く。
+形式4の `manifest.json` を除くファイル数は19。外部データや個別評価結果を誤って梱包しない。
+x64 DLLと補助プロセス・GUIは `bin/`、32bit DLLと検証アプリは `bin/x86/` に置く。
 従来の `-Zenz` オプションは互換用に受け付けるが、指定の有無で内容は変わらない。
 過去のzenzなしZIPは検査だけ可能にしている。新規作成・更新・別版としてのリリース検証は行わない。
 
 ## ビルドと依存の検査
 
-全バイナリーのPEヘッダーがAMD64 / PE32+であることを確認し、`dumpbin /dependents` で静的な
+x64側のPEヘッダーがAMD64 / PE32+、`bin/x86/` がI386 / PE32であることを確認し、`dumpbin /dependents` で静的な
 インポート一覧を取得する。既知のWindows DLLとRelease用Visual C++ランタイム以外の依存は拒否する。
 Debugランタイム、梱包していない独自DLL、別アーキテクチャーの混入を検出する。
 PEヘッダーの判定は [MicrosoftのPE仕様](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format) に基づく。
 これは実行コードの全命令や動的に読み込むDLLまで検証する仕組みではない。
 
 現在のMSVC 19.44ビルドは `MSVCP140.dll`、`MSVCP140_ATOMIC_WAIT.dll`、`VCRUNTIME140.dll`、
-`VCRUNTIME140_1.dll` とWindowsのUCRTを使う。Visual C++ v14 Redistributable x64は別途必要。
+`VCRUNTIME140_1.dll` とWindowsのUCRTを使う。Visual C++ v14 Redistributable x64とx86は別途必要。
 ビルドに使ったツールセット以上のランタイムが必要なことは
 [Microsoftのランタイム配布案内](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)を参照。
 ランタイムのダウンロード・導入はパッケージ作成に含めない。
@@ -56,13 +56,13 @@ PEヘッダーの判定は [MicrosoftのPE仕様](https://learn.microsoft.com/en
 zenz CPUは現在のCMake構成で `/arch:AVX2`、FMA、F16C、BMI2を使う。OSのAVX対応も必要。
 整数命令とSSE系を含む固定条件を `nskkzime_config.exe --check-cpu` で検査できる。
 IMEも推論サーバーの起動前に検査する。判定方法・固定したCMake設定は [CPU対応](CPU_SUPPORT.md) を参照。
-パッケージ作成時のPE確認だけでCPU互換性を判定しない。対応しないCPUやARM64・x86アプリは未検証。
+パッケージ作成時のPE確認だけでCPU互換性を判定しない。対応しないCPUやARM64アプリは対象外。32bitアプリは追加DLLを用い、同じx64サーバーを利用する。
 
 マニフェストには各ファイルのハッシュ・長さ・依存DLL・Authenticode検査結果を残す。
 `source_revision_at_packaging` と `tracked_source_changes` は梱包時のリポジトリーの状態で、
 バイナリーに埋め込んだビルド時の情報とは分けて記録する。
 
-MSVCビルドでは、8個の配布バイナリーの読み取り専用PEセクション `.nskkz` にビルド情報を埋め込む。
+MSVCビルドでは、11個の配布バイナリーの読み取り専用PEセクション `.nskkz` にビルド情報を埋め込む。
 CMakeのビルド時に毎回更新を判定するため、直接の `cmake --build` や増分ビルドにも適用する。
 `binary_build_revision` は埋め込まれたGit HEAD、`binary_build_metadata` は以下の共通情報。
 
@@ -76,7 +76,9 @@ CMakeのビルド時に毎回更新を判定するため、直接の `cmake --bu
   後者は `.git` を除くファイルを同じ方法で集計し、再解析ポイントを拒否する。
 
 各画像には自身のファイル名も埋め込む。梱包時はPEを実行せずに読み取り、ファイル名・Release/zenz構成・
-共通情報が揃わない場合、別ビルドの混在や情報の不足として拒否する。古いビルド出力は再ビルドが必要。
+同じアーキテクチャー内の共通情報が揃わない場合、別ビルドの混在や情報の不足として拒否する。
+32bit側の構成は `x86-companion`、llamaの情報は空。`x86_build_metadata` とx64側の
+ソースrevision・内容ハッシュ・変更フラグ・Release構成・MSVC版が一致することも確認する。古いビルド出力は再ビルドが必要。
 ユーザー辞書、モデル、`out/` の他のファイルはソースハッシュの入力に含めず、絶対パスやファイル一覧も記録しない。
 内容が同じなら生成したC++を更新せず、不要な再コンパイルを避ける。
 

@@ -1,3 +1,4 @@
+#include "binary_layout.h"
 #include "tool_launcher.h"
 #include "dictionary_settings.h"
 #include "learning_ipc.h"
@@ -21,7 +22,7 @@ std::filesystem::path module_directory() {
     const auto count = GetModuleFileNameW(module, path, ARRAYSIZE(path));
     FreeLibrary(module);
     if (!count || count == ARRAYSIZE(path)) throw std::runtime_error("cannot locate IME tools");
-    return std::filesystem::path(path).parent_path();
+    return shared_binary_directory(std::filesystem::path(path));
 }
 std::size_t index(ImeTool tool) { return static_cast<std::size_t>(tool); }
 void validate(const std::filesystem::path& path) {

@@ -14,10 +14,13 @@ Import-Module (Join-Path $PSScriptRoot 'installation.psm1') -Force
 $verifier = Join-Path $PSScriptRoot 'package.ps1'
 $root = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'nskkzime'
 $classPath = 'Software\Classes\CLSID\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}'
-$readRegistration = {
-    $shadow = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($classPath)
+function Read-RegistrationView([Microsoft.Win32.RegistryView]$View) {
+    $user = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $View)
+    $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $View)
+    try {
+    $shadow = $user.OpenSubKey($classPath)
     if ($shadow) { $shadow.Dispose(); throw 'HKCUに同じCLSIDがあります。登録元の手順で解除してください。' }
-    $class = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($classPath)
+    $class = $machine.OpenSubKey($classPath)
     if (-not $class) { return $null }
     try {
         $server = $class.OpenSubKey('InprocServer32')
@@ -31,8 +34,11 @@ $readRegistration = {
             return $dll
         } finally { $server.Dispose() }
     } finally { $class.Dispose() }
-}.GetNewClosure()
-if ($Action -eq 'Status') { Get-NskkzimeInstallStatus $root $readRegistration; return }
+    } finally { $user.Dispose(); $machine.Dispose() }
+}
+$readRegistration = { Read-RegistrationView ([Microsoft.Win32.RegistryView]::Registry64) }
+$readX86Registration = { Read-RegistrationView ([Microsoft.Win32.RegistryView]::Registry32) }
+if ($Action -eq 'Status') { Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration; return }
 # A packaged caller (including an inherited virtualized child) can silently
 # write HKCU Run to its private registry. Refuse before any installation writes.
 if (-not ('NskkzimeInstallContext' -as [type])) {
@@ -121,7 +127,7 @@ try {
     if (@(Get-Process -Name regsvr32 -ErrorAction SilentlyContinue).Count) {
         throw 'regsvr32が動作中です。終了後に再実行してください。中断した子プロセスとは並行して復旧しません。'
     }
-    $status = Get-NskkzimeInstallStatus $root $readRegistration
+    $status = Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration
     if ($status.Pending -and $Action -ne 'Recover') { throw '未完了の更新記録があります。Recoverを先に実行してください。' }
     # This tree contains verified public program files only. Private dictionaries,
     # settings, model files and IPC objects retain their existing access rules.
@@ -146,7 +152,8 @@ try {
     $registrar = {
         param([string]$Dll, [bool]$Unregister)
         Assert-ProtectedItem $Dll
-        $start = [Diagnostics.ProcessStartInfo]::new((Join-Path ([Environment]::SystemDirectory) 'regsvr32.exe'))
+        $system = if ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($Dll)) -eq 'x86') { Join-Path $env:SystemRoot 'SysWOW64' } else { [Environment]::SystemDirectory }
+        $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'regsvr32.exe'))
         $start.UseShellExecute = $false
         $start.CreateNoWindow = $true
         $start.ArgumentList.Add('/s')
@@ -159,11 +166,11 @@ try {
     switch ($Action) {
         Install {
             $bundle = Add-NskkzimeVersion $root $PackageDirectory $verifier
-            Invoke-NskkzimeTransition $root $bundle.Version $verifier $readRegistration $registrar $setStartup
+            Invoke-NskkzimeTransition $root $bundle.Version $verifier $readRegistration $registrar $setStartup $readX86Registration
         }
-        Rollback { Invoke-NskkzimeTransition $root $Version $verifier $readRegistration $registrar $setStartup }
-        Unregister { Invoke-NskkzimeTransition $root $null $verifier $readRegistration $registrar $setStartup }
-        Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup }
+        Rollback { Invoke-NskkzimeTransition $root $Version $verifier $readRegistration $registrar $setStartup $readX86Registration }
+        Unregister { Invoke-NskkzimeTransition $root $null $verifier $readRegistration $registrar $setStartup $readX86Registration }
+        Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup $readX86Registration }
     }
     # Registration + startup are transactional. Live process replacement is best
     # effort; startup also repairs it on the next sign-in. Never run the broker
@@ -185,5 +192,5 @@ try {
             $desktop.Document.Application.ShellExecute($broker, '--replace', (Split-Path -Parent $broker), 'open', 0)
         }
     } catch { Write-Warning "登録は完了しましたが、補助プロセスの切り替えに失敗しました。サインアウト・サインインで反映できます。$($_.Exception.Message)" }
-    Get-NskkzimeInstallStatus $root $readRegistration
+    Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration
 } finally { $lock.Dispose() }

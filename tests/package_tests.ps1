@@ -73,7 +73,7 @@ try {
     }
     $created = & $PackageScript @arguments
     $verified = & $PackageScript -Verify $created.Path
-    Assert-Package ($verified.Verified -and $verified.Files -eq 17 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
+    Assert-Package ($verified.Verified -and $verified.Files -eq 19 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
     Assert-Package ($verified.SHA256 -eq $created.SHA256) 'Verification changed archive.'
     Expect-Failure { & $PackageScript @arguments } '上書きしません'
     Assert-Package ((Get-FileHash -LiteralPath $created.Path).Hash -eq $created.SHA256) 'Existing archive overwritten.'
@@ -87,7 +87,7 @@ try {
         Rewrite-Zip $created.Path $bad $mode
         Expect-Failure { & $PackageScript -Verify $bad } $failures[$mode]
     }
-    foreach ($mode in @('legacy-metadata', 'reordered-metadata')) {
+    foreach ($mode in @('reordered-metadata')) {
         $compatible = Join-Path $fixture ($mode + '.zip')
         Rewrite-Zip $created.Path $compatible $mode
         Assert-Package ((& $PackageScript -Verify $compatible).Verified) "Rejected compatible $mode manifest."
@@ -95,12 +95,24 @@ try {
     $expanded = Join-Path $fixture 'expanded'
     [IO.Compression.ZipFile]::ExtractToDirectory($created.Path, $expanded)
     $directoryResult = & $PackageScript -VerifyDirectory $expanded
-    Assert-Package ($directoryResult.Verified -and $directoryResult.FormatVersion -eq 3 -and $directoryResult.Paths.Count -eq 18) 'Expanded package verification failed.'
+    Assert-Package ($directoryResult.Verified -and $directoryResult.FormatVersion -eq 4 -and $directoryResult.Paths.Count -eq 20) 'Expanded package verification failed.'
     $manifest = Get-Content -LiteralPath (Join-Path $expanded 'manifest.json') -Raw | ConvertFrom-Json
     Assert-Package ($manifest.binary_build_revision -match '^[a-f0-9]{40}$' -and
         $manifest.binary_build_revision -eq $manifest.binary_build_metadata.source_revision -and
         $manifest.binary_build_metadata.source_sha256 -match '^[a-f0-9]{64}$' -and
         $manifest.binary_build_metadata.llama_source_sha256 -match '^[a-f0-9]{64}$') 'Missing embedded build provenance.'
+    $companionPath = Join-Path $expanded 'bin/x86/nskkzime_tsf.dll'
+    $companionBytes = [IO.File]::ReadAllBytes($companionPath)
+    $manifestFile = Join-Path $expanded 'manifest.json'
+    $manifestBytes = [IO.File]::ReadAllBytes($manifestFile)
+    try {
+        [IO.File]::Copy((Join-Path $expanded 'bin/nskkzime_tsf.dll'), $companionPath, $true)
+        $record = $manifest.files | Where-Object path -eq 'bin/x86/nskkzime_tsf.dll'
+        $record.size = (Get-Item $companionPath).Length
+        $record.sha256 = (Get-FileHash $companionPath).Hash.ToLowerInvariant()
+        $manifest | ConvertTo-Json -Depth 8 | Set-Content $manifestFile
+        Expect-Failure { & $PackageScript -VerifyDirectory $expanded } 'x86 PE32'
+    } finally { [IO.File]::WriteAllBytes($companionPath, $companionBytes); [IO.File]::WriteAllBytes($manifestFile, $manifestBytes) }
     $directoryReadme = Join-Path $expanded 'README.md'
     $originalReadme = [IO.File]::ReadAllBytes($directoryReadme)
     [IO.File]::AppendAllText($directoryReadme, 'corrupt')
@@ -124,6 +136,10 @@ try {
     $fake = Join-Path $fixture 'Release'
     [IO.Directory]::CreateDirectory($fake) | Out-Null
     [IO.File]::WriteAllText((Join-Path $fixture 'CMakeCache.txt'), "CMAKE_GENERATOR_PLATFORM:INTERNAL=x64`nNSKKZIME_WITH_ZENZ:BOOL=ON`n")
+    foreach ($name in @('nskkzime_tsf.dll', 'ime_probe.exe')) {
+        [IO.Directory]::CreateDirectory((Join-Path $fake 'x86')) | Out-Null
+        [IO.File]::Copy((Join-Path $source ('x86/' + $name)), (Join-Path $fake ('x86/' + $name)), $true)
+    }
     $bytes = [IO.File]::ReadAllBytes((Join-Path $source 'ime_probe.exe'))
     $pe = [BitConverter]::ToUInt32($bytes, 60)
     $bytes[$pe + 4] = 0x4c; $bytes[$pe + 5] = 0x01

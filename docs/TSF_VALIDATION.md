@@ -2,6 +2,32 @@
 
 OS・アーキテクチャー・AppContainerの制約は [対応範囲](COMPATIBILITY.md) を参照。
 
+## 2026-10-10: 32bitアプリ用DLLと実入力検証
+
+Windows x64上のx86 TSF DLLと `x86/ime_probe.exe` を追加した。辞書・学習・推論サーバーとGUIはx64を共用する。
+32bitプロセスでビルド先のDLLを読み、RichEditのcomposition・変換・確定、標準EDITの互換入力経路での
+変換・確定を確認した。両方で取り消しと送り仮名の候補選択も通り、確定結果は「漢字です描く」だった。
+プロセスのビット数とロードしたDLLパスを `out/native-x86-click.txt` に記録した。
+
+自動試験は `--self-test <絶対パスのテスト辞書> <絶対パスの結果ファイル>` を指定する。
+検証ウィンドウを前面にするクリックを待ち、RichEditはITfKeystrokeMgr、EDITは検証ウィンドウの
+前面・フォーカスを確認した短いキー列で配送する。保存設定・学習は使わない。
+この検証はプロセス内manifestでビルド版DLLを指定する `ime_probe_local.exe` を使い、
+通常のIMEプロファイルとWindowsの実入力コントロールを利用した。日常の登録先は変更していない。
+
+```powershell
+.\scripts\build.ps1 -Configuration Release
+$repo = (Get-Location).Path
+.\out\build\windows-x64-zenz\Release\x86\ime_probe_local.exe --self-test `
+  "$repo/tests/fixtures/basic.utf8.skk" "$repo/out/native-x86.txt"
+```
+
+32bit側のCOM生成・かな／辞書変換・CPU検査・共有GUI／broker探索・学習・実モデル生成／採点はCTestで検証する。
+配布形式4は両アーキテクチャーのPE、同じソースからのビルド情報、両COM登録の更新・復帰・中断を検査する。
+実レジストリへのx86登録・Program Files版への適用と個別の32bit常用アプリは今回の確認に含めていない。
+最終ReleaseのCTestはx86側18件・x64側57件がすべて成功。ログは `out/x86-final-validation.log`。
+形式4の19ファイルを含む `out/packages/nskkzime-x64-x86-20261010.zip` と展開先の検査も成功した。
+
 ## 2026-10-09: brokerの永続診断ログ
 
 再発後に起動時と接続口の状態を確認できるよう、broker専用のJSONL診断を追加した。
@@ -474,14 +500,11 @@ COMの登録先を残して失敗を返す。解除中のカテゴリー・プ�
 新しいDLLでの実OS登録・解除と、権限／OS側障害からの復旧の実測は引き続き必要。
 アンインストーラー・署名・更新処理はPhase 3で実装する。
 
-登録スクリプトは `stage-dev.ps1` を使い、zenz入りReleaseのDLL・辞書補助プロセス・設定GUI・辞書管理GUI・推論サーバーを同じ
-`out/installed/<5ファイルの名前とハッシュから作ったSHA256の先頭16文字>/` へコピーしてから登録する。
-5ファイルを事前に検査し、配置後にもハッシュを照合する。同一内容の配置は再利用し、既存ファイルは上書きしない。
-GUIまたは推論サーバーだけを更新した場合も別の配置先になる。`stage-dev.ps1` だけなら管理者権限なしで配置まで行え、登録状態は変更しない。
-登録中もビルド出力を更新できるが、実アプリは登録時の版を使い続ける。
-更新時は使用中アプリを閉じ、解除→再登録→再起動の順に行う。
-スクリプトは自分で配置した範囲以外のDLLの登録を解除しない。
-以前の手順でビルド先を直接登録していた場合は、元のDLLを `regsvr32 /u` で解除してから移行する。
+現在の `register-dev.ps1` は形式4の検証済みZIPを作成し、`install.ps1` でProgram Filesへ配置・登録する。
+両アーキテクチャーの更新・解除・復旧と既存版の保全は [導入・更新管理](INSTALLATION.md) を参照。
+`stage-dev.ps1` 単体はx64の補助プロセス・GUIとx86 DLL・検証アプリを内容ハッシュ別に
+`out/installed/` へ配置する読み取り専用の検証用ステージ処理で、登録は変更しない。
+旧手順で `out/installed/` またはビルド先を直接登録していた場合は、元DLLで解除してから移行する。
 
 `ime_probe` は標準EDITと、`SES_USECTF` を有効にしたRichEditを備える。
 RichEditは既定でTSFが無効なので、明示設定しない場合は互換入力経路の検証になる。

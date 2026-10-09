@@ -1,6 +1,6 @@
 # 導入・更新管理
 
-`scripts/install.ps1`（配布ZIPでは `tools/install.ps1`）は、zenz入りの形式2・3パッケージを
+`scripts/install.ps1`（配布ZIPでは `tools/install.ps1`）は、zenz入りの形式2・3・4パッケージを
 `%ProgramFiles%\nskkzime\versions\<マニフェストのSHA-256>` へ配置して登録する開発用スクリプト。
 利用者向けコマンドは [パッケージの手順](PACKAGE_README.md) を参照。
 リポジトリーからは `-Action Install -PackageDirectory <検査済みZIPの展開先>` を指定する。
@@ -18,6 +18,19 @@
 - 形式3では本人のHKCUのRunに `nskkzime broker` を登録する。登録先の変更とRun設定は同じ復旧記録で管理し、
   解除・形式2への復帰ではRun登録を外す。成功後に旧brokerを停止し、通常権限のExplorerから新brokerを起動する。
   起動できなかった場合も登録先は有効で、次回サインインで起動する。管理者権限で常駐させない。
+
+## 32bitアプリへの対応
+
+形式4は `bin/x86/nskkzime_tsf.dll` を同じ版フォルダーに含む。x64 DLLはSystem32、
+x86 DLLはSysWOW64の `regsvr32` で登録する。HKLMとHKCUのCLSIDをRegistry64／Registry32の
+両方で検査し、片側に管理外の登録があれば変更を拒否する。両DLLは同一CLSIDを使う。
+CTFのプロファイルはWOW64間で共有されるため、x64側だけがTSFプロファイルとカテゴリーを管理し、
+x86側は自分のCOM登録だけを変更する。[MicrosoftのWOW64登録仕様](https://learn.microsoft.com/en-us/windows/win32/winprog64/shared-registry-keys)を参照。
+
+更新記録の形式2は変更前・変更後の版IDから両方の登録先を復元する。解除はx86→x64、登録はx64→x86の順。
+旧形式2・3パッケージへの復帰ではx86登録を外す。失敗時は片側だけ変更された状態からも両方を復帰させる。
+旧形式1の更新記録にx86登録が混在する場合は拒否する。模擬登録で両登録ビューと中断・復旧を検証している。
+32bit側のProgram Filesへの実登録・UAC更新は、この追加対応の検証には含めていない。
 
 ## 失敗と中断
 

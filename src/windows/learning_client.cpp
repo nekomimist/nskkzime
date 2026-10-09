@@ -1,3 +1,4 @@
+#include "binary_layout.h"
 #include "learning_client.h"
 #include "app_container.h"
 #include "learning_ipc.h"
@@ -22,7 +23,7 @@ std::filesystem::path helper_path() {
     const auto module = pin_module(); wchar_t path[32768]{};
     const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path)); FreeLibrary(module);
     if (!size || size == ARRAYSIZE(path)) throw std::runtime_error("cannot locate dictionary helper");
-    return std::filesystem::path(path).parent_path() / L"nskkzime_dictionary_server.exe";
+    return shared_binary_directory(std::filesystem::path(path)) / L"nskkzime_dictionary_server.exe";
 }
 }
 struct LearningDictionary::State {

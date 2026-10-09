@@ -17,7 +17,22 @@ $zenzLicenses = @('licenses/skk-zenz-MIT.txt', 'licenses/llama-MIT.txt')
 function Get-Digest([byte[]]$Bytes) {
     [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
+function Assert-PeArchitecture([byte[]]$Bytes, [string]$Name) {
+    $x86 = $Name.StartsWith('bin/x86/')
+    $label = if ($x86) { 'x86 PE32' } else { 'x64 PE32+' }
+    if ($Bytes.Length -lt 64 -or [BitConverter]::ToUInt16($Bytes, 0) -ne 0x5a4d) { throw "PEではありません: $Name" }
+    $pe = [long][BitConverter]::ToUInt32($Bytes, 60)
+    if ($pe -gt $Bytes.Length - 26 -or [BitConverter]::ToUInt32($Bytes, $pe) -ne 0x4550 -or
+        [BitConverter]::ToUInt16($Bytes, $pe + 4) -ne $(if ($x86) { 0x14c } else { 0x8664 }) -or
+        [BitConverter]::ToUInt16($Bytes, $pe + 24) -ne $(if ($x86) { 0x10b } else { 0x20b })) { throw "$label ではありません: $Name" }
+}
+function Assert-CompanionSource($HostMetadata, $CompanionMetadata) {
+    foreach ($key in @('source_revision', 'source_sha256', 'source_modified', 'configuration', 'compiler')) {
+        if ($HostMetadata.$key -cne $CompanionMetadata.$key) { throw 'x64とx86のビルド元が一致しません。両方を再ビルドしてください。' }
+    }
+}
 function Get-BuildMetadata([byte[]]$Bytes, [string]$Name) {
+    $companion = $Name.StartsWith('bin/x86/')
     # Parse the dedicated read-only PE data section. Never load/execute an image.
     $invalid = "ビルド情報が不正または不足しています: $Name"
     if ($Bytes.Length -lt 64 -or [BitConverter]::ToUInt16($Bytes, 0) -ne 0x5a4d) { throw $invalid }
@@ -57,14 +72,16 @@ function Get-BuildMetadata([byte[]]$Bytes, [string]$Name) {
     if ($found -isnot [Collections.IDictionary] -or $found.Count -ne $required.Count) { throw $invalid }
     foreach ($key in $required) { if (-not $found.Contains($key)) { throw $invalid } }
     foreach ($key in $required | Where-Object { $_ -notin @('format_version', 'source_modified') }) {
+        if ($companion -and $key -in @('llama_revision', 'llama_source_sha256')) { continue }
         if ($found[$key] -isnot [string]) { throw $invalid }
     }
     if ($found.format_version -isnot [long] -or $found.format_version -ne 1 -or
         $found.source_revision -cnotmatch '^([a-f0-9]{40}|[a-f0-9]{64})$' -or
         $found.source_sha256 -cnotmatch '^[a-f0-9]{64}$' -or $found.cmake_cache_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
         $found.source_modified -isnot [bool] -or $found.configuration -cne 'Release' -or
-        $found.variant -cne 'zenz-cpu' -or $found.compiler -cnotmatch '^MSVC [0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' -or
-        $found.llama_revision -cnotmatch '^[a-f0-9]{40}$' -or $found.llama_source_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $found.variant -cne $(if ($companion) { 'x86-companion' } else { 'zenz-cpu' }) -or $found.compiler -cnotmatch '^MSVC [0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' -or
+        (-not $companion -and ($found.llama_revision -cnotmatch '^[a-f0-9]{40}$' -or $found.llama_source_sha256 -cnotmatch '^[a-f0-9]{64}$')) -or
+        ($companion -and ($null -ne $found.llama_revision -or $null -ne $found.llama_source_sha256)) -or
         $found.binary -cne [IO.Path]::GetFileName($Name)) { throw $invalid }
     $null = $found.Remove('binary')
     return $found
@@ -79,20 +96,21 @@ function Get-MetadataIdentity($Metadata) {
     } else { throw 'マニフェストのビルド情報が一致しません。' }
     ConvertTo-Json -InputObject $ordered -Compress -Depth 4
 }
-function Get-PackageNames([bool]$WithZenz, [int]$Format = 3) {
+function Get-PackageNames([bool]$WithZenz, [int]$Format = 4) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
     if ($WithZenz) { $names += @('bin/nkkz-ime-server.exe') + $zenzLicenses }
     if ($Format -ge 2) { $names += @('tools/install.ps1', 'tools/installation.psm1') }
     if ($Format -ge 3) { $names += 'bin/nskkzime_broker.exe' }
+    if ($Format -ge 4) { $names += @('bin/x86/nskkzime_tsf.dll', 'bin/x86/ime_probe.exe') }
     $names | Sort-Object -CaseSensitive
 }
 function Test-PackageContents($Contents) {
     if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
     if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
     $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
-    if ($manifest.format_version -notin @(1, 2, 3) -or $manifest.product -cne 'nskkzime' -or
+    if ($manifest.format_version -notin @(1, 2, 3, 4) -or $manifest.product -cne 'nskkzime' -or
         $manifest.architecture -cne 'x64' -or $manifest.configuration -cne 'Release' -or
         $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
         ($manifest.format_version -ge 2 -and $manifest.variant -cne 'zenz-cpu')) {
@@ -109,18 +127,27 @@ function Test-PackageContents($Contents) {
             throw "ハッシュまたは長さが一致しません: $($file.path)"
         }
     }
-    # Older development archives remain inspectable. New archives always carry
-    # metadata, and when present it must agree with every embedded image.
+    # Old archives remain readable; paired bundles require provenance for both
+    # builds and their own PE architecture, even after rehashing a wrong image.
+    if ($manifest.format_version -ge 4 -and
+        ($manifest.PSObject.Properties.Name -notcontains 'binary_build_metadata' -or
+         $manifest.PSObject.Properties.Name -notcontains 'x86_build_metadata')) { throw 'ビルド情報が不足しています。' }
     if ($manifest.PSObject.Properties.Name -contains 'binary_build_metadata') {
-        $common = $null
+        $identities = @{}
         foreach ($name in $names | Where-Object { $_.StartsWith('bin/') }) {
+            Assert-PeArchitecture $Contents[$name] $name
             $embedded = Get-BuildMetadata $Contents[$name] $name
+            $arch = if ($name.StartsWith('bin/x86/')) { 'x86' } else { 'x64' }
             $identity = Get-MetadataIdentity $embedded
-            if ($null -ne $common -and $common -cne $identity) { throw '異なるビルドのバイナリーが混在しています。' }
-            $common = $identity
+            if ($identities.ContainsKey($arch) -and $identities[$arch] -cne $identity) { throw '異なるビルドのバイナリーが混在しています。' }
+            $identities[$arch] = $identity
         }
-        if ($common -cne (Get-MetadataIdentity $manifest.binary_build_metadata) -or
+        if ($identities.x64 -cne (Get-MetadataIdentity $manifest.binary_build_metadata) -or
             $manifest.binary_build_revision -cne $manifest.binary_build_metadata.source_revision) { throw 'マニフェストのビルド情報が一致しません。' }
+        if ($manifest.format_version -ge 4) {
+            if ($identities.x86 -cne (Get-MetadataIdentity $manifest.x86_build_metadata)) { throw 'マニフェストのビルド情報が一致しません。' }
+            Assert-CompanionSource $manifest.binary_build_metadata $manifest.x86_build_metadata
+        }
     }
     return $manifest
 }
@@ -164,7 +191,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
     for ($ancestor = $root; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
         if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '再解析ポイントは検査できません。' }
     }
-    $names = @(Get-PackageNames $true) + @('manifest.json')
+    $names = @(Get-PackageNames $true 4) + @('manifest.json')
     $contents = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
     $folders = [Collections.Generic.Queue[string]]::new()
     $folders.Enqueue($path)
@@ -174,7 +201,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
             $relative = [IO.Path]::GetRelativePath($path, $item.FullName).Replace('\', '/')
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "再解析ポイントは検査できません: $relative" }
             if ($item.PSIsContainer) {
-                if ($relative -cnotin @('bin', 'licenses', 'tools')) { throw "余分なディレクトリー: $relative" }
+                if ($relative -cnotin @('bin', 'bin/x86', 'licenses', 'tools')) { throw "余分なディレクトリー: $relative" }
                 $folders.Enqueue($item.FullName)
                 continue
             }
@@ -231,6 +258,8 @@ $systemLibraries = @('kernel32.dll', 'user32.dll', 'gdi32.dll', 'advapi32.dll', 
 $runtimeLibraries = @('msvcp140.dll', 'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $sources = [ordered]@{}
 foreach ($name in $binaries) { $sources['bin/' + $name] = Join-Path $source $name }
+$sources['bin/x86/nskkzime_tsf.dll'] = Join-Path $source 'x86/nskkzime_tsf.dll'
+$sources['bin/x86/ime_probe.exe'] = Join-Path $source 'x86/ime_probe.exe'
 $sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe'
 $sources['bin/nskkzime_broker.exe'] = Join-Path $source 'nskkzime_broker.exe'
 $sources['README.md'] = Join-Path $repository 'docs/PACKAGE_README.md'
@@ -244,19 +273,14 @@ $sources['licenses/llama-MIT.txt'] = Join-Path $repository 'third_party/llama.LI
 $payload = [ordered]@{}
 $files = @()
 $buildMetadata = $null
+$x86Metadata = $null
 foreach ($name in @(Get-PackageNames $true)) {
     $path = $sources[$name]
     $bytes = [IO.File]::ReadAllBytes($path)
     if ($bytes.Length -eq 0 -or $bytes.Length -gt 128MB) { throw "ファイルサイズが不正です: $name" }
     $record = [ordered]@{ path = $name; size = $bytes.Length; sha256 = (Get-Digest $bytes) }
     if ($name.StartsWith('bin/')) {
-        # Check PE32+ / AMD64 without loading or running the image.
-        if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "PEではありません: $name" }
-        $pe = [BitConverter]::ToUInt32($bytes, 60)
-        if ($pe -gt $bytes.Length - 26 -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or
-            [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664 -or [BitConverter]::ToUInt16($bytes, $pe + 24) -ne 0x20b) {
-            throw "x64 PE32+ではありません: $name"
-        }
+        Assert-PeArchitecture $bytes $name
         $embedded = Get-BuildMetadata $bytes $name
         $dump = & $dumpbin /nologo /dependents $path 2>&1
         if ($LASTEXITCODE -ne 0) { throw "依存DLLを調べられません: $name" }
@@ -271,28 +295,33 @@ foreach ($name in @(Get-PackageNames $true)) {
         $record['imports'] = $imports
         $record['authenticode_status'] = (Get-AuthenticodeSignature -LiteralPath $path).Status.ToString()
         if ((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $record.sha256) { throw "検査中にファイルが変更されました: $name" }
-        if ($null -ne $buildMetadata -and (Get-MetadataIdentity $buildMetadata) -cne (Get-MetadataIdentity $embedded)) {
-            throw '異なるビルドのバイナリーが混在しています。全対象を再ビルドしてください。'
+        if ($name.StartsWith('bin/x86/')) {
+            if ($null -ne $x86Metadata -and (Get-MetadataIdentity $x86Metadata) -cne (Get-MetadataIdentity $embedded)) { throw '異なるビルドのバイナリーが混在しています。' }
+            $x86Metadata = $embedded
+        } else {
+            if ($null -ne $buildMetadata -and (Get-MetadataIdentity $buildMetadata) -cne (Get-MetadataIdentity $embedded)) { throw '異なるビルドのバイナリーが混在しています。全対象を再ビルドしてください。' }
+            $buildMetadata = $embedded
         }
-        $buildMetadata = $embedded
     }
     $payload[$name] = $bytes
     $files += [pscustomobject]$record
 }
+Assert-CompanionSource $buildMetadata $x86Metadata
 $revision = & git -C $repository rev-parse --verify HEAD
 if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できません。' }
 & git -C $repository diff --quiet HEAD --
 $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
-    format_version = 3; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
+    format_version = 4; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $buildMetadata.source_revision
     binary_build_metadata = $buildMetadata
+    x86_build_metadata = $x86Metadata
     provenance_note = 'Build metadata is embedded during compilation; it is not signed attestation or publisher authentication. Modified source is identified separately from its base revision.'
     cpu_requirement = 'zenz-msvc-avx2-v1: native x64; SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT/AVX/AVX2/FMA/F16C/BMI1/BMI2/LZCNT; XSAVE/OSXSAVE and OS XMM/YMM state'
-    runtime_requirement = 'Microsoft Visual C++ v14 Redistributable x64, at least the toolset version used to build'
+    runtime_requirement = 'Microsoft Visual C++ v14 Redistributable x64 and x86, at least the toolset version used to build'
     inspected_with_msvc_tools = $toolset
     signing_note = 'Packaging does not sign files. SHA-256 verification checks consistency, not publisher identity.'
     first_party_license = 'Not yet specified; development validation package, not a public release.'

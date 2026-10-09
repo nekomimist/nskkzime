@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory)][string]$Configuration,
     [Parameter(Mandatory)][string]$CompilerVersion,
     [Parameter(Mandatory)][string]$CacheFile,
-    [Parameter(Mandatory)][ValidateSet('zenz-cpu', 'test-only')][string]$Variant,
+    [Parameter(Mandatory)][ValidateSet('zenz-cpu', 'test-only', 'x86-companion')][string]$Variant,
     [string]$LlamaDirectory,
     [string]$LlamaRevision
 )

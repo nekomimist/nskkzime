@@ -17,6 +17,6 @@ public:
     virtual HRESULT unregister_processor() noexcept = 0;
 };
 // root is HKLM in production; the caller serializes registration operations.
-HRESULT register_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) noexcept;
-HRESULT unregister_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) noexcept;
+HRESULT register_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf, bool shared_profile = true) noexcept;
+HRESULT unregister_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf, bool shared_profile = true) noexcept;
 }

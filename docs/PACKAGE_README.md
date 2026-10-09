@@ -1,16 +1,18 @@
 # nskkzime 開発用パッケージ
 
-Windows / x64用の開発中のSKK風IMEです。検証用ZIPに導入・更新用のPowerShellスクリプトを含みます。
+Windows / x64上の64bit・32bitアプリに対応する開発中のSKK風IMEです。検証用ZIPに導入・更新用のPowerShellスクリプトを含みます。
 署名・本体の公開ライセンス・クリーン環境での導入試験は未完了です。
 モデル、SKK辞書、設定、学習データは含みません。既存ファイルを上書きせず、版ごとに別の場所へ展開してください。
 
 ## 内容と前提
 
 `bin/` にIME DLL、辞書補助プロセス、AppContainer補助プロセス、設定GUI、辞書管理GUI、設定CLI、辞書管理CLI、入力検証アプリを収めています。
+`bin/x86/` に32bit用のIME DLLと入力検証アプリを収めています。辞書・推論・GUIはx64版を共用します。
 実モデル用の `nkkz-ime-server.exe` を必ず含む、zenz CPUの単一構成です。
 `manifest.json` に構成（`zenz-cpu`）、各ファイルのSHA-256・サイズ・依存DLL・署名検査結果を記録しています。
 `binary_build_revision` と `binary_build_metadata` は各バイナリーに埋め込んだビルド元・内容ハッシュ・
-構成です。ZIPと展開先の検査では全バイナリーとの一致も確認します。梱包時点のrevisionは別に記録します。
+構成です。32bit側は `x86_build_metadata` に別のCMake構成を記録し、両方のソース内容・MSVC版・Release構成を照合します。
+ZIPと展開先の検査では各アーキテクチャーのPEと埋め込み情報も確認します。梱包時点のrevisionは別に記録します。
 これらはビルド追跡のための自己記載情報で、署名や提供者の認証にはなりません。
 
 形式3から `nskkzime_broker.exe` を含みます。インストール時に本人のHKCUのRunへ登録し、
@@ -21,7 +23,7 @@ Program Files内の公開プログラムにAppContainerの読み取り・実行�
 登録解除・旧形式へのロールバックではRun登録を外します。AppContainer内から設定・辞書管理GUIは開けないため、
 デスクトップアプリ側の入力モードメニューか `bin/nskkzime_settings.exe` を使用してください。
 
-- Windows x64、Microsoft Visual C++ v14 Redistributable **x64** が必要です。
+- Windows x64、Microsoft Visual C++ v14 Redistributable **x64とx86** が必要です。
   ビルドに使ったツールセット以上の版を、[Microsoft公式配布ページ](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)から取得してください。
   ランタイムのインストーラーは同梱・自動実行しません。
 - zenzサーバーにはAVX2/FMA/F16C/BMI2とOSのAVX対応が必要です。CPU要件を満たさない端末では起動しないでください。
@@ -29,7 +31,8 @@ Program Files内の公開プログラムにAppContainerの読み取り・実行�
   初期モデルはzenz-v3.2-smallの `ggml-model-Q5_K_M.gguf`、SHA-256は
   `29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673` です。
 - PowerShell 7をZIPの検査と以下の登録手順に使います。通常のIME・GUI利用にはPythonやBuild Toolsは不要です。
-- 検証対象はWindows 11のx64アプリです。AppContainerはWindows検索・Microsoft Storeの2パッケージを対象とします。x86、ARM64、その他のAppContainerは対象外です。
+- 32bit版の検証アプリでEDIT／RichEditの入力を確認しています。個別の32bit常用アプリは未検証です。
+  AppContainerはWindows検索・Microsoft Storeの2パッケージを対象とします。ARM64とその他のAppContainerは対象外です。
 
 ZIP全体のSHA-256を提供者の値と照合し、展開後のスクリプトで元ZIPの内容を検査できます。
 自己記載したハッシュの一致は改変検出の補助であり、署名や提供者の認証の代わりにはなりません。
@@ -70,7 +73,8 @@ JSONの `supported` が `true`、終了コードが0ならCPU/OSの固定条件�
 配置後にもう一度全ファイルを検査して登録します。一般ユーザーが書き換えられる配置先や再解析ポイントは拒否します。
 `Status` は管理者権限なしで使え、登録DLL、現在の版ID、保存済み版ID、未完了の更新を表示します。
 管理外の登録（従来の開発用登録や手動で登録したZIP）は自動解除しません。元の手順で解除してから導入します。
-開発用の `out/installed` からの移行では、リポジトリーの `scripts/register-dev.ps1 -Unregister` を先に使います。
+旧手順の `out/installed` に登録している場合は、その元DLLを `System32/regsvr32 /u` で解除してから移行します。
+現在の `scripts/register-dev.ps1` はこのパッケージ方式の導入・解除を使用します。
 
 登録後は通常権限に戻し、登録DLLと同じ `bin/` の `nskkzime_settings.exe` で手元のSKK辞書を設定して、
 `ime_probe.exe` の標準EDIT／RichEditで入力・変換・確定・取消を確認します。

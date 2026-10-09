@@ -1,3 +1,4 @@
+#include "binary_layout.h"
 #include "app_container.h"
 #include "dictionary_settings.h"
 #include <appmodel.h>
@@ -183,7 +184,7 @@ std::filesystem::path container_broker_path() {
     HMODULE module = nullptr; need(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&anchor), &module) != FALSE);
     wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path)); need(size && size < ARRAYSIZE(path));
-    return std::filesystem::path(path).parent_path() / L"nskkzime_broker.exe";
+    return shared_binary_directory(std::filesystem::path(path)) / L"nskkzime_broker.exe";
 }
 std::wstring container_pipe_name(const ProcessIdentity& identity) {
     if (identity.container.empty()) return L"\\\\.\\pipe\\nskkzime-desktop-broker-v1-" + identity.user + L"-" + std::to_wstring(identity.session);

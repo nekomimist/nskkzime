@@ -56,7 +56,7 @@ HRESULT delete_class(HKEY root, const std::wstring& path) noexcept {
 }
 }
 
-HRESULT register_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) noexcept {
+HRESULT register_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf, bool shared_profile) noexcept {
     try {
         // Allocate strings before creating the key so an allocation failure
         // cannot leave a registration with no owner path.
@@ -79,6 +79,7 @@ HRESULT register_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) no
         HRESULT hr = HRESULT_FROM_WIN32(error);
         bool processor_attempted = false;
         size_t categories_attempted = 0;
+        if (SUCCEEDED(hr) && !shared_profile) return S_OK;
         if (SUCCEEDED(hr)) hr = tsf.initialize();
         if (SUCCEEDED(hr)) { processor_attempted = true; hr = tsf.register_processor(); }
         if (SUCCEEDED(hr)) hr = tsf.add_profile(dll);
@@ -105,7 +106,7 @@ HRESULT register_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) no
     } catch (...) { return E_OUTOFMEMORY; }
 }
 
-HRESULT unregister_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) noexcept {
+HRESULT unregister_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf, bool shared_profile) noexcept {
     try {
         if (dll.empty() || dll.size() >= 32768 || dll.find(L'\0') != std::wstring::npos) return E_INVALIDARG;
         const auto path = class_path();
@@ -115,6 +116,7 @@ HRESULT unregister_in(HKEY root, const std::wstring& dll, TsfRegistration& tsf) 
         if (error != ERROR_SUCCESS) return HRESULT_FROM_WIN32(error);
         auto hr = check_owner(key.key, dll);
         if (FAILED(hr)) return hr;
+        if (!shared_profile) { key.close(); return delete_class(root, path); }
         hr = tsf.initialize();
         if (FAILED(hr)) return hr;
         // Preserve the COM owner on any failure, allowing the caller to retry.

@@ -5,7 +5,7 @@ $testParent = [IO.Path]::GetFullPath($TestRoot)
 $fixtureRoot = Join-Path $testParent ('stage-test 日本語 space-' + [Guid]::NewGuid().ToString('N'))
 $source = Join-Path $fixtureRoot 'source'
 $destination = Join-Path $fixtureRoot 'staged'
-$names = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe', 'nskkzime_broker.exe')
+$names = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe', 'nskkzime_broker.exe', 'x86/nskkzime_tsf.dll', 'x86/ime_probe.exe')
 $bundles = [Collections.Generic.List[string]]::new()
 function Assert-Stage([bool]$Condition, [string]$Reason) { if (-not $Condition) { throw $Reason } }
 function Expect-Failure([scriptblock]$Action) {
@@ -14,11 +14,11 @@ function Expect-Failure([scriptblock]$Action) {
     Assert-Stage $failed 'Expected staging to reject invalid input.'
 }
 try {
-    [IO.Directory]::CreateDirectory($source) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $source 'x86')) | Out-Null
     foreach ($name in $names) { [IO.File]::WriteAllText((Join-Path $source $name), "fixture-$name") }
     $first = & $StageScript -SourceDirectory $source -DestinationRoot $destination
     $bundles.Add($first.Directory)
-    Assert-Stage ($first.Hashes.Count -eq 6) 'Server, broker or GUI binaries are missing from bundle.'
+    Assert-Stage ($first.Hashes.Count -eq 8) 'Server, broker or GUI binaries are missing from bundle.'
     foreach ($name in $names) {
         Assert-Stage ((Get-FileHash -LiteralPath (Join-Path $first.Directory $name)).Hash -eq $first.Hashes[$name]) 'Staged bytes differ.'
     }
@@ -56,6 +56,8 @@ try {
             $file = Join-Path $full $name
             if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file }
         }
+        $x86 = Join-Path $full 'x86'
+        if (Test-Path -LiteralPath $x86) { Remove-Item -LiteralPath $x86 }
         if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full }
     }
     if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination }

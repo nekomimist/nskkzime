@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory)
 $bundleRoot = [IO.Path]::GetFullPath($DestinationRoot)
-$requiredFiles = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe', 'nskkzime_broker.exe')
+$requiredFiles = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe', 'nskkzime_dictionary_gui.exe', 'nkkz-ime-server.exe', 'nskkzime_broker.exe', 'x86/nskkzime_tsf.dll', 'x86/ime_probe.exe')
 $hashes = [ordered]@{}
 foreach ($name in $requiredFiles) {
     $source = Join-Path $sourceRoot $name
@@ -20,6 +20,7 @@ $destination = Join-Path $bundleRoot $bundleDigest.Substring(0, 16).ToLowerInvar
 [IO.Directory]::CreateDirectory($destination) | Out-Null
 foreach ($name in $requiredFiles) {
     $target = Join-Path $destination $name
+    [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target)) | Out-Null
     if (-not (Test-Path -LiteralPath $target)) {
         # Never replace an already staged or loaded binary, including a racing stager.
         try { [IO.File]::Copy((Join-Path $sourceRoot $name), $target, $false) }
@@ -29,4 +30,4 @@ foreach ($name in $requiredFiles) {
         throw "配置内容が一致しません。登録は行いません: $target"
     }
 }
-[pscustomobject]@{ Directory = $destination; Dll = (Join-Path $destination 'nskkzime_tsf.dll'); Hashes = $hashes }
+[pscustomobject]@{ Directory = $destination; Dll = (Join-Path $destination 'nskkzime_tsf.dll'); X86Dll = (Join-Path $destination 'x86/nskkzime_tsf.dll'); Hashes = $hashes }

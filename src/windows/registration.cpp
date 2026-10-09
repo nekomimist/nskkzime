@@ -83,8 +83,15 @@ HRESULT change_registration(bool remove) noexcept {
         if (length == filename.size()) return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
         const std::wstring path(filename.data(), length);
         SystemTsfRegistration tsf;
-        return remove ? registration::unregister_in(HKEY_LOCAL_MACHINE, path, tsf)
-                      : registration::register_in(HKEY_LOCAL_MACHINE, path, tsf);
+        // CTF\TIP is shared across WOW64. The x64 DLL owns the profile;
+        // the companion changes only its redirected COM registration.
+#ifdef NSKKZIME_X86_COMPANION
+        constexpr bool shared_profile = false;
+#else
+        constexpr bool shared_profile = true;
+#endif
+        return remove ? registration::unregister_in(HKEY_LOCAL_MACHINE, path, tsf, shared_profile)
+                      : registration::register_in(HKEY_LOCAL_MACHINE, path, tsf, shared_profile);
     } catch (...) { return E_OUTOFMEMORY; }
 }
 }

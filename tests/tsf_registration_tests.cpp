@@ -198,6 +198,13 @@ void invalid_owners(Fixture& f) {
 int main() {
     try {
         Fixture fixture;
+        {
+            FakeTsf shared; shared.processor = shared.profile = shared.enabled = true; shared.categories.fill(true);
+            check(register_in(fixture.root.value, dll, shared, false) == S_OK && shared.calls.empty(), "companion touched shared profile on register");
+            check(unregister_in(fixture.root.value, other, shared, false) == HRESULT_FROM_WIN32(ERROR_NOT_OWNER), "companion ignored owner");
+            check(unregister_in(fixture.root.value, dll, shared, false) == S_OK && shared.calls.empty() && shared.enabled &&
+                std::all_of(shared.categories.begin(), shared.categories.end(), [](bool x) { return x; }), "companion removed shared profile");
+        }
         successful_lifecycle(fixture);
         registration_failures(fixture);
         unregister_failures(fixture);

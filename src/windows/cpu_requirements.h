@@ -9,7 +9,7 @@ namespace nskkzime::windows {
 // Raw feature inputs keep the decision testable without executing unsupported
 // instructions or changing the host CPU, registry or saved settings.
 struct CpuFeatures {
-    bool native_x64 = false;
+    bool native_x64 = false; // Host is AMD64, including an x86 caller under WOW64.
     std::uint32_t leaf1_ecx = 0, leaf7_ebx = 0, extended1_ecx = 0;
     std::uint64_t xcr0 = 0;
 };

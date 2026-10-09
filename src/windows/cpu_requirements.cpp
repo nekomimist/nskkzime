@@ -1,7 +1,7 @@
 #include "cpu_requirements.h"
 #include <windows.h>
 #include <array>
-#if defined(_M_X64)
+#if defined(_M_X64) || defined(_M_IX86)
 #include <intrin.h>
 #endif
 #if defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__)
@@ -42,7 +42,7 @@ bool can_read_xcr0(const CpuFeatures& features) noexcept {
 }
 CpuFeatures current_cpu_features() noexcept {
     CpuFeatures features;
-#if defined(_M_X64)
+#if defined(_M_X64) || defined(_M_IX86)
     // GetNativeSystemInfo can report x64 on ARM64 emulation. Ask for the host
     // architecture explicitly, and fail closed if that query is unavailable.
     using QueryArchitecture = BOOL (WINAPI*)(HANDLE, USHORT*, USHORT*);
@@ -52,7 +52,7 @@ CpuFeatures current_cpu_features() noexcept {
 #pragma warning(pop)
     USHORT process = 0, native = 0;
     features.native_x64 = query && query(GetCurrentProcess(), &process, &native) &&
-        process == IMAGE_FILE_MACHINE_UNKNOWN && native == IMAGE_FILE_MACHINE_AMD64;
+        (process == IMAGE_FILE_MACHINE_UNKNOWN || process == IMAGE_FILE_MACHINE_I386) && native == IMAGE_FILE_MACHINE_AMD64;
     if (!features.native_x64) return features; // ARM64 emulation is outside the current product contract.
     int registers[4]{};
     __cpuidex(registers, 0, 0); const auto maximum = registers[0];

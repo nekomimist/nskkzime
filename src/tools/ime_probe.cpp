@@ -7,6 +7,10 @@
 #include <filesystem>
 #include <string>
 #include <windowsx.h>
+#include <shellapi.h>
+#include <string_view>
+#include <fstream>
+#include <stdexcept>
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -109,7 +113,7 @@ struct Probe {
         TF_INPUTPROCESSORPROFILE active{};
         const auto current = profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active);
         const bool ours = current == S_OK && active.clsid == nskkzime::windows::service_clsid && active.guidProfile == nskkzime::windows::profile_guid;
-        std::wstring text = std::wstring(operation) + L": " + code + L"\r\n現在のIME: " + (ours ? L"nskkzime" : L"別のIME／キーボード");
+        std::wstring text = std::wstring(operation) + L": " + code + L"\r\nアプリ: " + std::to_wstring(sizeof(void*) * 8) + L"bit\r\n現在のIME: " + (ours ? L"nskkzime" : L"別のIME／キーボード");
         if (const auto button = mode_button()) {
             BSTR label = nullptr;
             if (SUCCEEDED(button->GetTooltipString(&label)) && label) text += std::wstring(L"\r\n入力モード: ") + label;
@@ -142,6 +146,7 @@ struct Probe {
         return result;
     }
 };
+#include "native_probe_test.h"
 HWND control(HWND parent, const wchar_t* kind, const wchar_t* text, DWORD style, int x, int y, int width, int height, int id, HFONT font) {
     const auto window = CreateWindowExW((style & WS_TABSTOP) && _wcsicmp(kind, L"BUTTON") ? WS_EX_CLIENTEDGE : 0,
         kind, text, WS_CHILD | WS_VISIBLE | style, x, y, width, height, parent,
@@ -269,6 +274,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (!SetEnvironmentVariableW(L"NSKKZIME_ROMAJI",L"builtin")) return 2;
 #endif
 #endif
+    int argument_count = 0;
+    auto** arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
+    std::filesystem::path native_output;
+    if (arguments && argument_count > 1 && std::wstring_view(arguments[1]) == L"--self-test") {
+        if (argument_count != 4) { LocalFree(arguments); return 2; }
+        const auto dictionary = std::filesystem::path(arguments[2]); native_output = arguments[3];
+        if (!dictionary.is_absolute() || !native_output.is_absolute()) { LocalFree(arguments); return 2; }
+        SetEnvironmentVariableW(L"NSKKZIME_CONFIG", L"Z:\\nskkzime-native-probe-no-settings.ini");
+        SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY", dictionary.c_str());
+        SetEnvironmentVariableW(L"NSKKZIME_LEARNING", L"0");
+        SetEnvironmentVariableW(L"NSKKZIME_ROMAJI", L"builtin");
+        SetEnvironmentVariableW(L"NSKKZIME_INFERENCE_DUMMY", L"0");
+        SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY_CACHE", L"off");
+    }
+    if (arguments) LocalFree(arguments);
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 1;
     const auto rich_module = LoadLibraryW(L"msftedit.dll");
@@ -291,6 +311,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                     ShowWindow(window, show); UpdateWindow(window); SetFocus(probe.plain);
                     ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);
                     ComPtr<ITfKeystrokeMgr> keys; probe.manager.As(&keys);
+                    if (!native_output.empty()) {
+                        try { native_probe_test(probe, window, native_output); result = 0; }
+                        catch (...) { result = 1; }
+                        DestroyWindow(window);
+                    } else {
                     MSG message{};
                     while (true) {
                         BOOL available = FALSE;
@@ -303,6 +328,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                         if (keys && message.message == WM_KEYUP && SUCCEEDED(keys->TestKeyUp(message.wParam, message.lParam, &eaten)) && eaten &&
                             SUCCEEDED(keys->KeyUp(message.wParam, message.lParam, &eaten)) && eaten) continue;
                         TranslateMessage(&message); DispatchMessageW(&message);
+                    }
                     }
                 }
             }

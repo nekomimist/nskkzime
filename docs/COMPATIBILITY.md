@@ -1,6 +1,6 @@
 # 対応範囲とOS・アプリの制約
 
-2026-10-09時点。配布対象は **Windows x64、zenz CPU入りの一種類**。
+2026-10-10時点。配布対象は **Windows x64、zenz CPU入りの一種類**。
 以下はソース・成果物・実測の区別を付けた対応表であり、未検証環境で使えるという宣言ではない。
 zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末以外の未実測範囲は [CPU対応](CPU_SUPPORT.md) を参照。
 
@@ -13,7 +13,7 @@ zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末�
 | Windows Terminal | 修正後の入力成功をユーザーが確認済み | `64aa112` でimmersive互換性の登録を追加。XAML診断でロード抑止の解消と、実際のTerminal Previewへの新版DLL読み込みを確認後、ユーザーがTerminalでの入力成功を確認。全変換操作・zenzの文脈取得は未検証。[TSF検証](TSF_VALIDATION.md)を参照 |
 | VS Code | 未検証 | 実アプリでのキー配送、文脈、入力属性、遅延候補を個別に確認する |
 | Windows 10 x64 | 未検証 | Windows SDKのターゲット指定だけでは実OSでの動作確認にならない |
-| x86アプリ | 現在の配布対象外 | x86用TSF DLLと32ビット側登録を提供していない |
+| x86アプリ（Windows x64上） | 32bit TSF DLL・登録処理・検証アプリを追加 | ビルド版の実EDIT／RichEditで入力・変換・確定・取り消し・送り仮名を確認。x64サーバーを使う学習・実モデル連携もテスト対象。個別の常用アプリとProgram Filesへのx86実登録は未検証 |
 | Windows on Arm／ARM64アプリ | 現在の配布対象外 | ARM64／ARM64EC成果物を提供せず、x64エミュレーション上のIME・推論も未検証 |
 | その他のAppContainer／UWPの入力先 | 対応対象外 | かな入力は可能でも、補助プロセスの許可対象ではなく設定・辞書・zenzへ接続できない。追加するパッケージごとに検証が必要 |
 | Microsoft Store検索 | かな入力・変換・候補一覧・ページ移動・ASDF選択を実画面で確認 | `29dc4e5` を登録済み。起動登録の仮想化による再起動後の変換不良と、別プロセスの外枠を所有元に指定していた表示不良を修正。zenz生成は以前の登録版と今回の実AppContainerテストで確認。[調査・検証記録](TSF_VALIDATION.md)を参照 |
@@ -27,6 +27,8 @@ zenzのCPU/OS要件は起動前に検査する。検査項目と、この端末�
 
 TSF DLLは入力先プロセスへ読み込まれる。32ビットプロセスは64ビットDLLを読み込めないため、
 現在のAMD64 DLLを置いただけではx86アプリ向けの実装にはならない。
+形式4は `bin/x86/nskkzime_tsf.dll` と32bit側COM登録を追加し、辞書・推論・GUIはx64版を共用する。
+32bit版の `ime_probe` で基本入力を確認した。32bit Windows自体は対象外。
 別プロセスのIPCはビット数をまたげるが、TSF DLLの制約は別である。
 [Microsoftのプロセス相互運用仕様](https://learn.microsoft.com/en-us/windows/win32/winprog64/process-interoperability)を参照。
 
