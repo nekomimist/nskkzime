@@ -90,9 +90,14 @@ int wmain(int argc,wchar_t** argv) {
           check(WaitForSingleObject(process.get(),3000)==WAIT_OBJECT_0,"helper did not stop"); }
         { Session s(factory.Get(),L"試験問題の"); s.start(); s.complete(); check(s.context->doc->text==L"試験問題の解答","server did not restart"); }
         {std::ofstream output(dictionary,std::ios::binary);output<<"かいとう /回答/解答/解凍/\nきょうはいいてんきですね /旧候補/\n";}
-        settings.dictionaries={dictionary};settings.zenz.policy.rerank=true;settings.zenz.policy.score_timeout_ms=1000;save_dictionary_settings(file,settings);
+        settings.dictionaries={dictionary};settings.zenz.policy.rerank=true;settings.zenz.policy.score_timeout_ms=1000;
+        settings.zenz.policy.rerank_wait_ms=0;save_dictionary_settings(file,settings);
         {Session s(factory.Get(),L"試験問題の");s.start();check(s.context->doc->text==L"試験問題の回答","dictionary was not immediately available");
          s.complete();check(s.context->doc->text==L"試験問題の解答","real model score did not promote best candidate");}
+        settings.zenz.policy.rerank_wait_ms=1000;save_dictionary_settings(file,settings);
+        {Session s(factory.Get(),L"試験問題の");s.type("Kaitou");s.key(VK_SPACE);
+         check(s.context->doc->text==L"試験問題の解答","real model score was not applied before display");
+         s.wait();check(s.context->doc->text==L"試験問題の解答","waited real score reordered after display");}
         {Session s(factory.Get(),L"");s.start("Kyouhaiitenkidesune");check(s.context->doc->text==L"旧候補","long dictionary candidate missing");
          s.complete();check(s.context->doc->text==L"今日はいい天気ですね","real long generation was not preferred");}
         auto process=server_process(token);

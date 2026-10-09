@@ -28,5 +28,8 @@ public:
         ITfContext*, ITfComposition*) const;
     void submit(PlannedInference, SurroundingText, std::uint64_t revision, std::uint64_t session,
         ITfContext*, ITfComposition*);
+    // Rerank only: score within policy.rerank_wait_ms before the candidates are
+    // first shown. nullopt (disabled, slow or unavailable) means use submit().
+    std::optional<InferenceResponse> score_now(PlannedInference&, const SurroundingText&);
 };
 } // namespace nskkzime::windows

@@ -38,6 +38,9 @@ public:
     InferenceClient(const InferenceClient&) = delete;
     InferenceClient& operator=(const InferenceClient&) = delete;
     ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0); // Zero uses the generation timeout.
+    // Blocks the input thread for at most wait_ms. Never launches a server: an
+    // unavailable or slow server yields nullopt and the caller falls back to submit().
+    std::optional<InferenceResponse> exchange_now(const InferenceRequest&, DWORD wait_ms) const noexcept;
     void cancel() noexcept;
     void poll();
     // Called only after TSF has revalidated the current ordinary input field.

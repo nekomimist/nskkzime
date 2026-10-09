@@ -155,6 +155,17 @@ ULONGLONG InferenceClient::submit(InferenceRequest request, DWORD timeout_ms) {
     }
     SetEvent(state_->wake.get()); return job->deadline;
 }
+std::optional<InferenceResponse> InferenceClient::exchange_now(const InferenceRequest& request, DWORD wait_ms) const noexcept {
+    try {
+        const auto& config = state_->config; // Immutable after construction; the worker only reads it.
+        const auto deadline = GetTickCount64() + wait_ms;
+        NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!cancel.valid()) return std::nullopt;
+        if (config.container)
+            return decode_response(container_exchange("INF1" + config.container_generation + encode_request(request), deadline, cancel.get()), request);
+        return inference_exchange(config.token, request, deadline, cancel.get());
+    } catch (...) { return std::nullopt; }
+}
 void InferenceClient::cancel() noexcept {
     const std::lock_guard lock(state_->mutex);
     if (state_->pending) SetEvent(state_->pending->cancel.get());

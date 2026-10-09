@@ -106,6 +106,8 @@ int main() {
             for(const auto value:{-1.0f,std::numeric_limits<float>::quiet_NaN(),101.0f}) {policy.promote_threshold=value; rejects([&]{validate_inference_policy(policy);});}
             policy={}; policy.rerank_limit=65; rejects([&]{validate_inference_policy(policy);});
             policy={}; policy.score_timeout_ms=0; rejects([&]{validate_inference_policy(policy);});
+            policy={}; policy.rerank_wait_ms=1001; rejects([&]{validate_inference_policy(policy);});
+            policy={}; policy.rerank_wait_ms=0; validate_inference_policy(policy);
         }}
     };
     unsigned failures=0;

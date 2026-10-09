@@ -46,7 +46,8 @@ std::string serialize(const DictionarySettings& settings) {
     }
     const auto& policy = settings.zenz.policy;
     if (settings.zenz.enabled || !settings.zenz.model.empty() || !settings.zenz.server.empty() || settings.zenz.threads != 4 || settings.zenz.timeout_ms != 1000 ||
-        policy.long_min_length != 10 || policy.rerank || policy.learn_fallback || policy.rerank_limit != 20 || policy.score_timeout_ms != 300 || policy.promote_threshold != 1.0f || policy.max_score_gap != 8.0f) {
+        policy.long_min_length != 10 || policy.rerank || policy.learn_fallback || policy.rerank_limit != 20 || policy.score_timeout_ms != 300 ||
+        policy.rerank_wait_ms != InferencePolicy{}.rerank_wait_ms || policy.promote_threshold != 1.0f || policy.max_score_gap != 8.0f) {
         bytes += settings.zenz.enabled ? "inference=zenz\n" : "inference=off\n";
         if (!settings.zenz.model.empty()) bytes += "zenz-model=" + utf8_message(settings.zenz.model.native()) + "\n";
         if (!settings.zenz.server.empty()) bytes += "zenz-server=" + utf8_message(settings.zenz.server.native()) + "\n";
@@ -55,6 +56,8 @@ std::string serialize(const DictionarySettings& settings) {
             "\nzenz-learn-fallback="+(policy.learn_fallback ? "on" : "off")+"\nzenz-rerank-limit="+std::to_string(policy.rerank_limit)+
             "\nzenz-score-timeout-ms="+std::to_string(policy.score_timeout_ms)+"\nzenz-promote-threshold="+std::to_string(policy.promote_threshold)+
             "\nzenz-max-score-gap="+std::to_string(policy.max_score_gap)+"\n";
+        // Written only when changed: older IMEs still running reject unknown keys.
+        if (policy.rerank_wait_ms != InferencePolicy{}.rerank_wait_ms) bytes += "zenz-rerank-wait-ms=" + std::to_string(policy.rerank_wait_ms) + "\n";
     }
     for (const auto& path : settings.dictionaries) {
         validate_path(path);
@@ -196,7 +199,8 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
         } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms" ||
             key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
-            key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" || key == "zenz-unknown-context") {
+            key == "zenz-rerank-wait-ms" || key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" ||
+            key == "zenz-unknown-context") {
             if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
             if (key == "inference") {
                 if (value != "zenz" && value != "off") throw std::invalid_argument("inference must equal zenz or off");
@@ -229,6 +233,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
                 else if (key == "inference-timeout-ms") settings.zenz.timeout_ms = number;
                 else if (key == "zenz-min-length") settings.zenz.policy.long_min_length = number;
                 else if (key == "zenz-rerank-limit") settings.zenz.policy.rerank_limit = number;
+                else if (key == "zenz-rerank-wait-ms") settings.zenz.policy.rerank_wait_ms = number;
                 else settings.zenz.policy.score_timeout_ms = number;
             }
         } else if (key == "dictionary") {

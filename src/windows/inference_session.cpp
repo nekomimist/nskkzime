@@ -20,6 +20,11 @@ bool InferenceSession::matches(const PendingInference& request, std::uint64_t re
         session == request.session && generation == request.generation &&
         context == request.context.Get() && composition == request.composition.Get();
 }
+std::optional<InferenceResponse> InferenceSession::score_now(PlannedInference& plan, const SurroundingText& text) {
+    if (!client || plan.purpose != InferencePurpose::Rerank || !policy.rerank_wait_ms) return std::nullopt;
+    plan.request.id = ++sequence; plan.request.left = text.before; plan.request.right = text.after;
+    return client->exchange_now(plan.request, (std::min)(policy.rerank_wait_ms, policy.score_timeout_ms));
+}
 void InferenceSession::submit(PlannedInference plan, SurroundingText text, std::uint64_t revision,
     std::uint64_t session, ITfContext* context, ITfComposition* composition) {
     const auto id = ++sequence;

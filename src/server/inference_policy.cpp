@@ -12,7 +12,7 @@ bool reading_allowed(std::u32string_view reading) {
 }
 void validate_inference_policy(const InferencePolicy& policy) {
     if (policy.long_min_length > 1024 || policy.rerank_limit < 2 || policy.rerank_limit > 64 ||
-        !policy.score_timeout_ms || policy.score_timeout_ms > 10000 || !std::isfinite(policy.promote_threshold) ||
+        !policy.score_timeout_ms || policy.score_timeout_ms > 10000 || policy.rerank_wait_ms > 1000 || !std::isfinite(policy.promote_threshold) ||
         policy.promote_threshold < 0 || policy.promote_threshold > 100 || !std::isfinite(policy.max_score_gap) ||
         policy.max_score_gap < 0 || policy.max_score_gap > 100) throw std::invalid_argument("invalid inference policy");
 }

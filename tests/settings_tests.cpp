@@ -105,7 +105,12 @@ int main() {
             const auto settings=parse_dictionary_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_dictionary_settings(file,settings);
             const auto policy=read_dictionary_settings(file).zenz.policy;
             require(policy.long_min_length==12&&policy.rerank&&policy.learn_fallback&&policy.rerank_limit==8&&policy.score_timeout_ms==250&&policy.promote_threshold==1.5f&&policy.max_score_gap==7.5f,"policy roundtrip");
+            // The wait key is written only when changed, so older IMEs keep reading default files.
+            require(policy.rerank_wait_ms==InferencePolicy{}.rerank_wait_ms&&serialize_dictionary_settings(settings).find("zenz-rerank-wait-ms")==std::string::npos,"default wait was written");
+            const auto waiting=parse_dictionary_settings(std::string(text)+"zenz-rerank-wait-ms=0\n"); save_dictionary_settings(file,waiting);
+            require(read_dictionary_settings(file).zenz.policy.rerank_wait_ms==0,"rerank wait roundtrip");
             for(const auto invalid:{"zenz-min-length=1025","zenz-rerank=yes","zenz-learn-fallback=yes","zenz-rerank-limit=1","zenz-rerank-limit=65",
+                "zenz-rerank-wait-ms=1001","zenz-rerank-wait-ms=-1","zenz-rerank-wait-ms=0\nzenz-rerank-wait-ms=0",
                 "zenz-score-timeout-ms=0","zenz-score-timeout-ms=10001","zenz-promote-threshold=nan","zenz-promote-threshold=-1",
                 "zenz-max-score-gap=inf","zenz-max-score-gap=101","zenz-min-length=0\nzenz-min-length=10"})
                 rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});

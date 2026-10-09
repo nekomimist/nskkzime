@@ -136,8 +136,8 @@ int container_test(bool denied, bool real_model) {
         session.type("s"); check(session.context->doc->text == L"感じ", "ASDF shortcut"); session.wait(500);
     }
     {
-        Session session; session.type("Kaitou"); session.key(VK_SPACE); session.complete();
-        check(session.context->doc->text == L"解答", "broker rerank"); session.key(VK_RETURN);
+        Session session; session.type("Kaitou"); session.key(VK_SPACE);
+        check(session.context->doc->text == L"解答", "broker rerank before display"); session.key(VK_RETURN);
         session.type("Mikan"); session.key(VK_SPACE); session.complete(); check(session.context->doc->text == L"解答蜜柑", "broker generation"); session.key(VK_RETURN);
         session.wait(300);
     }
@@ -219,6 +219,9 @@ int wmain(int argc, wchar_t** argv) {
         settings.zenz.enabled = true; settings.zenz.model = root / L"fixture.gguf";
         settings.zenz.server = std::filesystem::path(executable).parent_path() / L"nkkz-ime-server.exe";
         settings.zenz.timeout_ms = 3000; settings.zenz.policy.rerank = true; settings.zenz.policy.score_timeout_ms = 3000;
+        // The fixture scores in 30 ms: wait for it through the broker. The real
+        // model may need a cold start, so that case keeps the asynchronous path.
+        settings.zenz.policy.rerank_wait_ms = real_model ? 0 : 1000;
         settings.zenz.log_input = true; settings.zenz.log_directory = root / L"logs";
         std::filesystem::create_directory(settings.zenz.log_directory);
         if (real_model) settings.zenz.model = argv[2];
@@ -230,9 +233,15 @@ int wmain(int argc, wchar_t** argv) {
         std::future<int> inference;
         if (!real_model) inference = std::async(std::launch::async, [&] { return serve_inference(token, [&](const InferenceRequest& request, const auto& cancelled) {
             if (request.reading == U"ひみつ") private_seen = true;
-            const auto end = GetTickCount64() + 160; while (!cancelled() && GetTickCount64() < end) Sleep(5);
+            // Scores are waited for before display and must still fit the per-key bound; generation stays asynchronous.
+            const auto end = GetTickCount64() + (request.operation == InferenceOperation::Score ? 30 : 160);
+            while (!cancelled() && GetTickCount64() < end) Sleep(5);
             InferenceResponse response; response.id = request.id; response.operation = request.operation;
-            if (request.operation == InferenceOperation::Score) { response.scores.assign(request.candidates.size(), -5); if (response.scores.size() > 1) response.scores[1] = 0; }
+            if (request.operation == InferenceOperation::Score) {
+                // Only the rerank case promotes; other readings keep their dictionary order.
+                response.scores.assign(request.candidates.size(), -5);
+                if (response.scores.size() > 1 && request.reading == U"かいとう") response.scores[1] = 0;
+            }
             else response.candidates = {U"蜜柑", U"みかん"}; return response;
         }, "fixture", 10000, 5000); });
         const auto instance = container_sid(allowed.name); const auto stop = container_stop_event(instance);

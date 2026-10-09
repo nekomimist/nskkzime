@@ -575,6 +575,18 @@ private:
             }
             if (engine_.revision() != revision || composition_state_.composition.Get() != current.Get()) return S_OK;
         }
+        // Like skk-zenz, score before the first candidate is shown so the list
+        // never reorders under the user. Too slow: fall back to the async path.
+        std::optional<std::pair<InferenceRequest, InferenceResponse>> scored;
+        bool promoted = false, log_scored = false;
+        if (plan && inference_text) {
+            if (auto response = inference_state_.score_now(*plan, *inference_text)) {
+                promoted = apply_inference_result(next, *plan, *response, inference_state_.policy, inference_state_.dummy);
+                log_scored = inference_text->permission == InputPermission::Allowed && !inference_text->contains_unknown_scope;
+                scored.emplace(std::move(plan->request), std::move(*response));
+                plan.reset(); inference_text.reset();
+            }
+        }
         auto visibility = candidate_visibility_;
         const auto status = apply(target, cookie, result.committed, next);
         if (SUCCEEDED(status)) {
@@ -592,6 +604,11 @@ private:
                 skip_runtime_learning(dictionary_, std::move(learning_reason));
             }
             refresh_candidates(cookie);
+            if (scored) {
+                set_inference_status(this, promoted ? L"推論: 表示前の採点で最良の辞書候補を先頭へ移動" : L"推論: 表示前に採点し、辞書候補の順位を維持");
+                try { if (log_scored && inference_state_.client && inference_state_.client->input_log_enabled())
+                    inference_state_.client->record_input(scored->first, &scored->second, InferenceStatus::Ok); } catch (...) {}
+            }
             // Inner registration input has its own modes. Keep Windows open
             // until the outer editor is completed or explicitly abandoned.
             const auto binding = input_mode_;

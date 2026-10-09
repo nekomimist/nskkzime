@@ -114,6 +114,7 @@ void reload(Editor& editor) {
         set(advanced, IDC_MIN_LENGTH, std::to_wstring(zenz.policy.long_min_length));
         set(advanced, IDC_RERANK_LIMIT, std::to_wstring(zenz.policy.rerank_limit));
         set(advanced, IDC_SCORE_TIMEOUT, std::to_wstring(zenz.policy.score_timeout_ms));
+        set(advanced, IDC_RERANK_WAIT, std::to_wstring(zenz.policy.rerank_wait_ms));
         set(advanced, IDC_PROMOTE_THRESHOLD, std::to_wstring(zenz.policy.promote_threshold));
         set(advanced, IDC_MAX_GAP, std::to_wstring(zenz.policy.max_score_gap));
         check(editor.pages[4], IDC_INPUT_LOG, zenz.log_input);
@@ -171,6 +172,7 @@ DictionarySettings draft(Editor& editor) {
     zenz.policy.long_min_length = number<unsigned>(page, IDC_MIN_LENGTH, L"文字数", 0, 1024);
     zenz.policy.rerank_limit = number<unsigned>(page, IDC_RERANK_LIMIT, L"候補数", 2, 64);
     zenz.policy.score_timeout_ms = number<unsigned>(page, IDC_SCORE_TIMEOUT, L"採点の期限", 1, 10000);
+    zenz.policy.rerank_wait_ms = number<unsigned>(page, IDC_RERANK_WAIT, L"採点の待ち時間", 0, 1000);
     zenz.policy.promote_threshold = number<float>(page, IDC_PROMOTE_THRESHOLD, L"必要なスコア差", 0, 100);
     zenz.policy.max_score_gap = number<float>(page, IDC_MAX_GAP, L"スコア差の上限", 0, 100);
     zenz.log_input = checked(editor.pages[4], IDC_INPUT_LOG);

@@ -47,6 +47,7 @@ int wmain(int argc,wchar_t** argv) {
     const auto log_directory = root / L"input-logs";
     {std::ofstream file(dictionary,std::ios::binary);file<<"かいとう /回答;元一/解答;元二/解凍;元三/\nありがとうございます /元一;辞書/元二/\nかk /書;文章/描;絵/\n";}
     DictionarySettings settings{{dictionary},false};settings.zenz={true,root/L"fixture.gguf",argv[1],4,1500}; settings.zenz.policy.rerank=true;
+    settings.zenz.policy.rerank_wait_ms=0; // Most cases below exercise the asynchronous path; the wait is tested separately.
     save_dictionary_settings(config,settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str());SetEnvironmentVariableW(L"NSKKZIME_DICTIONARY",nullptr);
     SetEnvironmentVariableW(L"NSKKZIME_LEARNING",L"0");SetEnvironmentVariableW(L"NSKKZIME_USER_DICTIONARY",user.c_str());
@@ -87,6 +88,17 @@ int wmain(int argc,wchar_t** argv) {
         {Session s;s.start();s.queued();s.context->host_replace(0,1,L"別");s.context->pump();check(s.context->doc->text==L"別回答後","score used stale context");}
         {Session s;s.start();s.queued();s.context->doc->reject_write=true;s.context->pump();check(s.context->doc->text==L"前回答後","failed edit adopted score");
          s.context->doc->reject_write=false;s.key(VK_SPACE);check(s.context->doc->text==L"前解答後","failed score damaged original order");}
+        // Waiting for the score shows the promoted candidate first and never reorders afterwards.
+        settings.zenz.policy.rerank_wait_ms=400;save_dictionary_settings(config,settings);
+        {Session s;const auto before=count.load();s.type("Kaitou");s.key(VK_SPACE);
+         check(s.context->doc->text==L"前解答後","waited score was not applied before display");
+         s.wait(300);check(s.context->doc->text==L"前解答後"&&count==before+1,"waited score was requested again asynchronously");
+         BSTR text=nullptr;s.list()->GetString(1,&text);check(text&&std::wstring_view(text)==L"回答","waited score changed remaining order");SysFreeString(text);}
+        // A server slower than the wait keeps the asynchronous promotion.
+        settings.zenz.policy.rerank_wait_ms=50;save_dictionary_settings(config,settings);
+        {Session s;s.start();check(s.context->doc->text==L"前回答後","timed-out wait changed the first display");
+         s.complete();check(s.context->doc->text==L"前解答後","score after a timed-out wait not applied");}
+        settings.zenz.policy.rerank_wait_ms=0;save_dictionary_settings(config,settings);
         for(const bool long_reading:{false,true}) {
             delay=450;Session s;s.start(long_reading ? "Arigatougozaimasu" : "Kaitou");
             if(long_reading) {s.queued();Sleep(1550);s.context->pump();} else s.complete();
