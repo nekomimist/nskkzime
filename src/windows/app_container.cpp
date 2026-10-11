@@ -278,6 +278,7 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 phase(ContainerPhase::Read);
                 const auto request = receive(listener.pipe.get(), container_request_limit, GetTickCount64() + 2000, stop);
                 diagnostic.operation = request == "INIT" ? ContainerOperation::Init : request == "INI2" ? ContainerOperation::Init2 :
+                    request.starts_with("CHK1") ? ContainerOperation::Check :
                     request.starts_with("LRN1") && request.size() >= 72 && request.substr(68, 4) == "WAT1" ? ContainerOperation::LearningWait :
                     request.starts_with("LRN1") ? ContainerOperation::Learning : request.starts_with("INF1") ? ContainerOperation::Inference :
                     request.starts_with("LOG1") ? ContainerOperation::Log : request.starts_with("GUI1") ? ContainerOperation::Gui : ContainerOperation::Unknown;

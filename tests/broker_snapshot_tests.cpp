@@ -55,6 +55,7 @@ int main() {
         check(candidates.size() == 3 && candidates[0].text == U"漢字" && candidates[0].annotation == U"優先" &&
             candidates[1].text == U"感じ" && candidates[2].text == U"幹事", "partial load priority/dedup");
         check(!partial.learning_allowed && !response.at("learning").get<bool>(), "partial failure enabled learning");
+        check(!response.at("complete").get<bool>(), "partial failure marked complete");
         check(wide_message(response.at("status").get<std::string>()).find(L"読み込み失敗") != std::wstring::npos, "lost failure diagnostic");
         bool legacy_rejected = false;
         try { (void)build_broker_snapshot(config, dictionary_configuration_id(config), {}, true); }
@@ -67,11 +68,13 @@ int main() {
         const auto fallback = nlohmann::json::from_cbor(broken.bytes);
         check(lookup(fallback).size() == 2 && fallback.at("romaji").get<std::string>().empty(), "broken romaji stopped dictionary/default rules");
         check(broken.learning_allowed, "romaji fallback disabled dictionary learning");
+        check(!fallback.at("complete").get<bool>(), "romaji fallback marked complete");
         check(wide_message(fallback.at("status").get<std::string>()).find(L"内蔵ルールで継続") != std::wstring::npos, "lost romaji fallback diagnostic");
 
         config.settings.romaji_rules = files.write("custom.tsv", "version=1\nwi\tゐ\n");
         const auto custom = nlohmann::json::from_cbor(build_broker_snapshot(config, dictionary_configuration_id(config)).bytes);
         check(RomajiRules::parse(custom.at("romaji").get<std::string>())->find("wi")->output == U"ゐ", "validated rules not transferred");
+        check(custom.at("complete").get<bool>(), "valid sources not marked complete");
         const auto legacy = nlohmann::json::from_cbor(build_broker_snapshot(config, dictionary_configuration_id(config), {}, true).bytes);
         check(legacy.size() == 7 && legacy.at("version") == 1 && lookup(legacy).size() == 2, "legacy bootstrap compatibility");
 

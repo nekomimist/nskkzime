@@ -151,8 +151,12 @@ int container_test(bool denied, bool real_model) {
         session.type("s"); check(session.context->doc->text == L"感じ", "ASDF shortcut"); session.wait(500);
     }
     {
-        // Another writer's save arrives through the broker's wait, without polling.
+        // Reactivation only confirms the settings; another writer's save then
+        // arrives through the broker's wait, without polling.
+        std::shared_ptr<const ContainerConfiguration> first;
+        { Session session; first = container_configuration(); }
         Session session; const auto config = container_configuration();
+        check(config == first, "reactivation copied the dictionary again");
         LearningRequest request{learning_client_id(), 1, {{U"ちょうき", 0}, {}, {}}, DictionaryAction::Learn};
         request.event.candidate.text = U"長期";
         check(container_operation(config->generation, "LRN1", encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY",
@@ -235,13 +239,24 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (argc == 2 && std::wstring_view(argv[1]) == L"--desktop") {
             check(!in_app_container(), "desktop client unexpectedly restricted");
-            const auto dictionary = container_runtime_dictionary();
+            auto dictionary = container_runtime_dictionary();
             wait_for_dictionary([&] { return dictionary->ready(); });
             const auto config = container_configuration();
             check(config && config->configuration.settings.candidates.show_after == 3 &&
                 config->configuration.settings.candidates.keys == CandidateKeys::Asdfjkl, "desktop broker settings");
             check(off_keys_excluded(config->configuration.settings, L"APP_CONTAINER_TESTS.EXE"), "desktop broker OFF key exclusions");
             check(!dictionary->lookup({U"かんじ", 0}).empty(), "desktop broker dictionary");
+            // A released snapshot is reused until its settings change.
+            const auto reactivate = [&] {
+                dictionary.reset(); dictionary = container_runtime_dictionary();
+                wait_for_dictionary([&] { return dictionary->ready(); });
+                return container_configuration();
+            };
+            check(reactivate() == config, "desktop broker reactivation copied the dictionary again");
+            auto changed = config->configuration.settings; changed.candidates.show_after = 4;
+            save_dictionary_settings(*environment_value(L"NSKKZIME_CONFIG"), changed); // The parent restores it.
+            const auto updated = reactivate();
+            check(updated != config && updated->configuration.settings.candidates.show_after == 4, "desktop broker reused stale settings");
             return 0;
         }
         if (argc == 2) return container_test(std::wstring_view(argv[1]) == L"--denied", std::wstring_view(argv[1]) == L"--real-client");
@@ -291,6 +306,7 @@ int wmain(int argc, wchar_t** argv) {
         int result = 1;
         try {
             auto desktop = launch(executable, L"--desktop"); check(wait_child(desktop.get()) == 0, "desktop client failed");
+            save_dictionary_settings(config, settings);
             auto client = launch(executable, real_model ? L"--real-client" : L"--client", allowed.sid); const auto code = wait_child(client.get());
             std::cout << "allowed child=" << code << std::endl; check(code == 0, "container client failed");
             check(!private_seen.load(), "broker received protected text");

@@ -51,6 +51,8 @@ struct Broker {
     std::string handle(std::string_view bytes, const std::function<bool()>& cancelled) {
         const auto config = current_dictionary_configuration(); const auto id = dictionary_configuration_id(config);
         if (bytes == "INIT" || bytes == "INI2") return snapshot(config, id, bytes == "INIT");
+        // Reactivation reuses a retained snapshot while its settings are current.
+        if (bytes.starts_with("CHK1")) return bytes.size() == 68 && bytes.substr(4) == id ? "SAME" : "STAL";
         if (bytes.size() < 68) throw std::runtime_error("stale settings");
         const auto operation = bytes.substr(0, 4), body = bytes.substr(68);
         if (bytes.substr(4, 64) != id) {

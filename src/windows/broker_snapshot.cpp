@@ -29,8 +29,9 @@ BrokerSnapshot build_broker_snapshot(const DictionaryConfiguration& config, std:
     nlohmann::json response{{"version", 2}, {"settings", serialize_dictionary_settings(config.settings)},
         {"file", utf8_message(config.file.native())}, {"demo", config.demo}, {"generation", generation},
         {"romaji", romaji.bytes}, {"images", nlohmann::json::array()},
-        {"status", utf8_message(dictionaries.status + L"\r\n" + romaji.status)}, {"learning", learning}};
-    if (legacy) { response["version"] = 1; response.erase("status"); response.erase("learning"); }
+        {"status", utf8_message(dictionaries.status + L"\r\n" + romaji.status)}, {"learning", learning},
+        {"complete", !dictionaries.failed && !romaji.failed}};
+    if (legacy) { response["version"] = 1; response.erase("status"); response.erase("learning"); response.erase("complete"); }
     std::size_t total = 0;
     for (const auto& source : dictionaries.sources) {
         std::string packed;
