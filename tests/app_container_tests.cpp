@@ -151,6 +151,17 @@ int container_test(bool denied, bool real_model) {
         session.type("s"); check(session.context->doc->text == L"感じ", "ASDF shortcut"); session.wait(500);
     }
     {
+        // Another writer's save arrives through the broker's wait, without polling.
+        Session session; const auto config = container_configuration();
+        LearningRequest request{learning_client_id(), 1, {{U"ちょうき", 0}, {}, {}}, DictionaryAction::Learn};
+        request.event.candidate.text = U"長期";
+        check(container_operation(config->generation, "LRN1", encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY",
+            "external container write");
+        const auto dictionary = container_runtime_dictionary(); const auto end = GetTickCount64() + 3000; bool seen = false;
+        while (!seen && GetTickCount64() < end) { seen = !dictionary->lookup({U"ちょうき", 0}).empty(); Sleep(10); }
+        check(seen, "AppContainer missed another writer's save");
+    }
+    {
         Session session; session.type("/99"); session.key(VK_SPACE); session.key(VK_SPACE); session.key(VK_SPACE);
         check(session.context->doc->text == L"九九" && session.host->ui, "broker numeric candidates did not expand");
         session.type("d"); session.wait(500);
@@ -331,6 +342,7 @@ int wmain(int argc, wchar_t** argv) {
                 failed |= kind == "request_failed" && event.at("phase") == "handle";
                 degraded |= kind == "snapshot_ready" && event.at("failed_sources") == 1;
                 check(!event.contains("request") && !event.contains("response"), "diagnostics included input payload");
+                check(!(kind == "request_failed" && event.at("operation") == "LRN1/WAT1"), "closed learning wait logged as a failure");
             }
             check(created && probe && received && acked && failed && degraded, "broker diagnostic stages missing");
         }

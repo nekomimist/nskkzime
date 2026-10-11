@@ -51,8 +51,13 @@ struct Broker {
     std::string handle(std::string_view bytes, const std::function<bool()>& cancelled) {
         const auto config = current_dictionary_configuration(); const auto id = dictionary_configuration_id(config);
         if (bytes == "INIT" || bytes == "INI2") return snapshot(config, id, bytes == "INIT");
-        if (bytes.size() < 68 || bytes.substr(4, 64) != id) throw std::runtime_error("stale settings");
+        if (bytes.size() < 68) throw std::runtime_error("stale settings");
         const auto operation = bytes.substr(0, 4), body = bytes.substr(68);
+        if (bytes.substr(4, 64) != id) {
+            // Learning workers outlive a settings change until the next activation.
+            if (operation == "LRN1") return "STAL";
+            throw std::runtime_error("stale settings");
+        }
         const auto runtime = capture_runtime_configuration(config);
         if (operation == "GUI1") {
             // The transport rejects this operation from AppContainer peers.
@@ -73,6 +78,12 @@ struct Broker {
             const auto& file = runtime.user_file;
             // Snapshots come from the saved file, so polling containers never keep the helper alive.
             if (body.size() == 12 && body.starts_with("GET1")) return learning_snapshot_response(file, body);
+            if (body.size() == 12 && body.starts_with("WAT1")) {
+                auto response = learning_wait_response(file, body, cancelled);
+                // The client closes a wait to send a write or to stop; not a fault.
+                if (!response) throw ContainerFailure(ContainerReason::Cancelled);
+                return std::move(*response);
+            }
             if (!body.starts_with("NKL1") && !body.starts_with("NKF1")) throw std::runtime_error("unsupported learning operation");
             (void)decode_learning(body);
             try { return learning_exchange(file, body); }

@@ -278,6 +278,7 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 phase(ContainerPhase::Read);
                 const auto request = receive(listener.pipe.get(), container_request_limit, GetTickCount64() + 2000, stop);
                 diagnostic.operation = request == "INIT" ? ContainerOperation::Init : request == "INI2" ? ContainerOperation::Init2 :
+                    request.starts_with("LRN1") && request.size() >= 72 && request.substr(68, 4) == "WAT1" ? ContainerOperation::LearningWait :
                     request.starts_with("LRN1") ? ContainerOperation::Learning : request.starts_with("INF1") ? ContainerOperation::Inference :
                     request.starts_with("LOG1") ? ContainerOperation::Log : request.starts_with("GUI1") ? ContainerOperation::Gui : ContainerOperation::Unknown;
                 const bool bootstrap = diagnostic.operation == ContainerOperation::Init || diagnostic.operation == ContainerOperation::Init2;
@@ -295,8 +296,9 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 char ack = 0; transfer(listener.pipe.get(), &ack, 1, false, GetTickCount64() + 1000, stop);
                 if (bootstrap) { diagnostic.event = ContainerEvent::BootstrapComplete; diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic); }
             } catch (const Failure& failure) {
-                // Ordinary idle accept deadlines and shutdown are not faults.
+                // Ordinary idle accept deadlines, closed learning waits and shutdown are not faults.
                 if (!(diagnostic.phase == ContainerPhase::Accept && failure.reason == ContainerReason::Timeout) &&
+                    !(diagnostic.operation == ContainerOperation::LearningWait && failure.reason == ContainerReason::Cancelled) &&
                     WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
                     diagnostic.reason = failure.reason; diagnostic.error = failure.error;
                     diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic);

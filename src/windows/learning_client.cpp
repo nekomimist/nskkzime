@@ -31,10 +31,14 @@ struct LearningDictionary::State {
     std::atomic<std::shared_ptr<const UserDictionary>> snapshot{std::make_shared<UserDictionary>()};
     std::filesystem::path file, server;
     std::string container_generation;
+    // Readers outside an AppContainer open the change events directly. An
+    // AppContainer cannot, so the broker waits for the change on its behalf.
+    bool remote_wait = false;
     std::string client = learning_client_id();
     std::uint64_t sequence = 0;
     std::atomic<std::uint64_t> dropped{0};
     NativeHandle wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
+    NativeHandle interrupt{CreateEventW(nullptr, TRUE, FALSE, nullptr)}; // Ends a remote wait for a write or stop.
     std::mutex mutex;
     std::deque<LearningRequest> queue;
     bool stop = false;
@@ -55,19 +59,25 @@ struct LearningDictionary::State {
         return result;
     }
     void update_status(std::wstring value) { const std::lock_guard lock(mutex); report = std::move(value); }
-    std::string exchange(std::string_view body) {
+    struct StaleSettings : std::runtime_error { StaleSettings() : std::runtime_error("stale settings") {} };
+    std::string exchange(std::string_view body, DWORD timeout = 1500, HANDLE cancel = nullptr) {
         if (container_generation.empty()) return learning_exchange(file, body);
-        NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-        return container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + 1500, cancel.get());
+        NativeHandle local(cancel ? INVALID_HANDLE_VALUE : CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!cancel) cancel = local.get();
+        auto response = container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + timeout, cancel);
+        if (response == "STAL") throw StaleSettings();
+        return response;
     }
     // Desktop readers use the saved file directly, so only writes need the
-    // helper process and it can exit when idle. AppContainers ask the broker.
-    std::shared_ptr<UserDictionary> refresh(std::uint64_t revision) {
+    // helper process and it can exit when idle. Other readers ask the broker;
+    // with wait, the broker holds the request until a newer revision is saved.
+    std::shared_ptr<UserDictionary> refresh(std::uint64_t revision, bool wait) {
         if (container_generation.empty()) {
             if (user_dictionary_revision(file) == revision) return nullptr;
             return std::make_shared<UserDictionary>(read_user_dictionary(file));
         }
-        const auto response = exchange(snapshot_request(revision));
+        const auto response = wait ? exchange(learning_wait_request(revision), learning_wait_ms + 5000, interrupt.get()) :
+            exchange(snapshot_request(revision));
         if (response == "SAME") return nullptr;
         if (!response.starts_with("DATA")) throw std::runtime_error("dictionary snapshot rejected");
         return std::make_shared<UserDictionary>(UserDictionary::parse(std::string_view(response).substr(4)));
@@ -81,6 +91,8 @@ struct LearningDictionary::State {
             std::uint64_t revision = none;
             ULONGLONG next_launch = 0, stop_deadline = 0; DWORD launch_delay = 5000, retry_delay = 250;
             for (;;) {
+                // Reset before reading the queue, so a later enqueue() or stop ends the wait at once.
+                if (remote_wait) ResetEvent(interrupt.get());
                 std::optional<LearningRequest> request;
                 {
                     const std::lock_guard lock(mutex);
@@ -89,13 +101,14 @@ struct LearningDictionary::State {
                     if (!queue.empty()) request = queue.front();
                 }
                 // Listen before reading the file, so a later change cannot be missed.
-                NativeHandle changed(container_generation.empty() && revision != none ? listen(revision) : NativeHandle{});
+                NativeHandle changed(!remote_wait && revision != none ? listen(revision) : NativeHandle{});
+                const bool wait = remote_wait && !request && revision != none;
                 try {
                     if (request) {
                         const auto response = exchange(encode_learning(*request));
                         if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
                     }
-                    auto next = refresh(revision);
+                    auto next = refresh(revision, wait);
                     const bool published = next != nullptr;
                     // Keep the event pending until its acknowledged generation
                     // has been published. Engine caches can then safely retire,
@@ -107,8 +120,17 @@ struct LearningDictionary::State {
                     }
                     update_status(L"学習: 保存済み・同期済み（世代 " + std::to_wstring(revision) + L"）");
                     launch_delay = 5000; retry_delay = 250;
-                    if (published && container_generation.empty()) continue; // Listen on the new revision's event.
+                    if (published && !remote_wait) continue; // Listen on the new revision's event.
+                } catch (const StaleSettings&) {
+                    // This generation can no longer save. The next activation
+                    // bootstraps the new settings and replaces this worker.
+                    update_status(L"学習: 設定が変わったため保存を停止中（次に入力を始めると新しい設定を読み込みます）");
+                    { const std::lock_guard lock(mutex); if (stop) break; }
+                    WaitForSingleObject(wake.get(), 60000);
+                    continue;
                 } catch (const std::exception&) {
+                    // A write or stop closed the remote wait; not a failure.
+                    if (wait && WaitForSingleObject(interrupt.get(), 0) == WAIT_OBJECT_0) continue;
                     update_status(request ? L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）"
                                           : L"学習: ユーザー辞書を読めません。再試行中（通常の変換は利用できます）");
                     // Only a pending write needs the helper. If it cannot start
@@ -127,6 +149,7 @@ struct LearningDictionary::State {
                     const std::lock_guard lock(mutex);
                     if (!queue.empty()) continue;
                 }
+                if (remote_wait) continue; // The broker waits in the next request.
                 if (changed.valid()) {
                     // A long timeout only guards against a missed signal; it reads a file header, not the helper.
                     const HANDLE events[]{wake.get(), changed.get()};
@@ -145,7 +168,8 @@ struct LearningDictionary::State {
 };
 LearningDictionary::LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server, std::string container_generation)
     : state_(std::make_shared<State>()) {
-    if (!state_->wake.valid()) throw std::runtime_error("cannot allocate learning worker event");
+    if (!state_->wake.valid() || !state_->interrupt.valid()) throw std::runtime_error("cannot allocate learning worker event");
+    state_->remote_wait = !container_generation.empty() && in_app_container();
     state_->container_generation = std::move(container_generation);
     state_->base = std::move(base); state_->file = std::move(file); state_->server = std::move(server);
     auto work = std::make_unique<State::Work>(); work->state = state_; work->module = pin_module();
@@ -156,7 +180,7 @@ LearningDictionary::LearningDictionary(std::shared_ptr<const Dictionary> base, s
 }
 LearningDictionary::~LearningDictionary() {
     { const std::lock_guard lock(state_->mutex); state_->stop = true; }
-    SetEvent(state_->wake.get()); // No join in a TSF callback or DLL unload.
+    SetEvent(state_->wake.get()); SetEvent(state_->interrupt.get()); // No join in a TSF callback or DLL unload.
 }
 std::vector<Candidate> LearningDictionary::lookup(const LookupKey& key, std::u32string_view okuri) const {
     std::vector<Candidate> result;
@@ -209,7 +233,7 @@ bool LearningDictionary::enqueue(const LearningEvent& event, bool forget) const 
         LearningRequest request{state_->client, state_->sequence + 1, event, forget ? DictionaryAction::Forget : DictionaryAction::Learn}; validate_learning(request);
         state_->queue.push_back(std::move(request)); ++state_->sequence;
         state_->skipped.clear();
-        SetEvent(state_->wake.get());
+        SetEvent(state_->wake.get()); SetEvent(state_->interrupt.get());
         return true;
     } catch (...) { ++state_->dropped; /* Never turn an applied key into a failed key. */ }
     return false;

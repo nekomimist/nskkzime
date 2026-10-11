@@ -51,6 +51,7 @@ const char* name(ContainerOperation value) {
     case ContainerOperation::Log: return "LOG1";
     case ContainerOperation::Gui: return "GUI1";
     case ContainerOperation::Unknown: return "unknown";
+    case ContainerOperation::LearningWait: return "LRN1/WAT1";
     }
     return "unknown";
 }

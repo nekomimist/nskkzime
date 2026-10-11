@@ -4,6 +4,7 @@
 #include <bcrypt.h>
 #include <combaseapi.h>
 #include <sddl.h>
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -157,6 +158,37 @@ std::string snapshot_request(std::uint64_t revision) {
     std::string bytes = "GET1";
     for (int i = 0; i < 8; ++i) { bytes += static_cast<char>(revision & 255); revision >>= 8; }
     return bytes;
+}
+std::string learning_wait_request(std::uint64_t revision) { return "WAT1" + snapshot_request(revision).substr(4); }
+std::optional<std::string> learning_wait_response(const std::filesystem::path& file, std::string_view request,
+    const std::function<bool()>& cancelled, DWORD timeout_ms) {
+    need(request.size() == 12 && request.starts_with("WAT1"), "invalid wait request");
+    const auto snapshot = "GET1" + std::string(request.substr(4));
+    std::uint64_t revision = 0;
+    for (int i = 7; i >= 0; --i) revision = (revision << 8) | static_cast<unsigned char>(request[4 + i]);
+    const auto deadline = GetTickCount64() + timeout_ms;
+    bool signaled = false;
+    for (;;) {
+        // Listen before reading the file, as desktop readers do. Saves change the
+        // header before signaling, so a signal that still reads SAME (e.g. a
+        // restored file) falls back to polling instead of a busy loop.
+        NativeHandle changed(signaled ? NativeHandle{} : learning_change_event(file, revision));
+        auto response = learning_snapshot_response(file, snapshot);
+        // A client closes its wait before it writes, so the save it signals
+        // finds the wait already cancelled here instead of failing the reply.
+        if (cancelled()) return std::nullopt;
+        if (response != "SAME") return response;
+        const auto recheck = changed.valid() ? deadline : GetTickCount64() + 1000;
+        for (;;) {
+            if (cancelled()) return std::nullopt;
+            const auto now = GetTickCount64();
+            if (now >= deadline) return response;
+            if (now >= recheck) break;
+            const auto slice = static_cast<DWORD>((std::min)((std::min)(deadline, recheck) - now, ULONGLONG{100}));
+            if (!changed.valid()) Sleep(slice);
+            else if (WaitForSingleObject(changed.get(), slice) == WAIT_OBJECT_0) { signaled = true; break; }
+        }
+    }
 }
 std::string learning_exchange(const std::filesystem::path& file, std::string_view request, DWORD timeout_ms) {
     const auto name = learning_pipe_name(file);

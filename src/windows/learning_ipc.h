@@ -2,6 +2,8 @@
 #include "nskkzime/learning.h"
 #include <windows.h>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <utility>
 
 namespace nskkzime::windows {
@@ -26,6 +28,12 @@ UserDictionary read_user_dictionary(const std::filesystem::path&);
 std::uint64_t user_dictionary_revision(const std::filesystem::path&);
 // SAME/DATA answer for a GET1 request, read directly from the saved file.
 std::string learning_snapshot_response(const std::filesystem::path&, std::string_view request);
+// WAT1 is GET1 that waits up to learning_wait_ms for a newer revision, for
+// readers that cannot open the change events. nullopt once cancelled() is true.
+inline constexpr DWORD learning_wait_ms = 20000;
+std::string learning_wait_request(std::uint64_t revision);
+std::optional<std::string> learning_wait_response(const std::filesystem::path&, std::string_view request,
+    const std::function<bool()>& cancelled, DWORD timeout_ms = learning_wait_ms);
 // Signaled once the server replaces this revision. Open it before re-reading the file.
 NativeHandle learning_change_event(const std::filesystem::path&, std::uint64_t revision);
 // All synchronous functions below run off the input thread. Transport failures
