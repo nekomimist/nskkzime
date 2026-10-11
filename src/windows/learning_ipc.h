@@ -14,6 +14,10 @@ public:
     NativeHandle(const NativeHandle&) = delete;
     NativeHandle& operator=(const NativeHandle&) = delete;
     NativeHandle(NativeHandle&& other) noexcept : value_(std::exchange(other.value_, INVALID_HANDLE_VALUE)) {}
+    NativeHandle& operator=(NativeHandle&& other) noexcept {
+        if (this != &other) NativeHandle old(std::exchange(value_, std::exchange(other.value_, INVALID_HANDLE_VALUE)));
+        return *this;
+    }
     HANDLE get() const { return value_; }
     bool valid() const { return value_ && value_ != INVALID_HANDLE_VALUE; }
 private:

@@ -25,7 +25,7 @@ inline constexpr std::size_t container_response_limit = 512 * 1024 * 1024;
 std::string container_exchange(std::string_view request, ULONGLONG deadline, HANDLE cancel);
 using ContainerHandler = std::function<std::string(std::string_view, const std::function<bool()>&)>;
 enum class ContainerEvent { Start, Existing, Replace, Stop, Exit, Failed, ListenerCreated, ListenerFailed,
-    ListenerExit, BootstrapReceived, BootstrapComplete, RequestFailed, EndpointState, Snapshot };
+    ListenerExit, BootstrapReceived, BootstrapComplete, RequestFailed, EndpointState, Snapshot, EndpointRecreated };
 enum class ContainerPhase { Startup, Create, Accept, Authenticate, Read, Handle, Write, Acknowledge, Probe };
 enum class ContainerOperation { None, Init, Init2, Learning, Inference, Log, Gui, Unknown, Check, LearningWait };
 enum class ContainerReason { None, Win32, Timeout, Cancelled, Validation, Internal };

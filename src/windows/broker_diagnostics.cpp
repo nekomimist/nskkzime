@@ -24,6 +24,7 @@ const char* name(ContainerEvent value) {
     case ContainerEvent::RequestFailed: return "request_failed";
     case ContainerEvent::EndpointState: return "endpoint_state";
     case ContainerEvent::Snapshot: return "snapshot_ready";
+    case ContainerEvent::EndpointRecreated: return "endpoint_recreated";
     }
     return "unknown";
 }

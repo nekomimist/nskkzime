@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 namespace nskkzime::windows {
 namespace {
@@ -223,28 +224,43 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
     NativeHandle token(raw); grant_query(token.get(), TOKEN_QUERY, sids);
     sids.push_back(L""); // Normal desktop peers: same user/session, no AppContainer.
     struct State { std::atomic<bool> active{false}; std::atomic<ContainerPhase> phase{ContainerPhase::Create}; };
-    struct Listener { NativeHandle pipe; ProcessIdentity peer; int instance; std::shared_ptr<State> state; };
-    struct Endpoint { std::wstring name, sid; std::vector<std::shared_ptr<State>> states; DWORD last_error = MAXDWORD; ULONGLONG next_report = 0; };
-    std::vector<Listener> listeners;
-    std::vector<Endpoint> endpoints;
-    for (const auto& sid : sids) {
-        auto peer = own; peer.container = sid; auto name = container_pipe_name(peer);
-        if (sid.empty()) name += desktop_instance;
-        Descriptor descriptor(L"D:P(A;;GA;;;" + own.user + L")" +
-            (sid.empty() ? std::wstring{} : L"(A;;0x12019b;;;" + sid + L")S:(ML;;NW;;;LW)"));
+    struct Listener {
+        NativeHandle pipe; ProcessIdentity peer; int instance = 0; std::shared_ptr<State> state = std::make_shared<State>();
+        std::mutex mutex; NativeHandle replacement; // Set by the probe, adopted by the listener between requests.
+    };
+    struct Endpoint {
+        std::wstring name, sid, sddl; std::vector<Listener*> listeners;
+        DWORD last_error = MAXDWORD, repair_delay = 5000; ULONGLONG next_report = 0, next_repair = 0;
+    };
+    const auto create = [&](const Endpoint& endpoint) {
+        Descriptor descriptor(endpoint.sddl);
         SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor.value, FALSE};
-        Endpoint endpoint{name, sid};
+        std::vector<NativeHandle> pipes;
         for (int i = 0; i < 4; ++i) {
-            NativeHandle pipe(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (i ? 0 : FILE_FLAG_FIRST_PIPE_INSTANCE),
+            NativeHandle pipe(CreateNamedPipeW(endpoint.name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (i ? 0 : FILE_FLAG_FIRST_PIPE_INSTANCE),
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 65536, 65536, 0, &attributes));
             const auto error = pipe.valid() ? 0 : GetLastError();
             ContainerDiagnostic event{pipe.valid() ? ContainerEvent::ListenerCreated : ContainerEvent::ListenerFailed};
-            event.phase = ContainerPhase::Create; event.container = sid; event.instance = i; event.error = error;
+            event.phase = ContainerPhase::Create; event.container = endpoint.sid; event.instance = i; event.error = error;
             if (error) event.reason = ContainerReason::Win32;
             emit(observer, event);
             if (!pipe.valid()) throw Failure(ContainerReason::Win32, error);
-            auto state = std::make_shared<State>(); endpoint.states.push_back(state);
-            listeners.push_back({std::move(pipe), peer, i, std::move(state)});
+            pipes.push_back(std::move(pipe));
+        }
+        return pipes;
+    };
+    std::vector<std::unique_ptr<Listener>> listeners;
+    std::vector<Endpoint> endpoints;
+    for (const auto& sid : sids) {
+        auto peer = own; peer.container = sid;
+        Endpoint endpoint{container_pipe_name(peer), sid, L"D:P(A;;GA;;;" + own.user + L")" +
+            (sid.empty() ? std::wstring{} : L"(A;;0x12019b;;;" + sid + L")S:(ML;;NW;;;LW)")};
+        if (sid.empty()) endpoint.name += desktop_instance;
+        auto pipes = create(endpoint);
+        for (int i = 0; i < 4; ++i) {
+            auto listener = std::make_unique<Listener>();
+            listener->pipe = std::move(pipes[i]); listener->peer = peer; listener->instance = i;
+            endpoint.listeners.push_back(listener.get()); listeners.push_back(std::move(listener));
         }
         endpoints.push_back(std::move(endpoint));
     }
@@ -256,6 +272,10 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
             event.instance = listener.instance; event.phase = listener.state->phase; emit(observer, event);
         } } on_exit{listener, observer};
         while (WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
+            {
+                const std::lock_guard lock(listener.mutex);
+                if (listener.replacement.valid()) listener.pipe = std::move(listener.replacement);
+            }
             ContainerDiagnostic diagnostic{ContainerEvent::RequestFailed}; diagnostic.container = listener.peer.container;
             diagnostic.instance = listener.instance; diagnostic.phase = ContainerPhase::Accept;
             listener.state->phase = diagnostic.phase;
@@ -297,8 +317,11 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 char ack = 0; transfer(listener.pipe.get(), &ack, 1, false, GetTickCount64() + 1000, stop);
                 if (bootstrap) { diagnostic.event = ContainerEvent::BootstrapComplete; diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic); }
             } catch (const Failure& failure) {
-                // Ordinary idle accept deadlines, closed learning waits and shutdown are not faults.
+                // Ordinary idle accept deadlines, accepts cancelled for a repair,
+                // closed learning waits and shutdown are not faults.
                 if (!(diagnostic.phase == ContainerPhase::Accept && failure.reason == ContainerReason::Timeout) &&
+                    !(diagnostic.phase == ContainerPhase::Accept && failure.reason == ContainerReason::Win32 &&
+                        failure.error == ERROR_OPERATION_ABORTED) &&
                     !(diagnostic.operation == ContainerOperation::LearningWait && failure.reason == ContainerReason::Cancelled) &&
                     WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
                     diagnostic.reason = failure.reason; diagnostic.error = failure.error;
@@ -314,19 +337,39 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
     };
     std::vector<std::jthread> threads;
     try {
-        for (auto& listener : listeners) threads.emplace_back(run, std::ref(listener));
-        if (observer) threads.emplace_back([&] {
+        for (auto& listener : listeners) threads.emplace_back(run, std::ref(*listener));
+        threads.emplace_back([&] {
             while (WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
                 for (auto& endpoint : endpoints) {
                     const auto available = WaitNamedPipeW(endpoint.name.c_str(), 1);
                     const auto error = available ? 0 : GetLastError(); const auto now = GetTickCount64();
-                    if (error == endpoint.last_error && now < endpoint.next_report) continue;
+                    if (!error) endpoint.repair_delay = 5000;
+                    // A container's pipe name has vanished right after sign-in while
+                    // every instance stayed open and accepting. Clients then find
+                    // no pipe, so publish fresh instances under the name.
+                    if (error == ERROR_FILE_NOT_FOUND && now >= endpoint.next_repair) {
+                        endpoint.next_repair = now + endpoint.repair_delay;
+                        endpoint.repair_delay = (std::min)(endpoint.repair_delay * 2, DWORD{300000});
+                        try {
+                            auto pipes = create(endpoint);
+                            for (std::size_t i = 0; i < pipes.size(); ++i) {
+                                auto& listener = *endpoint.listeners[i];
+                                const std::lock_guard lock(listener.mutex);
+                                listener.replacement = std::move(pipes[i]);
+                                // Only an idle accept is interrupted; a request in progress finishes first.
+                                if (listener.state->phase.load() == ContainerPhase::Accept) CancelIoEx(listener.pipe.get(), nullptr);
+                            }
+                            ContainerDiagnostic event{ContainerEvent::EndpointRecreated}; event.phase = ContainerPhase::Probe;
+                            event.container = endpoint.sid; emit(observer, event);
+                        } catch (...) { /* create() reported the failure; retry after the delay. */ }
+                    }
+                    if (!observer || (error == endpoint.last_error && now < endpoint.next_report)) continue;
                     endpoint.last_error = error; endpoint.next_report = now + 60000;
                     ContainerDiagnostic event{ContainerEvent::EndpointState}; event.phase = ContainerPhase::Probe;
                     event.container = endpoint.sid; event.error = error; event.active = 0;
                     if (error) event.reason = ContainerReason::Win32;
-                    for (const auto& state : endpoint.states) if (state->active.load()) {
-                        ++event.active; ++event.phases[static_cast<std::size_t>(state->phase.load())];
+                    for (const auto* listener : endpoint.listeners) if (listener->state->active.load()) {
+                        ++event.active; ++event.phases[static_cast<std::size_t>(listener->state->phase.load())];
                     }
                     emit(observer, event);
                 }
