@@ -46,8 +46,11 @@ int main() {
         DictionaryConfiguration config;
         config.file = files.root / "settings.ini";
         config.settings.dictionaries = {files.root / "missing.skk", first, second};
+        config.settings.off_key_exclusions = {L"Code.exe", L"WindowsTerminal.exe"};
         const auto partial = build_broker_snapshot(config, dictionary_configuration_id(config));
         const auto response = nlohmann::json::from_cbor(partial.bytes);
+        check(parse_dictionary_settings(response.at("settings").get<std::string>()).off_key_exclusions ==
+            config.settings.off_key_exclusions, "OFF key exclusions not transferred to container");
         const auto candidates = lookup(response);
         check(candidates.size() == 3 && candidates[0].text == U"漢字" && candidates[0].annotation == U"優先" &&
             candidates[1].text == U"感じ" && candidates[2].text == U"幹事", "partial load priority/dedup");

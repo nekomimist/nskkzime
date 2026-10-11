@@ -24,6 +24,7 @@ void help() {
         "  --reset-romaji            Use built-in romaji rules\n"
         "  --set-candidate-show-after N  Show the list on conversion step N (1..99)\n"
         "  --set-candidate-keys numbers|asdfjkl  Choose visible candidate selection keys\n"
+        "  --set-off-key-exclusions [EXE...]  Pass OFF-mode Ctrl+J/Q through in these apps; omit names to clear\n"
         "  --set-zenz MODEL [SERVER]  Enable zenz with an absolute model path; the bundled server is used\n"
         "                            unless SERVER (a development override) is given\n"
         "  --disable-inference       Disable zenz and clear its saved paths\n"
@@ -61,14 +62,15 @@ int wmain(int argc, wchar_t** argv) {
         const bool enable_log = action == L"--enable-input-log", disable_log = action == L"--disable-input-log";
         const bool enable_tsf_log = action == L"--enable-tsf-log", disable_tsf_log = action == L"--disable-tsf-log";
         const bool candidates = action == L"--set-candidate-show-after" || action == L"--set-candidate-keys";
-        if (!candidates && !policy && !enable_log && !disable_log && !enable_tsf_log && !disable_tsf_log && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
+        const bool off_keys = action == L"--set-off-key-exclusions";
+        if (!off_keys && !candidates && !policy && !enable_log && !disable_log && !enable_tsf_log && !disable_tsf_log && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
             help(); return 2;
         }
         const bool set = action == L"--set-dictionaries", disable = action == L"--disable-dictionaries";
         const bool learning = action == L"--set-learning";
         const bool romaji = action == L"--set-romaji", reset_romaji = action == L"--reset-romaji";
         const bool zenz = action == L"--set-zenz", disable_inference = action == L"--disable-inference";
-        if ((!candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && !enable_tsf_log && index != argc) || (set && index == argc) || ((candidates || learning || romaji || policy || enable_log || enable_tsf_log) && index + 1 != argc) || (zenz && index + 1 != argc && index + 2 != argc)) { help(); return 2; }
+        if ((!off_keys && !candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && !enable_tsf_log && index != argc) || (set && index == argc) || ((candidates || learning || romaji || policy || enable_log || enable_tsf_log) && index + 1 != argc) || (zenz && index + 1 != argc && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
@@ -79,6 +81,14 @@ int wmain(int argc, wchar_t** argv) {
             show(loaded.status); show(rules.status); return loaded.failed || rules.failed ? 2 : 0;
         }
         const auto file = explicit_file ? *explicit_file : dictionary_settings_path();
+        if (off_keys) {
+            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            settings.off_key_exclusions.clear();
+            for (; index < argc; ++index) settings.off_key_exclusions.emplace_back(argv[index]);
+            save_dictionary_settings(file, settings);
+            show(L"OFFキーの除外設定を保存しました。利用するアプリを起動し直すと反映されます。");
+            return 0;
+        }
         if (enable_tsf_log || disable_tsf_log) {
             auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
             settings.tsf_log.enabled = enable_tsf_log;
@@ -173,6 +183,8 @@ int wmain(int argc, wchar_t** argv) {
                 show(configuration.settings.romaji_rules.empty() ? L"ローマ字: 内蔵ルール" : L"ローマ字: " + configuration.settings.romaji_rules.native());
                 show(zenz_settings_status(configuration.settings.zenz));
                 show(tsf_log_settings_status(configuration.settings.tsf_log));
+                for (const auto& executable : configuration.settings.off_key_exclusions)
+                    show(L"OFFキーの除外: " + executable);
                 std::size_t number = 0;
                 for (const auto& path : configuration.settings.dictionaries) show(std::to_wstring(++number) + L". " + path.native());
                 if (!number) show(configuration.settings.zenz.enabled ? L"辞書は未設定です。zenzによる変換を利用します。" : L"辞書は無効です（かな入力のみ）。");

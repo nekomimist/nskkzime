@@ -33,8 +33,8 @@ bool key(ITfKeyEventSink* sink, ITfContext* context, WPARAM code, bool shift = f
     if (probe) succeeded(sink->OnKeyDown(context, code, parameter, &eaten), "key handling failed");
     BOOL up = FALSE;
     succeeded(sink->OnTestKeyUp(context, code, parameter, &up), "key-up probe failed");
-    check(up == eaten, "key-up disagrees with key-down");
-    succeeded(sink->OnKeyUp(context, code, parameter, &up), "key-up failed");
+    if (up) succeeded(sink->OnKeyUp(context, code, parameter, &up), "key-up failed");
+    check(up == eaten, "actual key-up disagrees with key-down");
     return eaten != FALSE;
 }
 void type(ITfKeyEventSink* sink, ITfContext* context, std::string_view text) {
@@ -58,6 +58,18 @@ void adapter_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys, bool
         check(!host->keys && !host->events, "deactivation leaked a sink");
     }
     succeeded(service->ActivateEx(host.Get(), 1, TF_TMF_IMMERSIVEMODE), "desktop immersive activate failed"); wait_for_dictionary();
+    {
+        ComPtr<test_host::Context> quoted; quoted.Attach(new test_host::Context);
+        check(key(keys, quoted.Get(), VK_IME_OFF), "DLL IME OFF not consumed");
+        for (const auto code : {'J', 'Q'}) {
+            check(key(keys, quoted.Get(), 'Q', false, true), "DLL quote prefix not consumed");
+            check(!key(keys, quoted.Get(), code, false, true), "DLL quoted key consumed");
+            check(!key(keys, quoted.Get(), 'A') && quoted->doc->text.empty(), "DLL quoted key enabled IME or edited text");
+        }
+        check(key(keys, quoted.Get(), 'J', false, true), "DLL C-j did not enable IME after quote");
+        type(keys, quoted.Get(), "a");
+        check(quoted->doc->text == L"あ", "DLL quote left kana mode broken");
+    }
     ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
     type(keys, context.Get(), "Kanji");
     check(context->doc->text == L"かんじ", "reading was not composed");

@@ -24,7 +24,8 @@ struct Editor {
     std::filesystem::path file;
     SettingsDocument document;
     std::vector<std::filesystem::path> dictionaries;
-    std::array<HWND, 7> pages{};
+    std::vector<std::wstring> off_key_exclusions;
+    std::array<HWND, 8> pages{};
     HWND window = nullptr;
     bool valid = false, loading = false, dirty = false, confirming_close = false;
     std::shared_ptr<Work> work;
@@ -69,23 +70,35 @@ void update_enabled(Editor& editor) {
     enabled(editor.pages[0], IDC_DOWN,
             selection != LB_ERR && static_cast<std::size_t>(selection + 1) < editor.dictionaries.size());
     enabled(editor.pages[0], IDC_ADD, editor.dictionaries.size() < 32);
+    const auto keys = editor.pages[7];
+    enabled(keys, IDC_OFF_KEY_REMOVE, SendDlgItemMessageW(keys, IDC_OFF_KEY_EXCLUSIONS, LB_GETCURSEL, 0, 0) != LB_ERR);
+    enabled(keys, IDC_OFF_KEY_ADD, !get(keys, IDC_OFF_KEY_NAME).empty() && editor.off_key_exclusions.size() < 32);
+    enabled(keys, IDC_OFF_KEY_BROWSE, editor.off_key_exclusions.size() < 32);
 }
-void list(Editor& editor, int selected = -1) {
-    const auto control = GetDlgItem(editor.pages[0], IDC_DICTIONARIES);
+void fill_list(HWND control, const std::vector<std::wstring>& names, int selected) {
     SendMessageW(control, LB_RESETCONTENT, 0, 0);
     int extent = 0;
     const auto dc = GetDC(control);
     const auto previous = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0)));
-    for (const auto& path : editor.dictionaries) {
-        SendMessageW(control, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(path.c_str()));
+    for (const auto& name : names) {
+        SendMessageW(control, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
         SIZE size{};
-        GetTextExtentPoint32W(dc, path.c_str(), static_cast<int>(path.native().size()), &size);
+        GetTextExtentPoint32W(dc, name.c_str(), static_cast<int>(name.size()), &size);
         extent = (std::max)(extent, static_cast<int>(size.cx) + 16);
     }
     SelectObject(dc, previous);
     ReleaseDC(control, dc);
     SendMessageW(control, LB_SETHORIZONTALEXTENT, extent, 0);
     SendMessageW(control, LB_SETCURSEL, selected, 0);
+}
+void list(Editor& editor, int selected = -1) {
+    std::vector<std::wstring> names;
+    for (const auto& path : editor.dictionaries) names.push_back(path.native());
+    fill_list(GetDlgItem(editor.pages[0], IDC_DICTIONARIES), names, selected);
+    update_enabled(editor);
+}
+void off_key_list(Editor& editor, int selected = -1) {
+    fill_list(GetDlgItem(editor.pages[7], IDC_OFF_KEY_EXCLUSIONS), editor.off_key_exclusions, selected);
     update_enabled(editor);
 }
 void reload(Editor& editor) {
@@ -97,6 +110,9 @@ void reload(Editor& editor) {
         const auto& settings = editor.document.settings;
         editor.dictionaries = settings.dictionaries;
         list(editor);
+        editor.off_key_exclusions = settings.off_key_exclusions;
+        set(editor.pages[7], IDC_OFF_KEY_NAME, L"");
+        off_key_list(editor);
         check(editor.pages[0], IDC_LEARNING, settings.learning);
         check(editor.pages[1], IDC_CUSTOM_ROMAJI, !settings.romaji_rules.empty());
         set(editor.pages[1], IDC_ROMAJI_PATH, settings.romaji_rules.native());
@@ -150,6 +166,9 @@ template <class T> T number(HWND page, int id, std::wstring_view label, T minimu
 DictionarySettings draft(Editor& editor) {
     auto result = editor.document.settings;
     result.dictionaries = editor.dictionaries;
+    if (!get(editor.pages[7], IDC_OFF_KEY_NAME).empty())
+        throw std::invalid_argument("実行ファイル名を「追加」で除外一覧へ追加してください。");
+    result.off_key_exclusions = editor.off_key_exclusions;
     result.learning = checked(editor.pages[0], IDC_LEARNING);
     result.candidates.show_after = number<unsigned>(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, L"候補一覧のSpace回数", 1, 99);
     const auto keys = SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_GETCURSEL, 0, 0);
@@ -246,7 +265,7 @@ std::vector<std::filesystem::path> choose(HWND window, bool multiple, const COMD
     items->GetCount(&size);
     std::vector<std::filesystem::path> paths;
     if (size > 32)
-        throw std::invalid_argument("一度に指定できる辞書は32個までです。");
+        throw std::invalid_argument("一度に指定できるファイルは32個までです。");
     for (DWORD i = 0; i < size; ++i) {
         ComPtr<IShellItem> item;
         PWSTR path = nullptr;
@@ -262,14 +281,42 @@ std::vector<std::filesystem::path> choose(HWND window, bool multiple, const COMD
     }
     return paths;
 }
+void add_off_keys(Editor& editor, const std::vector<std::wstring>& names) {
+    auto next = editor.off_key_exclusions;
+    int selected = -1;
+    for (const auto& name : names) {
+        const auto existing = std::find_if(next.begin(), next.end(), [&](const auto& value) {
+            return CompareStringOrdinal(value.c_str(), -1, name.c_str(), -1, TRUE) == CSTR_EQUAL;
+        });
+        if (existing == next.end()) {
+            next.push_back(name);
+            selected = static_cast<int>(next.size()) - 1;
+        } else selected = static_cast<int>(existing - next.begin());
+    }
+    try { validate_off_key_exclusions(next); }
+    catch (const std::invalid_argument&) {
+        throw std::invalid_argument("除外は.exeで終わる実行ファイル名だけを最大32個まで指定できます。パスやワイルドカードは使えません。");
+    }
+    editor.dirty = editor.dirty || next != editor.off_key_exclusions;
+    editor.off_key_exclusions = std::move(next);
+    set(editor.pages[7], IDC_OFF_KEY_NAME, L"");
+    off_key_list(editor, selected);
+}
 void browse(Editor& editor, int id) {
     const COMDLG_FILTERSPEC all[] = {{L"すべてのファイル", L"*.*"}};
     const COMDLG_FILTERSPEC model[] = {{L"GGUFモデル", L"*.gguf"}, {L"すべてのファイル", L"*.*"}};
-    const auto paths = choose(editor.window, id == IDC_ADD, id == IDC_MODEL_BROWSE ? model : all,
+    const COMDLG_FILTERSPEC executable[] = {{L"実行ファイル", L"*.exe"}};
+    const auto paths = choose(editor.window, id == IDC_ADD || id == IDC_OFF_KEY_BROWSE,
+                              id == IDC_MODEL_BROWSE ? model : id == IDC_OFF_KEY_BROWSE ? executable : all,
                               id == IDC_MODEL_BROWSE ? 2 : 1, id == IDC_LOG_BROWSE || id == IDC_TSF_LOG_BROWSE);
     if (paths.empty())
         return;
-    if (id == IDC_ADD) {
+    if (id == IDC_OFF_KEY_BROWSE) {
+        std::vector<std::wstring> names;
+        for (const auto& path : paths) names.push_back(path.filename().native());
+        add_off_keys(editor, names);
+        return;
+    } else if (id == IDC_ADD) {
         auto next = editor.dictionaries;
         for (const auto& path : paths)
             if (std::find(next.begin(), next.end(), path) == next.end())
@@ -307,6 +354,13 @@ void reorder(Editor& editor, int id) {
     editor.dirty = true;
     list(editor, next);
 }
+void remove_off_key(Editor& editor) {
+    const auto selected = SendDlgItemMessageW(editor.pages[7], IDC_OFF_KEY_EXCLUSIONS, LB_GETCURSEL, 0, 0);
+    if (selected == LB_ERR || static_cast<std::size_t>(selected) >= editor.off_key_exclusions.size()) return;
+    editor.off_key_exclusions.erase(editor.off_key_exclusions.begin() + selected);
+    editor.dirty = true;
+    off_key_list(editor, (std::min)(static_cast<int>(selected), static_cast<int>(editor.off_key_exclusions.size()) - 1));
+}
 void show_page(Editor& editor) {
     const auto tab = GetDlgItem(editor.window, IDC_TABS);
     RECT content{};
@@ -334,7 +388,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SetWindowLongPtrW(window, DWLP_USER, lparam);
             set(window, IDC_FILE, L"保存先: " + editor->file.native());
             SendDlgItemMessageW(window, IDC_REPORT, EM_SETLIMITTEXT, 65535, 0);
-            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈", L"候補一覧"};
+            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈", L"候補一覧", L"キー操作"};
             for (std::size_t i = 0; i < editor->pages.size(); ++i) {
                 TCITEMW item{};
                 item.mask = TCIF_TEXT;
@@ -347,6 +401,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
             for (const auto label : {L"1–7", L"ASDFJKL"})
                 SendDlgItemMessageW(editor->pages[6], IDC_CANDIDATE_KEYS, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+            SendDlgItemMessageW(editor->pages[7], IDC_OFF_KEY_NAME, EM_SETLIMITTEXT, 32767, 0);
             show_page(*editor);
             reload(*editor);
             return TRUE;
@@ -370,6 +425,8 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             show_page(*editor);
             list(*editor,
                  static_cast<int>(SendDlgItemMessageW(editor->pages[0], IDC_DICTIONARIES, LB_GETCURSEL, 0, 0)));
+            off_key_list(*editor,
+                 static_cast<int>(SendDlgItemMessageW(editor->pages[7], IDC_OFF_KEY_EXCLUSIONS, LB_GETCURSEL, 0, 0)));
             return TRUE;
         }
         if (message == WM_CLOSE || (message == WM_COMMAND && LOWORD(wparam) == IDCANCEL)) {
@@ -392,16 +449,23 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     MessageBoxW(window, L"編集中の変更を破棄して読み込み直しますか？", L"nskkzime 設定",
                                 MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
                     reload(*editor);
-            } else if (id == IDOK || id == IDC_CHECK)
+            } else if (id == IDOK && GetFocus() == GetDlgItem(editor->pages[7], IDC_OFF_KEY_NAME) &&
+                       editor->valid && !editor->work && !get(editor->pages[7], IDC_OFF_KEY_NAME).empty())
+                add_off_keys(*editor, {get(editor->pages[7], IDC_OFF_KEY_NAME)});
+            else if (id == IDOK || id == IDC_CHECK)
                 validate(*editor, id == IDOK);
             else if (!editor->work && editor->valid && !editor->loading) {
-                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_LOG_BROWSE || id == IDC_TSF_LOG_BROWSE)
+                if (id == IDC_ADD || id == IDC_ROMAJI_BROWSE || id == IDC_MODEL_BROWSE || id == IDC_LOG_BROWSE || id == IDC_TSF_LOG_BROWSE || id == IDC_OFF_KEY_BROWSE)
                     browse(*editor, id);
+                else if (id == IDC_OFF_KEY_ADD)
+                    add_off_keys(*editor, {get(editor->pages[7], IDC_OFF_KEY_NAME)});
+                else if (id == IDC_OFF_KEY_REMOVE)
+                    remove_off_key(*editor);
                 else if (id == IDC_REMOVE || id == IDC_UP || id == IDC_DOWN)
                     reorder(*editor, id);
-                else if (id == IDC_DICTIONARIES && notification == LBN_SELCHANGE)
+                else if ((id == IDC_DICTIONARIES || id == IDC_OFF_KEY_EXCLUSIONS) && notification == LBN_SELCHANGE)
                     update_enabled(*editor);
-                else if (id >= IDC_LEARNING && id <= IDC_CANDIDATE_KEYS &&
+                else if (id >= IDC_LEARNING && id <= IDC_OFF_KEY_NAME &&
                          (notification == BN_CLICKED || notification == EN_CHANGE || notification == CBN_SELCHANGE)) {
                     editor->dirty = true;
                     update_enabled(*editor);

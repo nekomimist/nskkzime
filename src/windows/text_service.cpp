@@ -138,6 +138,20 @@ bool finishes_before_key(WPARAM code) {
     default: return false;
     }
 }
+bool modifier_key(WPARAM code) {
+    switch (code) {
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+    case VK_MENU: case VK_LMENU: case VK_RMENU:
+    case VK_LWIN: case VK_RWIN: return true;
+    default: return false;
+    }
+}
+bool plain_control_key(WPARAM code, WPARAM expected) {
+    return code == expected && (GetKeyState(VK_CONTROL) & 0x8000) &&
+        !(GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+        !(GetKeyState(VK_LWIN) & 0x8000) && !(GetKeyState(VK_RWIN) & 0x8000);
+}
 
 class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink,
                           public ITfCompositionSink, public ITfThreadMgrEventSink,
@@ -183,6 +197,15 @@ public:
             catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
             catch (...) { return E_FAIL; }
         }
+        try {
+            if (host_executable_.empty()) {
+                wchar_t path[32768]{};
+                const auto length = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
+                if (length && length < ARRAYSIZE(path)) host_executable_ = std::filesystem::path(path).filename().native();
+            }
+            // Container settings arrive later. Do not reserve OFF keys before exclusions are known.
+            off_keys_enabled_ = !configuration_.broker && !off_keys_excluded(configuration_.dictionaries.settings, host_executable_);
+        } catch (...) { return E_OUTOFMEMORY; }
         if (!configuration_.broker) diagnostics_ = TsfDiagnosticLog::create(configuration_.dictionaries.settings.tsf_log, false);
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Activate, diagnostic_state());
         try {
@@ -247,6 +270,7 @@ public:
         sink_cookie_ = TF_INVALID_COOKIE;
         keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL;
         eaten_keys_.reset(); reset_engine(TsfReason::Deactivated);
+        cancel_quote(); quoted_keys_.reset(); quote_prefix_down_ = false;
         diagnostics_.reset();
         try { if (configuration_.broker) {
             engine_ = Engine(std::make_shared<MemoryDictionary>()); dictionary_.reset();
@@ -257,7 +281,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyFocus, diagnostic_state());
         trace_tsf(TsfEvent::KeyFocus, TsfReason::None, S_OK, foreground);
-        if (!foreground) finish_composition(TsfReason::FocusLost);
+        if (!foreground) { cancel_quote(); finish_composition(TsfReason::FocusLost); }
         else configure_container();
         return S_OK;
     }
@@ -271,8 +295,9 @@ public:
         if (target.Get() != context && !editable(target.Get())) return S_OK;
         context = target.Get();
         update_tsf_trace(diagnostic_state(context));
+        if (off_key_callback_needed(code)) { *eaten = TRUE; return S_OK; }
         if (mode_key(code, engine_.outer_mode())) { *eaten = TRUE; return S_OK; }
-        const auto key = translate_key(code, parameter);
+        const auto key = service_key(code, parameter);
         if (key) {
             if (composition_state_.context && composition_state_.context.Get() != context) {
                 try { auto fresh = engine_; fresh.reset(); *eaten = fresh.would_handle(*key); }
@@ -301,12 +326,17 @@ public:
         if (resolved.Get() != context && !editable(resolved.Get())) return S_OK;
         context = resolved.Get();
         update_tsf_trace(diagnostic_state(context, origin.Get()));
+        if (const auto handled = handle_off_key(context, code, parameter)) {
+            *eaten = *handled;
+            if (*handled && code < eaten_keys_.size()) eaten_keys_.set(code);
+            return S_OK;
+        }
         if (const auto mode = mode_key(code, engine_.outer_mode())) {
             if (!(parameter & (static_cast<LPARAM>(1) << 30))) change_mode(*mode);
             *eaten = TRUE; if (code < eaten_keys_.size()) eaten_keys_.set(code); return S_OK;
         }
         if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
-        const auto key = translate_key(code, parameter);
+        const auto key = service_key(code, parameter);
         if (!key || !engine_.would_handle(*key)) return S_OK;
         setup.finish();
         try {
@@ -352,14 +382,16 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext*, WPARAM code, LPARAM, BOOL* eaten) override {
         if (!eaten) return E_POINTER;
-        *eaten = code < eaten_keys_.size() && eaten_keys_.test(code);
+        *eaten = code < eaten_keys_.size() && (eaten_keys_.test(code) || quoted_keys_.test(code));
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
+    HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext* context, WPARAM code, LPARAM, BOOL* eaten) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyUp, diagnostic_state(context));
-        const auto hr = OnTestKeyUp(context, code, parameter, eaten);
-        if (code < eaten_keys_.size()) eaten_keys_.reset(code);
-        return hr;
+        if (!eaten) return E_POINTER;
+        *eaten = code < eaten_keys_.size() && eaten_keys_.test(code);
+        if (code < eaten_keys_.size()) { eaten_keys_.reset(code); quoted_keys_.reset(code); }
+        if (code == 'Q') quote_prefix_down_ = false;
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext* context, REFGUID guid, BOOL* eaten) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::PreservedKey, diagnostic_state(context));
@@ -461,6 +493,7 @@ public:
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentFocus, diagnostic_state());
         const ComPtr<TextService> self(this);
         const auto generation = ++focus_generation_;
+        const auto quote_generation = quote_generation_;
         const auto current = composition_state_.composition;
         const auto session = composition_state_.session;
         trace_tsf(TsfEvent::DocumentFocus, TsfReason::None, S_OK,
@@ -478,6 +511,7 @@ public:
         if (generation != focus_generation_ || current.Get() != composition_state_.composition.Get() || session != composition_state_.session) {
             trace_tsf(TsfEvent::FocusResolved, TsfReason::Inactive, status, 0, 0, 0, document != nullptr); return S_OK;
         }
+        if (quote_generation == quote_generation_ && quote_context_.Get() != context.Get()) cancel_quote();
         trace_tsf(TsfEvent::FocusResolved, context ? TsfReason::None : TsfReason::FocusUnavailable, status, 0, 0, 0, document != nullptr);
         if (!composition_state_.context) return S_OK;
         if (!context) defer_focus_finish();
@@ -486,6 +520,7 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
+        cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPush, diagnostic_state(context));
         const auto parent = editing_context(context); context = parent.Get();
         update_tsf_trace(diagnostic_state(context));
@@ -493,12 +528,54 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
+        cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPop, diagnostic_state(context));
         // The parent compartment can already be gone when the origin is popped.
         if (composition_state_.context.Get() == context || composition_state_.origin.Get() == context) finish_composition(TsfReason::ContextPopped);
         return S_OK;
     }
 private:
+    bool off_mode() const noexcept { return !engine_.registering() && engine_.outer_mode() == Mode::Latin; }
+    void cancel_quote() noexcept { ++quote_generation_; quote_context_.Reset(); }
+    std::optional<Key> service_key(WPARAM code, LPARAM parameter) const {
+        auto key = translate_key(code, parameter);
+        if (off_mode() && !off_keys_enabled_ && key && key->code == KeyCode::Hiragana) return {};
+        return key;
+    }
+    bool off_key_callback_needed(WPARAM code) const {
+        return (code < quoted_keys_.size() && quoted_keys_.test(code)) ||
+            (code == 'Q' && quote_prefix_down_) || quote_context_ ||
+            (off_mode() && off_keys_enabled_ && plain_control_key(code, 'Q'));
+    }
+    std::optional<bool> handle_off_key(ITfContext* context, WPARAM code, LPARAM parameter) {
+        const bool repeat = (parameter & (static_cast<LPARAM>(1) << 30)) != 0;
+        if (code < quoted_keys_.size() && quoted_keys_.test(code)) {
+            if (repeat) return false;
+            quoted_keys_.reset(code); // A new physical press also recovers from a missing key-up.
+        }
+        if (code == 'Q' && quote_prefix_down_) {
+            if (repeat) return true;
+            quote_prefix_down_ = false;
+            eaten_keys_.reset(code);
+        }
+        if (quote_context_) {
+            if (quote_context_.Get() != context || !off_mode() || !off_keys_enabled_) cancel_quote();
+            else if (!modifier_key(code)) {
+                cancel_quote();
+                if (plain_control_key(code, 'Q') || plain_control_key(code, 'J')) {
+                    // Decline the actual physical key, including its repeats and key-up.
+                    quoted_keys_.set(code); eaten_keys_.reset(code);
+                    return false;
+                }
+            }
+        }
+        if (off_mode() && off_keys_enabled_ && plain_control_key(code, 'Q')) {
+            if (repeat) return false;
+            ++quote_generation_; quote_context_ = context; quote_prefix_down_ = true;
+            return true;
+        }
+        return {};
+    }
     void configure_container() noexcept {
         try {
             if (!configuration_.broker) return;
@@ -510,6 +587,7 @@ private:
                 container_rules_configured_ = true;
             }
             if (container_configured_) return;
+            off_keys_enabled_ = !off_keys_excluded(remote->configuration.settings, host_executable_);
             diagnostics_ = TsfDiagnosticLog::create(remote->configuration.settings.tsf_log, in_app_container());
             candidate_settings_ = remote->configuration.settings.candidates;
             if (const auto config = inference_config(*remote)) {
@@ -590,6 +668,7 @@ private:
         } catch (...) { if (inference_state_.pending && inference_state_.pending->id == id) cancel_inference(); }
     }
     void change_mode(Mode mode) noexcept {
+        cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ModeChange, diagnostic_state());
         const ComPtr<TextService> self(this);
         if (!manager_) return;
@@ -858,6 +937,11 @@ private:
     TfGuidAtom input_atom_ = TF_INVALID_GUIDATOM;
     TfGuidAtom converted_atom_ = TF_INVALID_GUIDATOM;
     std::bitset<256> eaten_keys_;
+    std::bitset<256> quoted_keys_;
+    ComPtr<ITfContext> quote_context_;
+    std::uint64_t quote_generation_ = 0;
+    std::wstring host_executable_;
+    bool quote_prefix_down_ = false, off_keys_enabled_ = true;
     bool dictionary_loaded_ = false;
     bool container_configured_ = false;
     bool container_rules_configured_ = false;

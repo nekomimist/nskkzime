@@ -35,6 +35,9 @@ std::string serialize(const DictionarySettings& settings) {
     if (settings.candidates.show_after != 1)
         bytes += "candidate-show-after=" + std::to_string(settings.candidates.show_after) + "\n";
     if (settings.candidates.keys != CandidateKeys::Numbers) bytes += "candidate-keys=asdfjkl\n";
+    validate_off_key_exclusions(settings.off_key_exclusions);
+    for (const auto& executable : settings.off_key_exclusions)
+        bytes += "off-key-exclude=" + utf8_message(executable) + "\n";
     if (!settings.romaji_rules.empty()) {
         validate_path(settings.romaji_rules);
         bytes += "romaji=" + utf8_message(settings.romaji_rules.native()) + "\n";
@@ -122,6 +125,26 @@ void validate_tsf_log_settings(const DictionarySettings::TsfLogSettings& setting
 std::wstring tsf_log_settings_status(const DictionarySettings::TsfLogSettings& settings) {
     return settings.enabled ? L"TSF診断ログ: オン（本文・打鍵内容なし） / 保存先: " + settings.directory.native() : L"TSF診断ログ: オフ";
 }
+void validate_off_key_exclusions(const std::vector<std::wstring>& executables) {
+    if (executables.size() > 32) throw std::invalid_argument("at most 32 off-key exclusions are supported");
+    for (std::size_t i = 0; i < executables.size(); ++i) {
+        const auto& name = executables[i];
+        if (name.size() <= 4 || name.size() > 255 || name.front() == L' ' ||
+            name.find_first_of(L"<>:\"/\\|?*") != name.npos ||
+            std::any_of(name.begin(), name.end(), [](wchar_t ch) { return ch < 0x20 || ch == 0x7f; }) ||
+            CompareStringOrdinal(name.data() + name.size() - 4, 4, L".exe", 4, TRUE) != CSTR_EQUAL)
+            throw std::invalid_argument("off-key exclusion must be an executable filename ending in .exe, without paths or wildcards");
+        for (std::size_t j = 0; j < i; ++j)
+            if (CompareStringOrdinal(name.c_str(), -1, executables[j].c_str(), -1, TRUE) == CSTR_EQUAL)
+                throw std::invalid_argument("duplicate off-key exclusion");
+    }
+}
+bool off_keys_excluded(const DictionarySettings& settings, std::wstring_view executable) {
+    return std::any_of(settings.off_key_exclusions.begin(), settings.off_key_exclusions.end(), [&](const auto& name) {
+        return CompareStringOrdinal(name.data(), static_cast<int>(name.size()), executable.data(),
+            static_cast<int>(executable.size()), TRUE) == CSTR_EQUAL;
+    });
+}
 std::wstring zenz_settings_status(const ZenzSettings& settings) {
     const auto context = std::wstring(L"\r\n属性不明の周辺本文: ") + (settings.allow_unknown_context ? L"ローカル推論に利用（学習・入力ログの許可とは独立）" : L"取得しない");
     const auto logging = settings.log_input ? L"\r\n入力ログ: オン（読み・周辺本文・候補を保存） / 保存先: " + settings.log_directory.native() : std::wstring(L"\r\n入力ログ: オフ");
@@ -202,6 +225,9 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else if (key == "learning") {
             if (learning || (value != "on" && value != "off")) throw std::invalid_argument("learning must appear at most once and equal on or off");
             learning = true; settings.learning = value == "on";
+        } else if (key == "off-key-exclude") {
+            settings.off_key_exclusions.push_back(wide_message(value));
+            validate_off_key_exclusions(settings.off_key_exclusions);
         } else if (key == "candidate-show-after" || key == "candidate-keys") {
             if (!candidate_options.insert(key).second) throw std::invalid_argument("duplicate candidate setting");
             if (key == "candidate-keys") {

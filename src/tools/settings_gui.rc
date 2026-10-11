@@ -121,3 +121,18 @@ BEGIN
     PUSHBUTTON "参照(&B)…", IDC_LOG_BROWSE, 316, 149, 66, 16
     LTEXT "各ログ1 MiB×64ファイルで停止。既存ログは残ります。保存後は利用アプリを再起動。", -1, 5, 173, 378, 12
 END
+
+IDD_KEYS DIALOGEX 0, 0, 388, 187
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Yu Gothic UI"
+BEGIN
+    LTEXT "IMEオフ中のCtrl+J・Ctrl+Qを処理しないアプリ", -1, 5, 5, 378, 13
+    LISTBOX IDC_OFF_KEY_EXCLUSIONS, 5, 23, 303, 80, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP
+    PUSHBUTTON "外す(&D)", IDC_OFF_KEY_REMOVE, 316, 23, 66, 16
+    PUSHBUTTON "参照(&B)…", IDC_OFF_KEY_BROWSE, 316, 46, 66, 16
+    LTEXT "実行ファイル名（例: Code.exe）(&E)", -1, 5, 112, 378, 12
+    EDITTEXT IDC_OFF_KEY_NAME, 5, 128, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "追加(&A)", IDC_OFF_KEY_ADD, 316, 128, 66, 16
+    LTEXT "exe名の完全一致（大文字小文字の区別なし）・最大32個", -1, 5, 153, 378, 13
+    LTEXT "反映: 対象アプリの再起動後", -1, 5, 172, 378, 13
+END

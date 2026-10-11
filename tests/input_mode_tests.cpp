@@ -1,5 +1,6 @@
 #include "dictionary_wait.h"
 #include "runtime_dictionary.h"
+#include "dictionary_settings.h"
 #include "tsf_mode_host.h"
 #include "learning_ipc.h"
 #include "candidate_ui.h"
@@ -49,7 +50,7 @@ struct Session {
         check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activate service"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
     }
     ~Session() { service->Deactivate(); context->pump(); }
-    bool key(WPARAM code, bool control = false, bool shift = false, bool repeat = false) {
+    bool down(WPARAM code, bool control = false, bool shift = false, bool repeat = false) {
         BYTE state[256]{};
         if (control) state[VK_CONTROL] = state[VK_LCONTROL] = 0x80;
         if (shift) state[VK_SHIFT] = state[VK_LSHIFT] = 0x80;
@@ -60,8 +61,24 @@ struct Session {
         const auto text = context->doc->text; const auto mode = host->open->value;
         keys->OnTestKeyDown(context.Get(), code, parameter, &eaten);
         check(text == context->doc->text && mode == host->open->value, "key preflight changed mode/text");
+        BOOL again = FALSE; keys->OnTestKeyDown(context.Get(), code, parameter, &again);
+        check(eaten == again, "repeated preflight changed key routing");
         if (eaten) keys->OnKeyDown(context.Get(), code, parameter, &eaten);
-        const bool result = eaten != FALSE; keys->OnKeyUp(context.Get(), code, parameter, &eaten); return result;
+        return eaten != FALSE;
+    }
+    bool up(WPARAM code) {
+        const auto parameter = (static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code), MAPVK_VK_TO_VSC)) << 16) |
+            (static_cast<LPARAM>(1) << 30) | (static_cast<LPARAM>(1) << 31);
+        BOOL eaten = FALSE; keys->OnTestKeyUp(context.Get(), code, parameter, &eaten);
+        BOOL again = FALSE; keys->OnTestKeyUp(context.Get(), code, parameter, &again);
+        check(eaten == again, "repeated key-up preflight changed routing");
+        if (eaten) keys->OnKeyUp(context.Get(), code, parameter, &eaten);
+        return eaten != FALSE;
+    }
+    bool key(WPARAM code, bool control = false, bool shift = false, bool repeat = false) {
+        const auto eaten = down(code, control, shift, repeat);
+        check(up(code) == eaten, "physical key down/up routing disagrees");
+        return eaten;
     }
     void type(std::string_view text) {
         for (const char ch : text) {
@@ -216,10 +233,63 @@ int wmain(int argc, wchar_t** argv) {
         {
             Session s(false, true); s.type("a"); check(s.context->doc->text == L"あ", "bar failure broke input");
         }
+        {
+            Session s(true);
+            check(!s.key('Q') && !s.key('Q', true, true), "non-prefix Q captured");
+            check(s.key('Q', true) && !s.key('J', true) && s.label() == L"A", "quoted C-j did not pass through");
+            check(s.key('J', true) && s.label() == L"あ", "quote did not expire after C-j");
+            s.key(VK_IME_OFF);
+            check(s.down('Q', true) && s.down('Q', true, false, true) && s.up('Q'), "prefix Q repeats escaped");
+            check(!s.down('Q', true) && !s.down('Q', true, false, true) && !s.up('Q'), "quoted Q down/repeat/up captured");
+            check(s.key('J', true), "quoted Q repeat armed another quote");
+            s.key(VK_IME_OFF); s.key('Q', true);
+            check(!s.down('J', true) && !s.down('J', true, false, true) && !s.up('J') && s.label() == L"A", "quoted J repeat reopened IME");
+            check(s.key('J', true), "quoted J release retained bypass");
+            s.key(VK_IME_OFF); s.key('Q', true);
+            check(!s.key(VK_CONTROL) && !s.key(VK_CONTROL, true) && !s.key('J', true), "Ctrl release/repress consumed quote");
+            check(s.key('J', true), "modifier sequence left quote armed");
+            for (const auto other : std::array<WPARAM, 2>{{'A', VK_ESCAPE}}) {
+                s.key(VK_IME_OFF); s.key('Q', true);
+                check(!s.key(other) && s.key('J', true), "other key did not cancel quote normally");
+            }
+            s.key(VK_IME_OFF); s.key('Q', true); s.keys->OnSetFocus(FALSE);
+            check(s.key('J', true), "quote survived focus loss");
+            s.key(VK_IME_OFF); s.key('Q', true);
+            ComPtr<ITfThreadMgrEventSink> events; s.service.As(&events);
+            events->OnSetFocus(nullptr, nullptr);
+            check(s.key('J', true), "quote survived document focus loss");
+            s.key(VK_IME_OFF); s.key('Q', true);
+            s.context.Attach(new test_host::Context);
+            check(s.key('J', true), "quote leaked into another context");
+            s.key(VK_IME_OFF); s.key('Q', true); s.key(VK_IME_ON); s.key(VK_IME_OFF);
+            check(s.key('J', true), "quote survived mode changes");
+            s.key(VK_IME_OFF); s.key('Q', true);
+            s.service->Deactivate(); s.service->ActivateEx(s.host.Get(), 1, 0);
+            check(s.key('J', true), "quote survived reactivation");
+        }
+        {
+            Session s; s.type("/draft"); s.key(VK_SPACE); s.type("la");
+            check(s.key('J', true) && s.host->open->value == 1 && s.host->ui, "registration Latin used OFF key policy");
+        }
+        {
+            auto settings = read_dictionary_settings(root / L"settings.ini");
+            wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+            auto name = std::filesystem::path(executable).filename().native();
+            for (auto& ch : name) if (ch >= L'a' && ch <= L'z') ch -= L'a' - L'A';
+            settings.off_key_exclusions = {name}; save_dictionary_settings(root / L"settings.ini", settings);
+            {
+                Session s(true);
+                check(!s.key('J', true) && !s.key('Q', true) && !s.key('J', true) && s.label() == L"A", "excluded OFF keys captured");
+                check(s.key(VK_IME_ON) && s.key('J', true), "exclusion disabled ON-mode C-j");
+                s.type("l"); check(!s.key('A') && !s.key('J', true), "l bypassed app exclusion");
+                check(s.key(VK_SPACE, true) && s.label() == L"あ", "exclusion disabled explicit ON/OFF shortcut");
+            }
+            settings.off_key_exclusions.clear(); save_dictionary_settings(root / L"settings.ini", settings);
+        }
         check(module_objects == 0, "mode objects retained service");
         Sleep(600);
         check(!std::filesystem::exists(file) || read_user_dictionary(file).revision() == 0, "mode switch learned unconfirmed text");
-        std::cout << "PASS mode labels, Windows state, menu, key toggles, composition lifetime and teardown\n"; result = 0;
+        std::cout << "PASS mode labels, Windows state, quote keys, app exclusions, composition lifetime and teardown\n"; result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
     Sleep(300); stop_dictionary_helper(root / L"user-dictionary.nskkdb");

@@ -54,14 +54,40 @@ int wmain(int argc, wchar_t** argv) {
              settings.romaji_rules = romaji;
              settings.candidates = {5, CandidateKeys::Asdfjkl};
              settings.tsf_log = {true, files.root};
+             settings.off_key_exclusions = {L"Code.exe", L"WindowsTerminal.exe"};
              check(check_settings_draft(settings).valid, "valid configuration rejected");
              save_settings_document(document, settings);
              const auto loaded = open_settings_document(path);
              check(loaded.original == document.original && loaded.settings.dictionaries == settings.dictionaries &&
                        !loaded.settings.learning && loaded.settings.romaji_rules == romaji &&
                        loaded.settings.candidates.show_after == 5 && loaded.settings.candidates.keys == CandidateKeys::Asdfjkl &&
-                       loaded.settings.tsf_log.enabled && loaded.settings.tsf_log.directory == files.root,
+                       loaded.settings.tsf_log.enabled && loaded.settings.tsf_log.directory == files.root &&
+                       loaded.settings.off_key_exclusions == settings.off_key_exclusions,
                    "saved configuration changed");
+         }},
+        {"off-key-exclusions-validation-preservation-and-clear",
+         [&] {
+             const auto path = files.path(L"off-keys.ini");
+             auto document = open_settings_document(path);
+             auto settings = document.settings;
+             settings.off_key_exclusions = {L"Code.exe"};
+             save_settings_document(document, settings);
+             const auto before = document.original;
+             for (const auto& names : std::vector<std::vector<std::wstring>>{{L"Code.exe", L"CODE.EXE"}, {L"C:\\Code.exe"}, {L"*.exe"}}) {
+                 settings.off_key_exclusions = names;
+                 check(!check_settings_draft(settings).valid, "invalid OFF key exclusions accepted");
+                 rejects([&] { save_settings_document(document, settings); });
+                 check(document.original == before && open_settings_document(path).original == before,
+                       "invalid OFF key exclusions changed settings");
+             }
+             settings = document.settings;
+             settings.learning = false;
+             save_settings_document(document, settings);
+             check(open_settings_document(path).settings.off_key_exclusions == std::vector<std::wstring>{L"Code.exe"},
+                   "other GUI settings update lost OFF key exclusions");
+             settings.off_key_exclusions.clear();
+             save_settings_document(document, settings);
+             check(open_settings_document(path).settings.off_key_exclusions.empty(), "GUI could not clear OFF key exclusions");
          }},
         {"all-inference-options-survive-disabled-save",
          [&] {

@@ -117,6 +117,20 @@ int container_test(bool denied, bool real_model) {
         check(visible == FALSE, "AppContainer candidate popup not hidden");
         popup->close();
     }
+    {
+        Session session; session.key(VK_IME_OFF);
+        BYTE state[256]{}; state[VK_CONTROL] = state[VK_LCONTROL] = 0x80; SetKeyboardState(state);
+        for (const auto code : {'Q', 'J'}) {
+            BOOL eaten = TRUE; session.keys->OnTestKeyDown(session.context.Get(), code, 0, &eaten);
+            check(!eaten, "container OFF key exclusion not applied");
+            session.keys->OnKeyDown(session.context.Get(), code, 0, &eaten);
+            check(!eaten, "container OFF key captured after preflight");
+            session.keys->OnTestKeyUp(session.context.Get(), code, 0, &eaten);
+            check(!eaten, "excluded container key-up captured");
+        }
+        session.key(VK_IME_ON); session.type("a");
+        check(session.context->doc->text == L"あ", "container exclusion disabled explicit IME ON");
+    }
     if (real_model) {
         {
             Session session;
@@ -215,6 +229,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto config = container_configuration();
             check(config && config->configuration.settings.candidates.show_after == 3 &&
                 config->configuration.settings.candidates.keys == CandidateKeys::Asdfjkl, "desktop broker settings");
+            check(off_keys_excluded(config->configuration.settings, L"APP_CONTAINER_TESTS.EXE"), "desktop broker OFF key exclusions");
             check(!dictionary->lookup({U"かんじ", 0}).empty(), "desktop broker dictionary");
             return 0;
         }
@@ -230,6 +245,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto config = root / L"settings.ini", dict = root / L"fixture.skk", user = root / L"user-dictionary.nskkdb";
         { std::ofstream out(dict, std::ios::binary); out << "# /#1/#3/#2/\nかんじ /漢字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
         DictionarySettings settings{{dict}, true}; settings.candidates = {3, CandidateKeys::Asdfjkl};
+        settings.off_key_exclusions = {L"app_container_tests.exe"};
         settings.zenz.enabled = true; settings.zenz.model = root / L"fixture.gguf";
         settings.zenz.server = std::filesystem::path(executable).parent_path() / L"nkkz-ime-server.exe";
         settings.zenz.timeout_ms = 3000; settings.zenz.policy.rerank = true; settings.zenz.policy.score_timeout_ms = 3000;

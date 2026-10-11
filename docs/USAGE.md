@@ -22,6 +22,7 @@ nskkzime_config.exe --check
 | `romaji` | なし | 独自のローマ字ルールファイル |
 | `candidate-show-after` | 1 | 候補一覧を表示するまでのSpace回数（1〜99） |
 | `candidate-keys` | numbers | 一覧の選択キー。`numbers`（1〜7）か `asdfjkl` |
+| `off-key-exclude` | なし | IMEオフ中のC-j・C-qをアプリへ渡すexe名。複数行可（最大32）、大文字小文字を区別しない完全一致 |
 | `inference` | off | `zenz` で推論を有効化 |
 | `zenz-model` | なし | GGUFモデルの絶対パス |
 | `zenz-server` | なし | 開発用。省略時はIMEと同じ版のサーバー |
@@ -63,6 +64,7 @@ nskkzime_config.exe --check
 | `/` | abbrev（英字見出し）を開始 |
 | 通常のかな入力中の `Q` | 読みを開始。数字から始まる見出しも入力できる |
 | C-j | 確定してひらがなへ |
+| IMEオフ中のC-q C-j／C-q C-q | C-j／C-qのキー操作をアプリへ渡す |
 | 半角／全角、Ctrl+Space | IMEのオン／オフ。IMEオン／オフキーにも対応 |
 
 - 撥音は `n`＋子音、`n'`、末尾の `n`、`nn`。`nn` の2つ目の `n` は次の音節に使う（`konnichiha` →「こんにちは」）。
@@ -73,6 +75,25 @@ nskkzime_config.exe --check
   （`KAnji` = `Kanji`、`KaKU` = `KaKu`、`KOroNde` = `KoroNde`）。
 - 矢印・Home/End・Delete・Tab・Ctrlショートカットではcompositionを終了してからアプリへ渡す。
   本文はそのまま残し、学習はしない。フォーカスの移動やクリックで選択位置が変わった場合も同じ。
+
+IMEオフ中はC-qを引用操作の接頭辞として使う。最初のC-qはアプリへ渡さず、続くC-jまたはC-qだけを渡す。
+長押しは二打として数えない。途中でCtrlを離して押し直してもよい。
+ほかのキーを押すと引用待ちを解除して通常どおり処理する。入力欄・フォーカス・入力モードが変わった場合も解除する。
+渡したキーの意味はアプリが決める（制御文字を本文へ挿入する操作ではない）。単語登録欄内の英数入力は対象外。
+
+アプリ自身のC-qやC-jを優先する場合は、設定画面の「キー操作」タブで除外する。
+exe名を入力して「追加」、または「参照」で実行ファイルを選ぶ。選択したファイルからはexe名だけを保存する。
+一覧から選んで「外す」と除外を解除できる。編集後に「保存」を押す。CLIでも同じ一覧を編集できる。
+
+```powershell
+nskkzime_config.exe --set-off-key-exclusions Code.exe WindowsTerminal.exe
+nskkzime_config.exe --set-off-key-exclusions # 除外一覧を空にする
+```
+
+一覧は置き換え。設定ファイルへ `off-key-exclude=Code.exe` のように1行ずつ書くこともできる。
+除外アプリではIMEオフ中のC-j・C-qを処理せず、IME ONキー・半角／全角・Ctrl+Spaceや入力モードアイコンでひらがなへ戻る。
+IMEオン中のC-jや単語登録の操作は変わらない。反映には対象アプリの再起動が必要。
+exe名はIMEが動作するホストの名前なので、ターミナル内のプログラムやブラウザのタブごとの指定はできない。
 
 ## 送り仮名とabbrev
 

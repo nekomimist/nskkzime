@@ -54,6 +54,23 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/off-key-exclusions-roundtrip-and-exact-case-insensitive-match", [&] {
+            const auto settings = parse_dictionary_settings("version=1\noff-key-exclude=Code.EXE\noff-key-exclude=WindowsTerminal.exe\n");
+            const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));
+            require(loaded.off_key_exclusions == settings.off_key_exclusions, "off-key exclusions lost");
+            require(off_keys_excluded(loaded, L"code.exe") && off_keys_excluded(loaded, L"WINDOWSTERMINAL.EXE"), "case-insensitive exclusion failed");
+            require(!off_keys_excluded(loaded, L"xcode.exe") && !off_keys_excluded(loaded, L"Code.exe.bak") &&
+                !off_keys_excluded(loaded, L"C:\\Code.exe"), "exclusion was not an exact filename match");
+            require(parse_dictionary_settings("version=1\n").off_key_exclusions.empty(), "default exclusions not empty");
+            for (const auto invalid : {"", ".exe", "Code", "*.exe", "C:\\Code.exe", "folder/Code.exe", "Code.exe\noff-key-exclude=code.EXE"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\noff-key-exclude=") + invalid + "\n"); });
+            auto invalid = settings;
+            invalid.off_key_exclusions = {L" Code.exe"}; rejects([&] { serialize_dictionary_settings(invalid); });
+            invalid.off_key_exclusions = {L"Code\n.exe"}; rejects([&] { serialize_dictionary_settings(invalid); });
+            invalid.off_key_exclusions.clear();
+            for (int i = 0; i < 33; ++i) invalid.off_key_exclusions.push_back(L"app" + std::to_wstring(i) + L".exe");
+            rejects([&] { serialize_dictionary_settings(invalid); });
+        }},
         {"settings/candidate-options-defaults-roundtrip-and-bounds", [&] {
             const auto defaults = parse_dictionary_settings("version=1\n").candidates;
             require(defaults.show_after == 1 && defaults.keys == CandidateKeys::Numbers, "old settings changed candidate behavior");

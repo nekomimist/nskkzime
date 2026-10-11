@@ -26,6 +26,7 @@ struct DictionarySettings {
         bool enabled = false;
         std::filesystem::path directory;
     } tsf_log;
+    std::vector<std::wstring> off_key_exclusions;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;
@@ -47,6 +48,8 @@ void save_dictionary_settings(const std::filesystem::path&, const DictionarySett
 void validate_zenz_settings(const ZenzSettings&, bool check_files = false);
 void validate_tsf_log_settings(const DictionarySettings::TsfLogSettings&, bool check_files = false);
 std::wstring tsf_log_settings_status(const DictionarySettings::TsfLogSettings&);
+void validate_off_key_exclusions(const std::vector<std::wstring>&);
+bool off_keys_excluded(const DictionarySettings&, std::wstring_view executable);
 void validate_candidate_settings(const CandidateSettings&);
 std::wstring candidate_settings_status(const CandidateSettings&);
 std::wstring zenz_settings_status(const ZenzSettings&);
