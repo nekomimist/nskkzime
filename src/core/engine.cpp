@@ -1,9 +1,16 @@
 #include "nskkzime/engine.h"
+#include "nskkzime/numeric.h"
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 namespace nskkzime {
+std::vector<LookupCandidate> Dictionary::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
+    std::vector<LookupCandidate> result;
+    for (const auto& key : keys)
+        for (auto& candidate : lookup(key, okuri)) result.push_back({key, std::move(candidate)});
+    return result;
+}
 void MemoryDictionary::add(LookupKey key, std::vector<Candidate> candidates) {
     entries_.insert_or_assign(std::move(key), std::move(candidates));
 }
@@ -86,6 +93,7 @@ bool Engine::append_generated(std::vector<Candidate> candidates) {
     for (auto& candidate : candidates) {
         if (candidate.source == CandidateSource::Dictionary || candidate.text.empty() || candidate.text.size() > 1024) return false;
         for (const auto ch : candidate.text) if (ch < 0x20 || ch == 0x7f || ch > 0x10ffff || (ch >= 0xd800 && ch <= 0xdfff) || ch == 0xfffc) return false;
+        candidate.origin.reset(); // Generation never inherits dictionary template identities.
         if (std::none_of(next.begin(),next.end(),[&](const Candidate& old) { return old.text == candidate.text; })) next.push_back(std::move(candidate));
     }
     if (next.size() == first) return false;
@@ -158,36 +166,73 @@ void Engine::convert(Result& result) {
     result.conversion_started = true;
     input_.candidates_touched = input_.generation_attempted = false;
     const LookupKey lookup{input_.reading, input_.okuri_letter};
-    auto stored = dictionary_->lookup(lookup, input_.okuri);
+    const auto numeric = numeric_reading(lookup);
+    std::vector<LookupKey> keys{lookup};
+    if (!numeric.numbers.empty() && numeric.key != lookup) keys.push_back(numeric.key);
+    const auto lookup_candidates = [&] {
+        if (!numeric.numbers.empty()) return dictionary_->lookup_many(keys, input_.okuri);
+        std::vector<LookupCandidate> found;
+        for (auto& candidate : dictionary_->lookup(lookup, input_.okuri)) found.push_back({lookup, std::move(candidate)});
+        return found;
+    };
+    auto stored = lookup_candidates();
     // Once a registered spelling is available in the shared snapshot, defer to
     // its ordering. A temporary cache must not pin an old choice forever.
     bool refresh = false;
     std::erase_if(registered_, [&](const LearningEvent& item) {
-        if (item.key != lookup || item.okuri != input_.okuri) return false;
+        if (std::find(keys.begin(), keys.end(), item.key) == keys.end() || item.okuri != input_.okuri) return false;
         if (!dictionary_->registration_pending(item)) { refresh = true; return true; }
-        return std::any_of(stored.begin(), stored.end(), [&](const Candidate& candidate) { return candidate.text == item.candidate.text; });
+        return std::any_of(stored.begin(), stored.end(), [&](const LookupCandidate& found) {
+            return found.key == item.key && found.candidate.text == item.candidate.text;
+        });
     });
     // A worker can publish a snapshot between lookup and the delivery check.
-    if (refresh) stored = dictionary_->lookup(lookup, input_.okuri);
+    if (refresh) stored = lookup_candidates();
     input_.candidates.clear();
-    for (const auto& item : registered_)
-        if (item.key == lookup && item.okuri == input_.okuri) input_.candidates.push_back(item.candidate);
-    if (input_.candidates.empty()) input_.candidates = std::move(stored);
-    else {
+    const auto add = [&](const LookupKey& key, Candidate candidate) {
+        const auto raw = candidate.text;
+        bool converted = false;
+        if (candidate.source == CandidateSource::Dictionary) {
+            const auto expanded = expand_numeric(raw, numeric.numbers);
+            if (!expanded || expanded->text.empty()) return;
+            candidate.text = expanded->text; converted = expanded->converted;
+        }
+        if (converted || key != lookup)
+            candidate.origin = CandidateOrigin{key, converted ? numeric.key : lookup, raw};
+        if (std::none_of(input_.candidates.begin(), input_.candidates.end(),
+            [&](const Candidate& item) { return item.text == candidate.text; })) input_.candidates.push_back(std::move(candidate));
+    };
+    if (numeric.numbers.empty()) {
+        for (const auto& item : registered_)
+            if (item.key == lookup && item.okuri == input_.okuri) input_.candidates.push_back(item.candidate);
         const auto cached_count = input_.candidates.size();
-        for (const auto& candidate : stored)
+        for (auto& found : stored)
             if (std::none_of(input_.candidates.begin(), input_.candidates.begin() + static_cast<std::ptrdiff_t>(cached_count),
-                [&](const Candidate& item) { return item.text == candidate.text; })) input_.candidates.push_back(candidate);
+                [&](const Candidate& item) { return item.text == found.candidate.text; })) input_.candidates.push_back(std::move(found.candidate));
+    } else {
+        for (const auto& key : keys)
+            for (const auto& item : registered_)
+                if (item.key == key && item.okuri == input_.okuri) add(key, item.candidate);
+        for (auto& found : stored) add(found.key, std::move(found.candidate));
     }
     input_.candidate_index = 0;
     if (input_.candidates.empty()) { result.dictionary_miss = true; begin_registration(result); }
     else input_.stage = Stage::Selecting;
 }
+LearningEvent Engine::learning_event(const Candidate& candidate) const {
+    LearningEvent event{{input_.reading, input_.okuri_letter}, input_.okuri, candidate};
+    if (candidate.origin) {
+        event.key = candidate.origin->learning_key;
+        event.candidate.text = candidate.origin->text;
+        event.candidate.origin.reset();
+    }
+    return event;
+}
 void Engine::confirm(Result& result) {
     result.committed += input_literal();
     if (input_.stage == Stage::Selecting && input_.candidates[input_.candidate_index].learning == LearningPolicy::Learn &&
         input_.candidates[input_.candidate_index].source != CandidateSource::GeneratedLong)
-        result.learning = LearningEvent{{input_.reading, input_.okuri_letter}, input_.okuri, input_.candidates[input_.candidate_index]};
+        result.learning = learning_event(input_.candidates[input_.candidate_index]);
     clear_composition();
 }
 Result Engine::handle(Key key) {
@@ -200,11 +245,13 @@ Result Engine::handle(Key key) {
     if (input_.stage == Stage::Selecting && key.code == KeyCode::Character && key.character == 'X') {
         input_.candidates_touched = true;
         const auto& candidate = input_.candidates[input_.candidate_index];
-        auto target = dictionary_->forget_target({input_.reading, input_.okuri_letter}, input_.okuri, candidate.text);
+        const auto lookup = candidate.origin ? candidate.origin->lookup_key : LookupKey{input_.reading, input_.okuri_letter};
+        const auto& text = candidate.origin ? candidate.origin->text : candidate.text;
+        auto target = dictionary_->forget_target(lookup, input_.okuri, text);
         if (!target) {
             for (const auto& item : registered_)
-                if (item.key == LookupKey{input_.reading, input_.okuri_letter} && item.okuri == input_.okuri &&
-                    item.candidate.text == candidate.text && dictionary_->registration_pending(item)) { target = item; break; }
+                if (item.key == lookup && item.okuri == input_.okuri &&
+                    item.candidate.text == text && dictionary_->registration_pending(item)) { target = item; break; }
         }
         forget_ = Forget{std::move(target), {}};
         return result;
@@ -384,6 +431,11 @@ Result Engine::handle_input(Key key) {
     if (input_.abbrev) {
         // ASCII spelling and case are the dictionary key; q/l are ordinary letters.
         input_.reading += static_cast<unsigned char>(ch);
+        return result;
+    }
+    if (ch == 'Q' && input_.stage == Stage::Direct) {
+        append(input_.romaji.flush(), result);
+        input_.stage = Stage::Reading;
         return result;
     }
     if (input_.stage == Stage::Direct && input_.romaji.pending().empty() && ch == '/') {

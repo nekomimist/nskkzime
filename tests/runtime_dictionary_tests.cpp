@@ -1,6 +1,7 @@
 #include "runtime_dictionary.h"
 #include "learning_ipc.h"
 #include "nskkzime/inference_policy.h"
+#include "nskkzime/dictionary.h"
 #include "dictionary_wait.h"
 #include <atomic>
 #include <future>
@@ -23,6 +24,14 @@ RuntimeDictionarySnapshot loaded() { return {demo_dictionary(),L"辞書: 読み�
 int main() {
     int failed = 0;
     const std::vector<std::pair<const char*,std::function<void()>>> cases = {
+        {"numeric-batch-preserves-source-priority", [] {
+            const auto high = SkkDictionary::parse(U"# /#2/\n");
+            const auto low = SkkDictionary::parse(U"99 /固定/\n# /#1/\n");
+            auto sources = std::make_shared<DictionarySet>(std::vector<std::shared_ptr<const Dictionary>>{high, low});
+            auto dictionary = std::make_shared<RuntimeDictionary>(RuntimeDictionarySnapshot{sources, L"ready", true});
+            Engine engine(dictionary); type(engine, "/99"); engine.handle({KeyCode::Space});
+            check(engine.candidates()[0].text == U"九九", "runtime flattened numeric source priority");
+        }},
         {"failed-bootstrap-retries-without-losing-reading",[] {
             auto attempts = std::make_shared<std::atomic<int>>(0);
             auto gate = std::make_shared<Gate>(); OpenOnExit release{gate};

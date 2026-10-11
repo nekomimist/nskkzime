@@ -11,6 +11,7 @@ public:
         std::string container_generation = {});
     ~LearningDictionary() override;
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
+    std::vector<LookupCandidate> lookup_many(std::span<const LookupKey>, std::u32string_view okuri = {}) const override;
     bool registration_pending(const LearningEvent&) const override;
     std::optional<LearningEvent> forget_target(const LookupKey&, std::u32string_view, std::u32string_view) const override;
     bool forget(const LearningEvent&) const noexcept;

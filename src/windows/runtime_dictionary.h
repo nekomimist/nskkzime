@@ -18,6 +18,7 @@ public:
     explicit RuntimeDictionary(RuntimeDictionarySnapshot immediate);
     ~RuntimeDictionary() override;
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
+    std::vector<LookupCandidate> lookup_many(std::span<const LookupKey>, std::u32string_view okuri = {}) const override;
     bool ready() const override;
     bool registration_allowed() const override;
     bool registration_pending(const LearningEvent&) const override;

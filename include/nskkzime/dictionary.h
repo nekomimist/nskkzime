@@ -46,6 +46,7 @@ class DictionarySet final : public Dictionary {
 public:
     explicit DictionarySet(std::vector<std::shared_ptr<const Dictionary>> dictionaries);
     std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const override;
+    std::vector<LookupCandidate> lookup_many(std::span<const LookupKey>, std::u32string_view okuri = {}) const override;
 private:
     std::vector<std::shared_ptr<const Dictionary>> dictionaries_;
 };

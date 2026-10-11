@@ -137,6 +137,19 @@ int container_test(bool denied, bool real_model) {
         session.type("s"); check(session.context->doc->text == L"感じ", "ASDF shortcut"); session.wait(500);
     }
     {
+        Session session; session.type("/99"); session.key(VK_SPACE); session.key(VK_SPACE); session.key(VK_SPACE);
+        check(session.context->doc->text == L"九九" && session.host->ui, "broker numeric candidates did not expand");
+        session.type("d"); session.wait(500);
+        check(container_runtime_dictionary()->lookup({U"#"})[0].text == U"#2", "broker saved expanded numeric spelling");
+    }
+    {
+        Session session; session.type("/98"); session.key(VK_SPACE);
+        check(session.context->doc->text == L"九八", "broker numeric preference did not transfer");
+        session.type("Xyes"); session.key(VK_RETURN); session.key(VK_SPACE);
+        check(session.context->doc->text == L"９８", "broker numeric deletion retained learned format");
+        session.key(VK_ESCAPE); session.key(VK_ESCAPE); session.wait(500);
+    }
+    {
         Session session; session.type("Kaitou"); session.key(VK_SPACE);
         check(session.context->doc->text == L"解答", "broker rerank before display"); session.key(VK_RETURN);
         session.type("Mikan"); session.key(VK_SPACE); session.complete(); check(session.context->doc->text == L"解答蜜柑", "broker generation"); session.key(VK_RETURN);
@@ -215,7 +228,7 @@ int wmain(int argc, wchar_t** argv) {
         FileGrant allow_binary(executable, allowed.sid), deny_binary(executable, denied.sid);
         const auto root = std::filesystem::path(executable).parent_path() / ("container-test-" + id); std::filesystem::create_directory(root);
         const auto config = root / L"settings.ini", dict = root / L"fixture.skk", user = root / L"user-dictionary.nskkdb";
-        { std::ofstream out(dict, std::ios::binary); out << "かんじ /漢字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
+        { std::ofstream out(dict, std::ios::binary); out << "# /#1/#3/#2/\nかんじ /漢字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
         DictionarySettings settings{{dict}, true}; settings.candidates = {3, CandidateKeys::Asdfjkl};
         settings.zenz.enabled = true; settings.zenz.model = root / L"fixture.gguf";
         settings.zenz.server = std::filesystem::path(executable).parent_path() / L"nkkz-ime-server.exe";
@@ -277,7 +290,7 @@ int wmain(int argc, wchar_t** argv) {
             (void)container_exchange("INI2", GetTickCount64() + 5000, cancel.get());
             const auto dictionary_time = std::filesystem::last_write_time(dict);
             const auto dictionary_size = std::filesystem::file_size(dict);
-            { std::ofstream out(dict, std::ios::binary); out << "かんじ /新字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
+            { std::ofstream out(dict, std::ios::binary); out << "# /#1/#3/#2/\nかんじ /新字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
             std::filesystem::last_write_time(dict, dictionary_time);
             const auto romaji_time = std::filesystem::last_write_time(updated.romaji_rules);
             { std::ofstream out(updated.romaji_rules, std::ios::binary); out << "version=1\nwi\tヰ\n"; }

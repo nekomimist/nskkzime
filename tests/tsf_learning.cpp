@@ -37,7 +37,9 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 3) return 2;
     const auto root = std::filesystem::current_path() / ("tsf-learning-" + learning_client_id());
     // Exercise the default user dictionary and persistent cache beside an isolated config.
-    use_isolated_settings(root, "dictionary=" + settings_path(argv[2]) + "\n");
+    const auto numeric_file = root / L"numeric.skk";
+    use_isolated_settings(root, "dictionary=" + settings_path(argv[2]) + "\ndictionary=" + settings_path(numeric_file) + "\n");
+    std::ofstream(numeric_file, std::ios::binary) << "# /#1/#3/#2/\n#えん /#3円/\n";
     const auto file = root / L"user-dictionary.nskkdb";
     BYTE previous[256]{}; GetKeyboardState(previous);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -231,6 +233,34 @@ int wmain(int argc, wchar_t** argv) {
             check(context->composition->ended && origin->doc->text.empty(), "unknown parent learning did not edit the parent");
         }
         until([&] { return read_user_dictionary(file).revision() == 11; });
+        context.Attach(new test_host::Context);
+        type(keys.Get(), context.Get(), "/99"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"９９", "numeric display leaked a template");
+        context->doc->reject_write = true;
+        check(!key(keys.Get(), context.Get(), '3'), "failed numeric conversion consumed selection");
+        Sleep(300); check(read_user_dictionary(file).revision() == 11, "failed numeric conversion learned");
+        context->doc->reject_write = false; check(key(keys.Get(), context.Get(), '3'), "numeric conversion retry failed");
+        check(context->doc->text == L"九九", "numeric candidate did not commit expanded text");
+        until([&] { return read_user_dictionary(file).revision() == 12; });
+        check(read_user_dictionary(file).lookup({U"#"})[0].text == U"#2" && read_user_dictionary(file).lookup({U"99"}).empty(),
+            "numeric TSF learning saved a concrete number");
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "/98"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"九八", "numeric preference did not transfer to another number");
+        type(keys.Get(), context.Get(), "Xyes"); context->doc->reject_write = true;
+        check(!key(keys.Get(), context.Get(), VK_RETURN), "failed numeric delete consumed Enter");
+        Sleep(300); check(read_user_dictionary(file).revision() == 12, "failed numeric delete persisted");
+        context->doc->reject_write = false; check(key(keys.Get(), context.Get(), VK_RETURN), "numeric delete retry failed");
+        check(context->doc->text == L"98", "numeric delete did not restore original reading");
+        key(keys.Get(), context.Get(), VK_SPACE); check(context->doc->text == L"９８", "numeric delete retained learned format");
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        until([&] { return read_user_dictionary(file).revision() == 13; });
+        check(read_user_dictionary(file).lookup({U"#"}).empty(), "numeric template was not deleted");
+        context.Attach(new test_host::Context); context->input_scope = IS_PASSWORD;
+        type(keys.Get(), context.Get(), "/97"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), '3');
+        Sleep(300); check(read_user_dictionary(file).revision() == 13, "private numeric selection learned");
+        context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "Q99en"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(context->doc->text == L"九十九円", "Q numeric kana input failed in TSF");
+        key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
         std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private and unknown scopes, focus/UI failure\n";
         result = 0;

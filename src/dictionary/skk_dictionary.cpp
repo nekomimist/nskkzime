@@ -313,4 +313,10 @@ std::vector<Candidate> DictionarySet::lookup(const LookupKey& key, std::u32strin
     for (const auto& dictionary : dictionaries_) merge_unique(result, dictionary->lookup(key, okuri));
     return result;
 }
+std::vector<LookupCandidate> DictionarySet::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
+    std::vector<LookupCandidate> result;
+    for (const auto& dictionary : dictionaries_)
+        for (auto& candidate : dictionary->lookup_many(keys, okuri)) result.push_back(std::move(candidate));
+    return result;
+}
 } // namespace nskkzime

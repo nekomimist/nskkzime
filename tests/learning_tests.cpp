@@ -27,7 +27,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -65,6 +65,39 @@ int wmain(int argc, wchar_t** argv) {
     Files files; const auto file = files.root / L"user.nskkdb";
     const std::filesystem::path server(argv[1]);
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"client/numeric-template-pending-persisted-restarted-and-deleted", [&] {
+            const auto isolated = files.root / L"numeric.nskkdb";
+            const auto base = SkkDictionary::parse(U"# /#1/#3/#2/\n99 /固定/\n");
+            const auto type = [](Engine& engine, std::string_view text) {
+                for (const auto ch : text) engine.handle({KeyCode::Character, ch});
+            };
+            auto client = std::make_shared<LearningDictionary>(base, isolated, server);
+            Engine engine(client); type(engine, "/98"); engine.handle({KeyCode::Space});
+            const auto result = engine.handle({KeyCode::SelectCandidate, 0, 2});
+            check(result.committed == U"九八" && result.learning->key == LookupKey{U"#"}, "numeric selection did not produce a template");
+            client->learn(*result.learning);
+            engine.remember_registration(*result.learning); // Exercise a pending template in the local overlay too.
+            type(engine, "/99"); engine.handle({KeyCode::Space});
+            check(engine.candidates()[0].text == U"九九", "pending template lost to base exact entry");
+            engine.handle({KeyCode::Cancel}); engine.handle({KeyCode::Cancel});
+            until([&] { return !client->registration_pending(*result.learning); });
+            check(read_user_dictionary(isolated).lookup({U"#"})[0].text == U"#2", "numeric template was not saved raw");
+            auto restarted = std::make_shared<LearningDictionary>(base, isolated, server);
+            until([&] { return restarted->lookup({U"#"})[0].text == U"#2"; });
+            Engine next(restarted); type(next, "/99"); next.handle({KeyCode::Space});
+            check(next.candidates()[0].text == U"九九", "restarted learning lost to exact base entry");
+            type(next, "Xyes"); const auto removed = next.handle({KeyCode::Enter});
+            check(removed.forgetting && removed.forgetting->key == LookupKey{U"#"} && removed.forgetting->candidate.text == U"#2",
+                "numeric deletion used display text");
+            check(restarted->forget(*removed.forgetting), "numeric delete queue rejected");
+            next.handle({KeyCode::Space}); check(next.candidates()[0].text == U"固定", "pending delete retained learned priority");
+            until([&] { return read_user_dictionary(isolated).lookup({U"#"}).empty(); });
+            type(engine, "/99"); engine.handle({KeyCode::Space});
+            until([&] { return client->lookup({U"#"})[0].text == U"#1"; });
+            engine.handle({KeyCode::Cancel}); engine.handle({KeyCode::Cancel});
+            type(engine, "/99"); engine.handle({KeyCode::Space});
+            check(engine.candidates()[0].text == U"固定", "delivered cache resurrected a deleted numeric template");
+        }},
         {"codec/roundtrip-special-characters-and-corruption", [] {
             auto request = update(); request.event.candidate.text = U"(a/b);\\\"𠮷";
             auto decoded = decode_learning(encode_learning(request)); check(decoded.event.candidate.text == request.event.candidate.text, "special characters changed");
@@ -280,6 +313,6 @@ int wmain(int argc, wchar_t** argv) {
     std::cout << passed << '/' << cases.size() << " passed\n";
     // Release the helpers' locks so the fixture files can be removed.
     Sleep(300);
-    for (const auto name : {L"user.nskkdb", L"forget.nskkdb", L"queued.nskkdb", L"notify.nskkdb"}) stop_dictionary_helper(files.root / name);
+    for (const auto name : {L"user.nskkdb", L"forget.nskkdb", L"queued.nskkdb", L"notify.nskkdb", L"numeric.nskkdb"}) stop_dictionary_helper(files.root / name);
     return passed == cases.size() ? 0 : 1;
 }

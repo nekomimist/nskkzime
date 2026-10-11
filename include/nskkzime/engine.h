@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -19,17 +20,28 @@ struct Key {
 };
 enum class CandidateSource { Dictionary, GeneratedLong, GeneratedFallback };
 enum class LearningPolicy { Learn, DoNotLearn };
+struct LookupKey {
+    std::u32string reading;
+    char okuri = 0;
+    auto operator<=>(const LookupKey&) const = default;
+};
+// Transient identity: display text may differ from the dictionary spelling.
+// Lookup and learning keys differ for fixed literals found under numeric keys.
+struct CandidateOrigin {
+    LookupKey lookup_key, learning_key;
+    std::u32string text;
+};
 struct Candidate {
     std::string id;
     std::u32string text;
     std::u32string annotation;
     CandidateSource source = CandidateSource::Dictionary;
     LearningPolicy learning = LearningPolicy::Learn;
+    std::optional<CandidateOrigin> origin = std::nullopt;
 };
-struct LookupKey {
-    std::u32string reading;
-    char okuri = 0;
-    auto operator<=>(const LookupKey&) const = default;
+struct LookupCandidate {
+    LookupKey key;
+    Candidate candidate;
 };
 struct LearningEvent {
     LookupKey key;
@@ -40,6 +52,9 @@ class Dictionary {
 public:
     virtual ~Dictionary() = default;
     virtual std::vector<Candidate> lookup(const LookupKey& key, std::u32string_view okuri = {}) const = 0;
+    // Source priority first, then key order within each source. Raw identities
+    // survive until Engine expands and deduplicates the displayed candidates.
+    virtual std::vector<LookupCandidate> lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri = {}) const;
     // An asynchronous host dictionary distinguishes loading from a true miss.
     virtual bool ready() const { return true; }
     virtual bool registration_allowed() const { return true; }
@@ -149,6 +164,7 @@ private:
     void append(std::u32string text, Result& result);
     void convert(Result& result);
     void confirm(Result& result);
+    LearningEvent learning_event(const Candidate&) const;
     std::u32string display(std::u32string_view text) const;
     std::shared_ptr<const Dictionary> dictionary_;
     std::shared_ptr<const RomajiRules> rules_;

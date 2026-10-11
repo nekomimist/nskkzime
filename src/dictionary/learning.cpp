@@ -14,6 +14,7 @@ void text_check(std::u32string_view text, bool empty = false) {
     for (const auto ch : text) check(ch >= 32 && ch != 127 && ch <= 0x10ffff && !(ch >= 0xd800 && ch <= 0xdfff));
 }
 void event_check(const LearningEvent& event, bool generic_okuri = false) {
+    check(!event.candidate.origin); // Engine must publish the raw identity, never a display expansion.
     text_check(event.key.reading); text_check(event.okuri, true);
     text_check(event.candidate.text); text_check(event.candidate.annotation, true);
     check((event.key.okuri == 0 && event.okuri.empty()) || (event.key.okuri >= 'a' && event.key.okuri <= 'z' && (generic_okuri || !event.okuri.empty())));

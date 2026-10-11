@@ -182,6 +182,19 @@ std::optional<LearningEvent> LearningDictionary::forget_target(const LookupKey& 
             if (candidate.text == text) return LearningEvent{key, {}, candidate};
     return {};
 }
+std::vector<LookupCandidate> LearningDictionary::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
+    std::vector<LookupCandidate> result;
+    {
+        const std::lock_guard lock(state_->mutex);
+        for (const auto& key : keys) {
+            for (auto& candidate : state_->scope(key, okuri)) result.push_back({key, std::move(candidate)});
+            if (key.okuri && !okuri.empty())
+                for (auto& candidate : state_->scope(key, {})) result.push_back({key, std::move(candidate)});
+        }
+    }
+    for (auto& candidate : state_->base->lookup_many(keys, okuri)) result.push_back(std::move(candidate));
+    return result;
+}
 bool LearningDictionary::registration_pending(const LearningEvent& event) const {
     const std::lock_guard lock(state_->mutex);
     for (auto it = state_->queue.rbegin(); it != state_->queue.rend(); ++it)

@@ -77,6 +77,10 @@ bool RuntimeDictionary::registration_pending(const LearningEvent& event) const {
     const auto snapshot = state_->snapshot.load();
     return !snapshot || snapshot->dictionary->registration_pending(event);
 }
+std::vector<LookupCandidate> RuntimeDictionary::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
+    const auto snapshot = state_->snapshot.load();
+    return snapshot ? snapshot->dictionary->lookup_many(keys, okuri) : std::vector<LookupCandidate>{};
+}
 void RuntimeDictionary::learn(const LearningEvent& event) const noexcept {
     const auto snapshot = state_->snapshot.load();
     if (snapshot && snapshot->registration) publish_learning(snapshot->dictionary,event);

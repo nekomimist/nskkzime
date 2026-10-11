@@ -36,8 +36,17 @@
     {"id":"okuri-registration", "keys":"TaBelword<Enter>", "nskkzime":"wordべ", "ddskk":"wordべ", "difference":""},
     {"id":"unsupported-romaji", "keys":"fka", "nskkzime":"fか", "ddskk":"か", "difference":"不成立のローマ字をASCIIで保持する。DDSKKは不成立の接頭辞を除く。"},
     {"id":"candidate-list-key", "keys":"/p<Space><Space><Space><Space><Space>j", "nskkzime":"候補05j", "ddskk":"候補09", "difference":"最初から7件を表示し数字で選択する。DDSKK既定は5番目からホームポジションキーで選択する。"},
-    {"id":"q-reading-start", "keys":"Q7gatu", "nskkzime":"▽q7がつ", "ddskk":"▽7がつ", "difference":"大文字Qによる読み開始は未対応。"},
+    {"id":"q-reading-start", "keys":"Q7gatu", "nskkzime":"▽7がつ", "ddskk":"▽7がつ", "difference":""},
     {"id":"wide-latin", "keys":"Labc", "nskkzime":"▽lあbc", "ddskk":"ａｂｃ", "difference":"大文字Lによる全英モードは未対応。"},
-    {"id":"forget-confirmed", "keys":"Mitouroku<Space>lword<Enter>Mitouroku<Space>Xyes<Enter>", "nskkzime":"word▽みとうろく", "ddskk":"word", "difference":"学習語の削除後は読みに戻る。DDSKKは今回の入力を取り消す。"}
+    {"id":"forget-confirmed", "keys":"Mitouroku<Space>lword<Enter>Mitouroku<Space>Xyes<Enter>", "nskkzime":"word▽みとうろく", "ddskk":"word", "difference":"学習語の削除後は読みに戻る。DDSKKは今回の入力を取り消す。"},
+    {"id":"numeric-wide", "keys":"/99<Space><C-j>", "nskkzime":"９９", "ddskk":"９９", "difference":""},
+    {"id":"numeric-digits", "keys":"/99<Space><Space><Space><C-j>", "nskkzime":"九九", "ddskk":"九九", "difference":""},
+    {"id":"numeric-units", "keys":"/99<Space><Space><C-j>", "nskkzime":"九十九", "ddskk":"九十九", "difference":""},
+    {"id":"numeric-grouping", "keys":"/1234567<Space><Space><Space><Space><C-j>", "nskkzime":"1,234,567", "ddskk":"1,234,567", "difference":""},
+    {"id":"numeric-leading-zero", "keys":"/0009<Space><Space><Space><C-j>", "nskkzime":"〇〇〇九", "ddskk":"〇〇〇九", "difference":""},
+    {"id":"numeric-kana", "keys":"Dai12kai<Space><Space><Space><C-j>", "nskkzime":"第十二回", "ddskk":"第十二回", "difference":""},
+    {"id":"numeric-q-start", "keys":"Q99en<Space><C-j>", "nskkzime":"九十九円", "ddskk":"九十九円", "difference":""},
+    {"id":"numeric-date", "keys":"/2m25d<Space><C-j>", "nskkzime":"2月25日", "ddskk":"2月25日", "difference":""},
+    {"id":"numeric-dot-date", "keys":"/2.25<Space><Space><C-j>", "nskkzime":"2月25日", "ddskk":"2月25日", "difference":""}
   ]
 }
