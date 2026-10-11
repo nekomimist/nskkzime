@@ -28,6 +28,23 @@ int main() {
             Romaji r(table); equal(r.push('j'),U""); equal(r.push('j'),U"っ"); check(r.pending()=="j"&&r.backspace(),"carry lost"); equal(r.flush(),U"");
         }},
         {"romaji/new-longer-n-and-double-prefix",[] { auto table=RomajiRules::parse("version=1\nnna\tなな\nppa\tぱぱ\n"); equal(roman("nnappa",table),U"ななぱぱ"); }},
+        {"romaji/failed-prefix-drops-whole-custom-prefix",[] {
+            const auto table=RomajiRules::parse("version=1\ntkl\t東京\n");
+            equal(roman("tka",table),U"あ"); equal(roman("tk!",table),U"!"); equal(roman("tkl",table),U"東京");
+        }},
+        {"engine/explicit-continuations-before-mode-commands",[] {
+            const auto table=RomajiRules::parse("version=1\ndl\tでる\ndq\tどく\nd/\tど\nnl\tなる\nkk\tくく\n");
+            Engine e(demo_dictionary(),false,table); std::u32string output;
+            type(e,"dldqd/nlkk",output); equal(output,U"でるどくどなるくく");
+            check(e.mode()==Mode::Hiragana&&!e.abbrev(),"explicit rule became a command");
+        }},
+        {"engine/failed-carry-and-custom-n-before-mode-commands",[] {
+            const auto table=RomajiRules::parse("version=1\njj\tっ\tj\nnn\tん\n");
+            for(const auto input:{"jjl","nnl"}) {
+                Engine e(demo_dictionary(),false,table); std::u32string output; type(e,input,output);
+                equal(output,std::string_view(input)=="jjl"?U"っ":U"ん"); check(e.mode()==Mode::Latin&&e.preedit().empty(),"carry blocked Latin");
+            }
+        }},
         {"romaji/copy-and-clear",[] {
             auto table=RomajiRules::parse("version=1\nwi\tゐ\n"); Romaji r(table); r.push('w'); auto copy=r; equal(copy.push('i'),U"ゐ"); check(r.pending()=="w","copy changed original"); r.clear(); equal(r.push('a'),U"あ");
         }},

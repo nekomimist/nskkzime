@@ -133,11 +133,19 @@ Romaji::Romaji(std::shared_ptr<const RomajiRules> rules) : rules_(std::move(rule
     if (!rules_) throw std::invalid_argument("romaji rules must not be null");
 }
 bool Romaji::accepts(char ch) const { return rules_->prefix(pending_ + ch); }
+std::u32string Romaji::resolve_pending(char ch) {
+    if (pending_.empty() || accepts(ch) || (pending_ == "n" && (ch == 'n' || ch == '\'')) ||
+        (pending_.size() == 1 && pending_[0] == ch && consonant(ch))) return {};
+    auto output = pending_ == "n" && !carried_n_ ? std::u32string{U"ん"} : std::u32string{};
+    // DDSKK retries only the new key from the root, discarding the whole prefix.
+    clear();
+    return output;
+}
 std::u32string Romaji::push(char ch) {
-    std::u32string output;
+    auto output = resolve_pending(ch);
     const auto combined = pending_ + ch;
     if (const auto* rule = rules_->find(combined)) {
-        pending_ = rule->carry; carried_n_ = false; return rule->output;
+        pending_ = rule->carry; carried_n_ = false; return output + rule->output;
     }
     if (rules_->prefix(combined)) { pending_ = combined; carried_n_ = false; return output; }
     if (pending_ == "n") {
@@ -151,27 +159,13 @@ std::u32string Romaji::push(char ch) {
             carried_n_ = true;
             return output;
         }
-        if (std::string_view("aiueoy").find(ch) == std::string_view::npos) {
-            if (!carried_n_) output += U"ん";
-            clear();
-        }
     }
     carried_n_ = false;
     if (pending_.size() == 1 && pending_[0] == ch && consonant(ch)) {
         return output + U"っ";
     }
-    pending_ += ch;
-    while (!pending_.empty()) {
-        bool prefix = pending_ == "n";
-        if (const auto* rule = rules_->find(pending_)) {
-            output += rule->output; pending_ = rule->carry; return output;
-        }
-        prefix = prefix || rules_->prefix(pending_);
-        if (prefix) break;
-        // Preserve unsupported input literally; never silently lose a keystroke.
-        output += static_cast<unsigned char>(pending_.front());
-        pending_.erase(0, 1);
-    }
+    if (ch == 'n') pending_ = "n";
+    else output += static_cast<unsigned char>(ch); // Unsupported keys at the root remain literal.
     return output;
 }
 std::u32string Romaji::flush() {

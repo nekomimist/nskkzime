@@ -122,7 +122,7 @@ python -B scripts\evaluate.py --dictionary SKK-JISYO.utf8.L --ajimee out\referen
 ### DDSKKとの比較
 
 `tests/fixtures/ddskk-comparison.json` に、GNU Emacs 30.2＋DDSKK `e8bf68b` と同じ辞書・キー列で
-取った38例の結果を記録している（一致28例、相違10例。相違は [USAGE.md](USAGE.md#ddskkとの違い)）。
+取った46例の結果を記録している（一致37例、相違9例。相違は [USAGE.md](USAGE.md#ddskkとの違い)）。
 CTestの `ddskk_contract` はnskkzime側の結果だけを検証する。DDSKK側を実行し直すには次を使う。
 
 ```powershell

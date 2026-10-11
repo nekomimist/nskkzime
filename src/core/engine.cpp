@@ -438,6 +438,9 @@ Result Engine::handle_input(Key key) {
         input_.stage = Stage::Reading;
         return result;
     }
+    // Resolve a failed prefix before dispatching a command. Other characters,
+    // including normalized shifted input, resolve it inside Romaji::push.
+    if (ch == '/' || ch == 'q' || ch == 'l') append(input_.romaji.resolve_pending(ch), result);
     if (input_.stage == Stage::Direct && input_.romaji.pending().empty() && ch == '/') {
         input_.stage = Stage::Reading; input_.abbrev = true;
         return result;
@@ -451,7 +454,8 @@ Result Engine::handle_input(Key key) {
         }
         return result;
     }
-    if (input_.stage == Stage::Direct && input_.romaji.pending().empty() && ch == 'l') {
+    if (input_.romaji.pending().empty() && ch == 'l') {
+        confirm(result);
         input_.mode = Mode::Latin;
         return result;
     }

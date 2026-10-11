@@ -24,6 +24,9 @@ class Romaji {
 public:
     Romaji() : Romaji(RomajiRules::defaults()) {}
     explicit Romaji(std::shared_ptr<const RomajiRules> rules);
+    // Resolve terminal n or discard a failed prefix without consuming ch.
+    // Hosts can then dispatch ch as a command when pending() is empty.
+    std::u32string resolve_pending(char ch);
     std::u32string push(char ch);
     std::u32string flush();
     bool backspace();

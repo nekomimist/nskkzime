@@ -130,6 +130,12 @@ int main() {
             check(demo_dictionary()->lookup({U"みち"}).empty(), "trial mutated dictionary");
             s.engine.reset(); equal(s.engine.preedit(), U""); s.type("a"); equal(s.document, U"あ"); check(s.saved.empty(), "reset saved draft");
         }},
+        {"failed-prefix-mode-switch-in-draft", [] {
+            Session s; s.start(); s.type("dlsite");
+            equal(s.engine.registration_text(), U"site"); equal(s.document, U"");
+            check(s.engine.mode() == Mode::Latin && s.saved.empty(), "draft switch leaked text or learning");
+            s.enter(); equal(s.document, U"site"); check(s.saved.size() == 1 && s.engine.mode() == Mode::Hiragana, "draft mode was not restored");
+        }},
         {"draft-and-recursion-limits-are-transactional", [] {
             Session s; s.start(); s.type("l" + std::string(1024, 'a'));
             check(s.key({KeyCode::Character, 'b'}).registration_limit, "oversized draft accepted");

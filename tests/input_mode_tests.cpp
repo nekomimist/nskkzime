@@ -188,6 +188,20 @@ int wmain(int argc, wchar_t** argv) {
             s.key('J', true); s.type("Ka"); s.context->pump();
             check(old->ended && s.context->doc->text == L"漢字か" && !s.context->composition->ended, "late close damaged new composition");
         }
+        {
+            Session s; s.type("d"); check(s.context->doc->text == L"d", "pending prefix missing");
+            s.context->doc->reject_write = true;
+            check(!s.key('L') && s.label() == L"あ" && s.host->open->value == 1 && s.context->doc->text == L"d",
+                "failed prefix edit changed mode or text");
+            s.context->doc->reject_write = false; s.type("l");
+            check(s.label() == L"A" && s.host->open->value == 0 && s.context->doc->text.empty() && !s.key('S'),
+                "failed prefix did not discard d and switch Latin");
+        }
+        {
+            Session s; s.type("dqkana"); check(s.label() == L"ア" && s.context->doc->text == L"カナ", "prefix retry did not sync katakana");
+            s.key('J', true); s.type("zlz/");
+            check(s.label() == L"あ" && s.context->doc->text == L"カナ→・", "valid continuation became a mode command");
+        }
         for (const bool preserved : {false, true}) {
             Session s; s.type("/draft"); s.key(VK_SPACE); s.type("la");
             check(s.host->open->value == 1, "inner Latin closed the registration editor");

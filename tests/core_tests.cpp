@@ -36,7 +36,7 @@ int main() {
         {"romaji/n-before-y", [] { equal(roman("nyanko"), U"にゃんこ"); }},
         {"romaji/punctuation", [] { equal(roman("[a-i]."), U"「あーい」。"); }},
         {"romaji/incomplete", [] { equal(roman("k"), U"k"); equal(roman("n"), U"ん"); }},
-        {"romaji/unsupported-preserved", [] { equal(roman("fka"), U"fか"); }},
+        {"romaji/failed-prefix-retries-last-key", [] { equal(roman("fka"), U"か"); equal(roman("kyka"), U"か"); equal(roman("k!"), U"!"); }},
         {"input/direct-commit", [] { Session s; s.type("kana"); equal(s.committed, U"かな"); equal(s.engine.preedit(), U""); }},
         {"input/pending-backspace", [] { Session s; s.type("ky"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"k"); s.type("a"); equal(s.committed, U"か"); }},
         {"input/idle-special-keys-pass-through", [] {
@@ -54,6 +54,38 @@ int main() {
         }},
         {"input/katakana-mode", [] { Session s; s.type("qkanaqkana"); equal(s.committed, U"カナかな"); }},
         {"input/latin-mode", [] { Session s; s.type("l"); require(!s.key({KeyCode::Character, 'A'}).consumed, "Latin must pass through"); s.key({KeyCode::Hiragana}); s.type("a"); equal(s.committed, U"あ"); }},
+        {"input/failed-prefix-mode-commands", [] {
+            for (const auto mode : {Mode::Hiragana, Mode::Katakana}) {
+                for (const auto prefix : {"d", "ky", "n", "nn"}) {
+                    const auto expected = std::string_view(prefix).starts_with('n') ? (mode == Mode::Hiragana ? U"ん" : U"ン") : U"";
+                    Session latin; latin.engine.set_mode(mode); latin.type(prefix);
+                    const auto revision = latin.engine.revision();
+                    require(latin.engine.would_handle({KeyCode::Character, 'l'}) && latin.engine.revision() == revision, "mode probe changed prefix");
+                    auto trial = latin.engine; trial.handle({KeyCode::Character, 'l'});
+                    require(latin.engine.mode() == mode && !latin.engine.preedit().empty(), "trial changed original prefix");
+                    latin.type("l"); equal(latin.committed, expected); equal(latin.engine.preedit(), U"");
+                    require(latin.engine.mode() == Mode::Latin && !latin.key({KeyCode::Character, 's'}).consumed, "failed prefix blocked Latin");
+                    Session kana; kana.engine.set_mode(mode); kana.type(std::string(prefix) + "q"); equal(kana.committed, expected);
+                    require(kana.engine.mode() != mode && kana.engine.mode() != Mode::Latin, "failed prefix blocked kana toggle");
+                }
+            }
+        }},
+        {"input/failed-prefix-abbrev-and-symbols", [] {
+            for (const auto prefix : {"d", "n", "nn"}) {
+                Session s; s.type(std::string(prefix) + "/dlq");
+                require(s.engine.abbrev(), "failed prefix blocked abbrev"); equal(s.engine.preedit(), U"▽dlq");
+                equal(s.committed, std::string_view(prefix).starts_with('n') ? U"ん" : U"");
+            }
+            Session symbols; symbols.type("zlz/"); equal(symbols.committed, U"→・");
+            require(symbols.engine.mode() == Mode::Hiragana && !symbols.engine.abbrev(), "valid rule dispatched a command");
+        }},
+        {"conversion/failed-prefix-reading-and-okuri-commands", [] {
+            for (const auto input : {"Kadl", "KaKl", "Kal", "Kanl"}) {
+                Session s; s.type(input); equal(s.committed, std::string_view(input) == "Kanl" ? U"かん" : U"か");
+                require(s.engine.mode() == Mode::Latin && s.engine.stage() == Stage::Direct && s.engine.preedit().empty(), "Latin retained reading or okuri");
+            }
+            Session kana; kana.type("Kanq"); equal(kana.committed, U"カン"); equal(kana.engine.preedit(), U"");
+        }},
         {"input/host-mode-switch", [] {
             Session s; s.type("Kanji"); s.key({KeyCode::Space}); const auto revision = s.engine.revision();
             s.engine.set_mode(Mode::Katakana); equal(s.engine.preedit(), U"");
