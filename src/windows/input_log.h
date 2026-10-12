@@ -24,5 +24,8 @@ private:
     DiagnosticFile file_;
     InputLogStatus status_ = InputLogStatus::Ready;
 };
+// The broker's LOG2 body, for AppContainer services that cannot write logs.
+std::string encode_log_record(const InputLogRecord&);
+InputLogRecord decode_log_record(std::string_view);
 const wchar_t* input_log_status_text(InputLogStatus) noexcept;
 } // namespace nskkzime::windows

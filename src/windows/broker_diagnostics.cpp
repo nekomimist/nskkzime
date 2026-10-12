@@ -45,11 +45,10 @@ const char* name(ContainerPhase value) {
 const char* name(ContainerOperation value) {
     switch (value) {
     case ContainerOperation::None: return "none";
-    case ContainerOperation::Init: return "INIT";
-    case ContainerOperation::Init2: return "INI2";
+    case ContainerOperation::Init: return "INI3";
     case ContainerOperation::Learning: return "LRN1";
     case ContainerOperation::Inference: return "INF1";
-    case ContainerOperation::Log: return "LOG1";
+    case ContainerOperation::Log: return "LOG2";
     case ContainerOperation::Gui: return "GUI1";
     case ContainerOperation::Unknown: return "unknown";
     case ContainerOperation::Check: return "CHK1";

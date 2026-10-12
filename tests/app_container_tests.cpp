@@ -150,7 +150,7 @@ int container_test(bool denied, bool real_model) {
     check(in_app_container(), "child is not AppContainer");
     NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (denied) {
-        bool rejected = false; try { container_exchange("INIT", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
+        bool rejected = false; try { container_exchange("INI3", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "unauthorized endpoint accepted"); return 0;
     }
     const auto path = environment_value(L"NSKKZIME_CONFIG"); check(path.has_value(), "missing fixture path");
@@ -406,7 +406,7 @@ int wmain(int argc, wchar_t** argv) {
             { std::ofstream out(updated.romaji_rules, std::ios::binary); out << "version=1\nwi\tゐ\n"; }
             save_dictionary_settings(config, updated);
             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-            (void)container_exchange("INI2", GetTickCount64() + 5000, cancel.get());
+            (void)container_exchange("INI3", GetTickCount64() + 5000, cancel.get());
             const auto dictionary_time = std::filesystem::last_write_time(dict);
             const auto dictionary_size = std::filesystem::file_size(dict);
             { std::ofstream out(dict, std::ios::binary); out << "# /#1/#3/#2/\nかんじ /新字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
@@ -429,8 +429,8 @@ int wmain(int argc, wchar_t** argv) {
                 const auto event = nlohmann::json::parse(line); const auto kind = event.at("event").get<std::string>();
                 created |= kind == "listener_created";
                 probe |= kind == "endpoint_state" && event.at("listeners_expected") == 4;
-                received |= kind == "bootstrap_received" && event.at("operation") == "INI2";
-                acked |= kind == "bootstrap_response_acked" && event.at("operation") == "INI2";
+                received |= kind == "bootstrap_received" && event.at("operation") == "INI3";
+                acked |= kind == "bootstrap_response_acked" && event.at("operation") == "INI3";
                 failed |= kind == "request_failed" && event.at("phase") == "handle";
                 degraded |= kind == "snapshot_ready" && event.at("failed_sources") == 1;
                 check(!event.contains("request") && !event.contains("response"), "diagnostics included input payload");

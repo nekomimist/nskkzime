@@ -7,7 +7,6 @@
 #include "learning_client.h"
 #include "tool_launcher.h"
 #include "nskkzime/compiled_dictionary.h"
-#include <nlohmann/json.hpp>
 #include <bcrypt.h>
 #include <shellapi.h>
 #include <fstream>
@@ -25,12 +24,12 @@ struct Broker {
     std::string snapshot_generation;
     bool snapshot_learning = false;
     std::unique_ptr<InputLog> logger;
-    std::string snapshot(const DictionaryConfiguration& config, const std::string& id, bool legacy = false) {
+    std::string snapshot(const DictionaryConfiguration& config, const std::string& id) {
         // Only configured paths are opened; no file path comes from a client.
         const std::lock_guard lock(snapshot_mutex);
         // Read source bytes on every bootstrap. The shared dictionary cache
         // hashes those exact bytes, including same-size/same-time replacements.
-        auto loaded = build_broker_snapshot(config, id, dictionary_cache_path(config), legacy);
+        auto loaded = build_broker_snapshot(config, id, dictionary_cache_path(config));
         snapshot_generation = id; snapshot_learning = loaded.learning_allowed;
         if (diagnostics) {
             ContainerDiagnostic event{ContainerEvent::Snapshot}; event.phase = ContainerPhase::Handle;
@@ -50,7 +49,7 @@ struct Broker {
     }
     std::string handle(std::string_view bytes, const std::function<bool()>& cancelled) {
         const auto config = current_dictionary_configuration(); const auto id = dictionary_configuration_id(config);
-        if (bytes == "INIT" || bytes == "INI2") return snapshot(config, id, bytes == "INIT");
+        if (bytes == "INI3") return snapshot(config, id);
         // Reactivation reuses a retained snapshot while its settings are current.
         if (bytes.starts_with("CHK1")) return bytes.size() == 68 && bytes.substr(4) == id ? "SAME" : "STAL";
         if (bytes.size() < 68) throw std::runtime_error("stale settings");
@@ -107,15 +106,9 @@ struct Broker {
             };
             return encode_response(inference_exchange_launching(settings->token, request, deadline, cancel.get(), launch, settings->idle_ms));
         }
-        if (operation == "LOG1") {
+        if (operation == "LOG2") {
             if (!config.settings.zenz.enabled || !config.settings.zenz.log_input) return "OFF";
-            const auto record = nlohmann::json::from_cbor(body);
-            if (!record.is_object() || record.size() != 3) throw std::runtime_error("invalid log record");
-            InputLogRecord item; item.request = decode_request(record.at("request").get<std::string>());
-            if (!record.at("response").is_null()) item.response = decode_response(record.at("response").get<std::string>(), item.request);
-            const auto status = record.at("status").get<int>();
-            if (status < 0 || status > static_cast<int>(InferenceStatus::InvalidResponse)) throw std::runtime_error("invalid log status");
-            item.status = static_cast<InferenceStatus>(status);
+            const auto item = decode_log_record(body);
             const std::lock_guard lock(log_mutex);
             if (!logger || log_key != id) { logger = std::make_unique<InputLog>(config.settings.zenz.log_directory); log_key = id; }
             return std::to_string(static_cast<int>(logger->write(item)));

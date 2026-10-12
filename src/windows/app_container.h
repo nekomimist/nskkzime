@@ -27,7 +27,7 @@ using ContainerHandler = std::function<std::string(std::string_view, const std::
 enum class ContainerEvent { Start, Existing, Replace, Stop, Exit, Failed, ListenerCreated, ListenerFailed,
     ListenerExit, BootstrapReceived, BootstrapComplete, RequestFailed, EndpointState, Snapshot, EndpointRecreated };
 enum class ContainerPhase { Startup, Create, Accept, Authenticate, Read, Handle, Write, Acknowledge, Probe };
-enum class ContainerOperation { None, Init, Init2, Learning, Inference, Log, Gui, Unknown, Check, LearningWait };
+enum class ContainerOperation { None, Init, Learning, Inference, Log, Gui, Unknown, Check, LearningWait };
 enum class ContainerReason { None, Win32, Timeout, Cancelled, Validation, Internal };
 struct ContainerFailure : std::runtime_error {
     ContainerReason reason; DWORD error;

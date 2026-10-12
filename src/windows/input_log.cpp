@@ -1,4 +1,5 @@
 #include "input_log.h"
+#include "byte_codec.h"
 #include <cstdio>
 
 namespace nskkzime::windows {
@@ -32,6 +33,22 @@ InputLogStatus InputLog::write(const InputLogRecord& record) noexcept {
         default: return status_ = InputLogStatus::Unavailable;
         }
     } catch (...) { return status_ = InputLogStatus::Unavailable; }
+}
+std::string encode_log_record(const InputLogRecord& record) {
+    ByteWriter w("");
+    w.number(static_cast<std::uint32_t>(record.status)); w.text(encode_request(record.request));
+    w.number(record.response.has_value()); w.text(record.response ? encode_response(*record.response) : std::string{});
+    return std::move(w.bytes);
+}
+InputLogRecord decode_log_record(std::string_view bytes) {
+    ByteReader r(bytes, ""); InputLogRecord record;
+    const auto status = r.number(); ByteReader::need(status <= static_cast<std::uint32_t>(InferenceStatus::InvalidResponse));
+    record.status = static_cast<InferenceStatus>(status);
+    record.request = decode_request(r.text(inference_max_line));
+    const bool answered = r.flag(); const auto response = r.text(inference_max_line);
+    if (answered) record.response = decode_response(response, record.request);
+    else ByteReader::need(response.empty());
+    r.end(); return record;
 }
 const wchar_t* input_log_status_text(InputLogStatus status) noexcept {
     switch (status) {

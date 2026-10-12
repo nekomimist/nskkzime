@@ -1,7 +1,6 @@
 #include "inference_client.h"
 #include "container_runtime.h"
 #include "runtime_configuration.h"
-#include <nlohmann/json.hpp>
 #include "dictionary_settings.h"
 #include "cpu_requirements.h"
 #include <algorithm>
@@ -74,12 +73,8 @@ struct InferenceClient::State {
                 if (record) {
                     if (config.container) {
                         try {
-                            nlohmann::json value{{"request", encode_request(record->request)},
-                                {"response", record->response ? nlohmann::json(encode_response(*record->response)) : nlohmann::json(nullptr)},
-                                {"status", static_cast<int>(record->status)}};
-                            const auto bytes = nlohmann::json::to_cbor(value);
                             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-                            const auto response = container_exchange("LOG1" + config.container_generation + std::string(bytes.begin(), bytes.end()),
+                            const auto response = container_exchange("LOG2" + config.container_generation + encode_log_record(*record),
                                 GetTickCount64() + 1000, cancel.get());
                             const auto status = response == "OFF" ? 0 : std::stoi(response);
                             if (status < 0 || status > static_cast<int>(InputLogStatus::Unavailable)) throw std::runtime_error("invalid log status");

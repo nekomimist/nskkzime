@@ -1,8 +1,8 @@
 #include "container_runtime.h"
 #include "app_container.h"
 #include "learning_client.h"
+#include "broker_snapshot.h"
 #include "nskkzime/compiled_dictionary.h"
-#include <nlohmann/json.hpp>
 #include <mutex>
 
 namespace nskkzime::windows {
@@ -54,32 +54,26 @@ void retain(const RuntimeDictionarySnapshot& snapshot) noexcept {
 }
 RuntimeDictionarySnapshot bootstrap() {
     NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-    const auto bytes = container_exchange("INI2", GetTickCount64() + 30000, cancel.get());
-    const auto response = nlohmann::json::from_cbor(bytes);
-    if (!response.is_object() || response.size() != 10 || response.at("version") != 2 ||
-        !response.at("images").is_array() || response.at("images").size() > 32)
-        throw std::runtime_error("invalid AppContainer snapshot");
+    auto response = decode_broker_bootstrap(container_exchange("INI3", GetTickCount64() + 30000, cancel.get()));
     auto config = std::make_shared<ContainerConfiguration>();
-    config->configuration.settings = parse_dictionary_settings(response.at("settings").get<std::string>());
-    config->configuration.file = wide_message(response.at("file").get<std::string>());
-    config->configuration.demo = response.at("demo").get<bool>();
-    config->generation = response.at("generation").get<std::string>();
+    config->configuration.settings = parse_dictionary_settings(response.settings);
+    config->configuration.file = wide_message(response.file);
+    config->configuration.demo = response.demo;
+    config->generation = std::move(response.generation);
     if (config->generation.size() != 64 || config->generation.find_first_not_of("0123456789abcdef") != std::string::npos)
         throw std::runtime_error("invalid AppContainer generation");
-    config->complete = response.at("complete").get<bool>();
-    const auto romaji = response.at("romaji").get<std::string>();
-    config->romaji = romaji.empty() ? RomajiRules::defaults() : RomajiRules::parse(romaji);
+    config->complete = response.complete;
+    config->romaji = response.romaji.empty() ? RomajiRules::defaults() : RomajiRules::parse(response.romaji);
     std::vector<std::shared_ptr<const Dictionary>> bases;
-    for (const auto& image : response.at("images")) {
-        const auto& binary = image.get_binary();
-        const auto owner = std::make_shared<const std::string>(binary.begin(), binary.end());
+    for (auto& image : response.images) {
+        const auto owner = std::make_shared<const std::string>(std::move(image));
         bases.push_back(std::make_shared<CompiledDictionary>(*owner, owner));
     }
     std::shared_ptr<const Dictionary> base = config->configuration.demo ?
         demo_dictionary() : std::make_shared<DictionarySet>(std::move(bases));
     const bool learning = config->configuration.settings.learning && !config->configuration.demo &&
-        !config->configuration.settings.dictionaries.empty() && response.at("learning").get<bool>();
-    auto status = L"辞書: 補助プロセス経由\r\n" + wide_message(response.at("status").get<std::string>());
+        !config->configuration.settings.dictionaries.empty() && response.learning;
+    auto status = L"辞書: 補助プロセス経由\r\n" + wide_message(response.status);
     bool registration = false;
     if (learning) {
         try {

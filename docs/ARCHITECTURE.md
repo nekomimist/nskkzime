@@ -114,7 +114,8 @@ GUIの保存先へ同じ値を渡す。辞書本体はバックグラウンド�
 Windows検索（`MicrosoftWindows.Client.CBS_cw5n1h2txyewy`）とMicrosoft Store
 （`Microsoft.WindowsStore_8wekyb3d8bbwe`）のAppContainerでは、DLLが私用ファイルを読めない。
 brokerは通常権限で常駐し、コンテナーSIDとセッションごとの名前空間にパイプを作る。
-初回に設定・ローマ字・解析済み辞書をCBORでまとめて渡し、以後は学習の保存・推論・入力ログを代行する。
+初回に設定・ローマ字・解析済み辞書を1つのバイナリーにまとめて渡し（`broker_snapshot`）、以後は学習の保存・推論・入力ログを代行する。
+要求は4文字の操作名・設定の世代・本体の順に並べる。本体は推論ならJSON、学習なら独自バイナリー（`encode_learning`）で、デスクトップで使うものと同じ形にする。
 接続はユーザー・セッション・コンテナーSIDと、DLLと同じフォルダーのbroker実行ファイルであることを相互に確認する。
 任意のファイルやコマンドの要求は受け付けず、AppContainerからはGUIを起動しない。
 `NSKKZIME_CONFIG` を指定したプロセスは、その設定ファイルに対応する別のbrokerにつなぐ。
