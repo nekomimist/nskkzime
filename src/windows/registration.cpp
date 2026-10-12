@@ -46,6 +46,7 @@ public:
     HRESULT register_processor() noexcept override { return profiles->Register(service_clsid); }
     HRESULT add_profile(const std::wstring& dll) noexcept override {
         constexpr wchar_t description[] = L"nskkzime (development)";
+        // The first icon group in the DLL is the application icon.
         return profiles->AddLanguageProfile(service_clsid, language_id, profile_guid, description,
             ARRAYSIZE(description) - 1, dll.c_str(), static_cast<ULONG>(dll.size()), 0);
     }

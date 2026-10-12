@@ -10,6 +10,7 @@
   target_link_libraries(nskkzime_tsf_support PUBLIC nskkzime_inference)
   add_library(nskkzime_tsf SHARED src/windows/text_service.cpp src/windows/module.cpp
     src/windows/registration.cpp src/windows/registration_registry.cpp src/windows/display_attributes.cpp
-    src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/nskkzime.def)
+    src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/nskkzime.def
+    src/windows/app_icon.rc)
   target_include_directories(nskkzime_tsf PRIVATE src/windows)
   target_link_libraries(nskkzime_tsf PRIVATE nskkzime_tsf_support ole32 oleaut32 advapi32 uuid user32 gdi32)

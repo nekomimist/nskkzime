@@ -1,0 +1,3 @@
+#include "app_icon.h"
+
+IDI_NSKKZIME ICON "resources/nskkzime.ico"

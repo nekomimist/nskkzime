@@ -1,5 +1,6 @@
 #include "settings_editor.h"
 #include "settings_gui_ids.h"
+#include "app_icon.h"
 #include <windows.h>
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -27,8 +28,13 @@ struct Editor {
     std::vector<std::wstring> off_key_exclusions;
     std::array<HWND, 8> pages{};
     HWND window = nullptr;
+    HICON small_icon = nullptr, large_icon = nullptr;
     bool valid = false, loading = false, dirty = false, confirming_close = false;
     std::shared_ptr<Work> work;
+    ~Editor() {
+        if (small_icon) DestroyIcon(small_icon);
+        if (large_icon) DestroyIcon(large_icon);
+    }
 };
 void set(HWND parent, int id, std::wstring_view value) { SetDlgItemTextW(parent, id, std::wstring(value).c_str()); }
 std::wstring get(HWND parent, int id) {
@@ -388,6 +394,8 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             editor = reinterpret_cast<Editor*>(lparam);
             editor->window = window;
             SetWindowLongPtrW(window, DWLP_USER, lparam);
+            SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(editor->small_icon));
+            SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(editor->large_icon));
             set(window, IDC_FILE, L"保存先: " + editor->file.native());
             SendDlgItemMessageW(window, IDC_REPORT, EM_SETLIMITTEXT, 65535, 0);
             const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈", L"候補一覧", L"キー操作"};
@@ -512,6 +520,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return 2;
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TAB_CLASSES};
     InitCommonControlsEx(&controls);
+    if (FAILED(LoadIconMetric(instance, MAKEINTRESOURCEW(IDI_NSKKZIME), LIM_SMALL, &editor.small_icon)) ||
+        FAILED(LoadIconMetric(instance, MAKEINTRESOURCEW(IDI_NSKKZIME), LIM_LARGE, &editor.large_icon))) {
+        CoUninitialize();
+        return 2;
+    }
     const auto result = DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_SETTINGS), nullptr, dialog_proc,
                                         reinterpret_cast<LPARAM>(&editor));
     CoUninitialize();
