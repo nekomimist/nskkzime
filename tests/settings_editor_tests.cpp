@@ -51,6 +51,7 @@ int wmain(int argc, wchar_t** argv) {
              auto settings = document.settings;
              settings.dictionaries = {dictionary};
              settings.learning = false;
+             settings.startup_ime_off = true;
              settings.romaji_rules = romaji;
              settings.candidates = {5, CandidateKeys::Asdfjkl};
              settings.tsf_log = {true, files.root};
@@ -59,11 +60,27 @@ int wmain(int argc, wchar_t** argv) {
              save_settings_document(document, settings);
              const auto loaded = open_settings_document(path);
              check(loaded.original == document.original && loaded.settings.dictionaries == settings.dictionaries &&
-                       !loaded.settings.learning && loaded.settings.romaji_rules == romaji &&
+                       !loaded.settings.learning && loaded.settings.startup_ime_off && loaded.settings.romaji_rules == romaji &&
                        loaded.settings.candidates.show_after == 5 && loaded.settings.candidates.keys == CandidateKeys::Asdfjkl &&
                        loaded.settings.tsf_log.enabled && loaded.settings.tsf_log.directory == files.root &&
                        loaded.settings.off_key_exclusions == settings.off_key_exclusions,
                    "saved configuration changed");
+         }},
+        {"startup-ime-off-preservation-and-disable",
+         [&] {
+             const auto path = files.path(L"startup-ime.ini");
+             auto document = open_settings_document(path);
+             auto settings = document.settings;
+             settings.startup_ime_off = true;
+             save_settings_document(document, settings);
+             document = open_settings_document(path);
+             settings = document.settings;
+             settings.learning = false;
+             save_settings_document(document, settings);
+             check(open_settings_document(path).settings.startup_ime_off, "other edits lost startup mode");
+             settings.startup_ime_off = false;
+             save_settings_document(document, settings);
+             check(!open_settings_document(path).settings.startup_ime_off, "startup mode stayed enabled");
          }},
         {"off-key-exclusions-validation-preservation-and-clear",
          [&] {

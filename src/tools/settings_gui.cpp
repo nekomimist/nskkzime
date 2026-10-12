@@ -114,6 +114,7 @@ void reload(Editor& editor) {
         set(editor.pages[7], IDC_OFF_KEY_NAME, L"");
         off_key_list(editor);
         check(editor.pages[0], IDC_LEARNING, settings.learning);
+        check(editor.pages[7], IDC_STARTUP_IME_OFF, settings.startup_ime_off);
         check(editor.pages[1], IDC_CUSTOM_ROMAJI, !settings.romaji_rules.empty());
         set(editor.pages[1], IDC_ROMAJI_PATH, settings.romaji_rules.native());
         set(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, std::to_wstring(settings.candidates.show_after));
@@ -170,6 +171,7 @@ DictionarySettings draft(Editor& editor) {
         throw std::invalid_argument("実行ファイル名を「追加」で除外一覧へ追加してください。");
     result.off_key_exclusions = editor.off_key_exclusions;
     result.learning = checked(editor.pages[0], IDC_LEARNING);
+    result.startup_ime_off = checked(editor.pages[7], IDC_STARTUP_IME_OFF);
     result.candidates.show_after = number<unsigned>(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, L"候補一覧のSpace回数", 1, 99);
     const auto keys = SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_GETCURSEL, 0, 0);
     if (keys != 0 && keys != 1) throw std::invalid_argument("候補一覧の選択キーを選んでください。");
@@ -465,7 +467,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     reorder(*editor, id);
                 else if ((id == IDC_DICTIONARIES || id == IDC_OFF_KEY_EXCLUSIONS) && notification == LBN_SELCHANGE)
                     update_enabled(*editor);
-                else if (id >= IDC_LEARNING && id <= IDC_OFF_KEY_NAME &&
+                else if (id >= IDC_LEARNING && id <= IDC_STARTUP_IME_OFF &&
                          (notification == BN_CLICKED || notification == EN_CHANGE || notification == CBN_SELCHANGE)) {
                     editor->dirty = true;
                     update_enabled(*editor);

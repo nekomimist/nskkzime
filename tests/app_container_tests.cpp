@@ -1,12 +1,13 @@
 #include "app_container.h"
 #include "container_runtime.h"
 #include "dictionary_wait.h"
-#include "tsf_test_host.h"
+#include "tsf_mode_host.h"
 #include "candidate_ui.h"
 #include "inference_client.h"
 #include "helper_cleanup.h"
 #include <userenv.h>
 #include <aclapi.h>
+#include <cstdint>
 #include <fstream>
 #include <future>
 #include <iostream>
@@ -38,11 +39,19 @@ struct FileGrant {
     }
     ~FileGrant() { SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, old, nullptr); LocalFree(descriptor); }
 };
-NativeHandle launch(const std::filesystem::path& exe, std::wstring args, PSID container = nullptr) {
+NativeHandle launch(const std::filesystem::path& exe, std::wstring args, PSID container = nullptr, HANDLE startup_gate = nullptr) {
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup);
     HANDLE output = nullptr;
     check(DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_ERROR_HANDLE), GetCurrentProcess(), &output, 0, TRUE, DUPLICATE_SAME_ACCESS) != FALSE, "child output");
     NativeHandle output_handle(output);
+    HANDLE inherited_gate = nullptr;
+    if (startup_gate) {
+        check(DuplicateHandle(GetCurrentProcess(), startup_gate, GetCurrentProcess(), &inherited_gate, 0, TRUE,
+            DUPLICATE_SAME_ACCESS) != FALSE, "startup gate inheritance");
+        args += L" " + std::to_wstring(reinterpret_cast<std::uintptr_t>(inherited_gate));
+    }
+    NativeHandle gate_handle(inherited_gate);
+    HANDLE inherited[]{output, inherited_gate};
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = output;
     SIZE_T size = 0; std::vector<unsigned char> attributes;
@@ -51,7 +60,8 @@ NativeHandle launch(const std::filesystem::path& exe, std::wstring args, PSID co
         InitializeProcThreadAttributeList(nullptr, container ? 2 : 1, 0, &size); attributes.resize(size);
         startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
         check(InitializeProcThreadAttributeList(startup.lpAttributeList, container ? 2 : 1, 0, &size) != FALSE, "initialize attributes");
-        check(UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &output, sizeof(output), nullptr, nullptr) != FALSE, "output attribute");
+        check(UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
+            startup_gate ? sizeof(inherited) : sizeof(output), nullptr, nullptr) != FALSE, "output attribute");
         if (container) check(UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &caps, sizeof(caps), nullptr, nullptr) != FALSE, "container attribute");
     }
     PROCESS_INFORMATION child{}; auto command = L"\"" + exe.native() + L"\" " + args;
@@ -90,6 +100,53 @@ struct Session {
         check(!context->queued.empty(), "missing container inference result"); context->pump();
     }
 };
+int startup_mode_test(HANDLE gate = nullptr, bool early_input = false) {
+    check(in_app_container(), "startup child is not AppContainer");
+    check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "startup COM initialization");
+    ComPtr<test_host::ModeManager> host; host.Attach(new test_host::ModeManager);
+    ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
+    host->open->value = 1; host->conversion->value = TF_CONVERSIONMODE_NATIVE;
+    ComPtr<ITfTextInputProcessorEx> service;
+    check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))), "startup create service");
+    check(SUCCEEDED(service->ActivateEx(host.Get(), 1, TF_TMF_IMMERSIVEMODE)), "startup activate");
+    ComPtr<ITfKeyEventSink> keys; service.As(&keys);
+    BYTE state[256]{}; SetKeyboardState(state);
+    BOOL eaten = FALSE, again = FALSE;
+    if (gate) {
+        check(!container_configuration(), "startup settings arrived before gate");
+        const auto code = early_input ? static_cast<WPARAM>('K') : static_cast<WPARAM>(VK_IME_ON);
+        keys->OnTestKeyDown(context.Get(), code, 0, &eaten);
+        check(eaten && host->open->value == 1 && context->doc->text.empty(), "early startup preflight changed mode/text");
+        keys->OnKeyDown(context.Get(), code, 0, &eaten);
+        check(eaten && host->open->value == 1, "early startup input failed");
+        check(SetEvent(gate) != FALSE, "signal startup gate");
+    }
+    wait_for_dictionary(runtime_dictionary_ready);
+    check(container_configuration()->configuration.settings.startup_ime_off, "broker startup setting missing");
+    if (gate) {
+        keys->OnSetFocus(TRUE);
+        check(host->open->value == 1 && context->doc->text == (early_input ? L"k" : L""),
+            "late startup settings overwrote manual mode/input");
+        service->Deactivate(); context->pump(); return 0;
+    }
+    const auto before = host->open->value;
+    keys->OnTestKeyDown(context.Get(), 'A', 0, &eaten);
+    keys->OnTestKeyDown(context.Get(), 'A', 0, &again);
+    check(host->open->value == before && eaten == again && context->doc->text.empty(), "startup preflight mutated mode/text");
+    keys->OnKeyDown(context.Get(), 'A', 0, &eaten);
+    check(!eaten && host->open->value == 0 && host->conversion->value == 0 && context->doc->text.empty(),
+        "broker startup OFF did not pass through first key");
+    keys->OnKeyDown(context.Get(), VK_IME_ON, 0, &eaten);
+    check(eaten && host->open->value == 1, "broker startup prevented manual ON");
+    keys->OnSetFocus(FALSE); keys->OnSetFocus(TRUE);
+    check(host->open->value == 1, "broker focus reapplied startup OFF");
+    service->Deactivate();
+    check(SUCCEEDED(service->ActivateEx(host.Get(), 1, TF_TMF_IMMERSIVEMODE)), "startup reactivate");
+    wait_for_dictionary(runtime_dictionary_ready); keys->OnSetFocus(TRUE);
+    check(host->open->value == 1, "broker reactivation reapplied startup OFF");
+    service->Deactivate(); context->pump();
+    return 0;
+}
 int container_test(bool denied, bool real_model) {
     check(in_app_container(), "child is not AppContainer");
     NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -211,6 +268,10 @@ int container_test(bool denied, bool real_model) {
 }
 int wmain(int argc, wchar_t** argv) {
     try {
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--startup") return startup_mode_test();
+        if (argc == 3 && (std::wstring_view(argv[1]) == L"--startup-early-on" || std::wstring_view(argv[1]) == L"--startup-early-input"))
+            return startup_mode_test(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(argv[2]))),
+                std::wstring_view(argv[1]) == L"--startup-early-input");
         if (argc == 2 && std::wstring_view(argv[1]) == L"--updated") {
             const auto dictionary = container_runtime_dictionary();
             wait_for_dictionary([&] { return dictionary->ready(); });
@@ -302,9 +363,20 @@ int wmain(int argc, wchar_t** argv) {
             else response.candidates = {U"蜜柑", U"みかん"}; return response;
         }, "fixture", 10000, 5000); });
         const auto instance = config_broker_instance(config); const auto stop = container_stop_event(instance);
+        // Withhold the broker until both children have made their first choice.
+        // This makes late-settings protection independent of bootstrap timing.
+        auto early_settings = settings; early_settings.startup_ime_off = true;
+        save_dictionary_settings(config, early_settings);
+        NativeHandle on_gate(CreateEventW(nullptr, TRUE, FALSE, nullptr)), input_gate(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        auto early_on = launch(executable, L"--startup-early-on", allowed.sid, on_gate.get());
+        auto early_input = launch(executable, L"--startup-early-input", allowed.sid, input_gate.get());
+        check(WaitForSingleObject(on_gate.get(), 5000) == WAIT_OBJECT_0 &&
+            WaitForSingleObject(input_gate.get(), 5000) == WAIT_OBJECT_0, "startup choices did not reach gates");
         const auto broker = launch(container_broker_path(), L"--config \"" + config.native() + L"\" --test-package " + allowed.name);
         int result = 1;
         try {
+            check(wait_child(early_on.get()) == 0 && wait_child(early_input.get()) == 0, "late startup settings changed active mode/input");
+            save_dictionary_settings(config, settings);
             auto desktop = launch(executable, L"--desktop"); check(wait_child(desktop.get()) == 0, "desktop client failed");
             save_dictionary_settings(config, settings);
             auto client = launch(executable, real_model ? L"--real-client" : L"--client", allowed.sid); const auto code = wait_child(client.get());
@@ -316,6 +388,11 @@ int wmain(int argc, wchar_t** argv) {
             }
             bool logged = false; for (const auto& item : std::filesystem::directory_iterator(root / L"logs")) if (item.path().extension() == L".jsonl") logged = true;
             check(logged, "broker input log missing");
+            auto startup_settings = settings; startup_settings.startup_ime_off = true;
+            save_dictionary_settings(config, startup_settings);
+            auto startup_client = launch(executable, L"--startup", allowed.sid);
+            check(wait_child(startup_client.get()) == 0, "AppContainer startup mode failed");
+            save_dictionary_settings(config, settings);
             auto degraded = settings;
             degraded.dictionaries.push_back(root / L"missing.skk");
             degraded.romaji_rules = root / L"missing-romaji.tsv";

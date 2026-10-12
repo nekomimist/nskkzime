@@ -42,9 +42,13 @@ struct Session {
     ComPtr<test_host::Context> context;
     ComPtr<ITfTextInputProcessorEx> service;
     ComPtr<ITfKeyEventSink> keys;
-    Session(bool closed = false, bool reject_bar = false) {
+    Session(bool closed = false, bool reject_bar = false, bool opened = false) {
         host.Attach(new test_host::ModeManager); context.Attach(new test_host::Context);
         if (closed) host->open->value = 0;
+        else if (opened) {
+            host->open->value = 1;
+            host->conversion->value = TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_KATAKANA;
+        }
         host->reject_bar = reject_bar;
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))), "create service"); service.As(&keys);
         check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "activate service"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
@@ -194,6 +198,36 @@ int wmain(int argc, wchar_t** argv) {
             check(retained->OnMenuSelect(1) == S_FALSE, "retired button remained live");
             check(retained->OnMenuSelect(settings_menu_id) == S_FALSE && retained->OnMenuSelect(dictionary_menu_id) == S_FALSE,
                 "retired service could open tools");
+        }
+        {
+            Session s(false, false, true);
+            check(s.label() == L"ア" && s.host->open->value == 1, "default startup lost Windows open mode");
+        }
+        {
+            auto settings = read_dictionary_settings(root / L"settings.ini");
+            settings.startup_ime_off = true; save_dictionary_settings(root / L"settings.ini", settings);
+            for (const auto initial : {0, 1, 2}) {
+                Session s(initial == 1, false, initial == 2);
+                check(s.label() == L"A" && s.host->open->value == 0 && s.host->conversion->value == 0,
+                    "startup did not force engine and Windows OFF");
+                check(!s.key('A'), "startup OFF captured ordinary typing");
+                check(s.key(VK_IME_ON) && s.label() == L"あ", "startup OFF prevented explicit ON");
+                s.keys->OnSetFocus(FALSE); s.keys->OnSetFocus(TRUE);
+                check(s.label() == L"あ", "focus reapplied startup OFF");
+                s.service->Deactivate();
+                check(SUCCEEDED(s.service->ActivateEx(s.host.Get(), 1, 0)) && s.label() == L"あ",
+                    "reactivation reapplied startup OFF");
+                s.type("a"); check(s.context->doc->text == L"あ", "manual ON did not restore kana input");
+                s.host->open->set(0); s.host->open->set(1);
+                check(s.label() == L"あ", "startup policy overrode Windows ON");
+                s.button()->OnMenuSelect(3); s.button()->OnMenuSelect(2);
+                check(s.label() == L"ア", "startup policy overrode mode menu");
+                s.key(VK_SPACE, true); s.key(VK_SPACE, true);
+                check(s.label() == L"あ", "startup policy overrode toggle shortcut");
+            }
+            settings.startup_ime_off = false; save_dictionary_settings(root / L"settings.ini", settings);
+            Session s(false, false, true);
+            check(s.label() == L"ア" && s.host->open->value == 1, "disabling startup policy did not restore Windows mode");
         }
         {
             Session s(true); check(s.label() == L"A" && !s.key('A'), "existing closed state ignored");

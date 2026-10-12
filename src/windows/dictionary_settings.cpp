@@ -30,6 +30,7 @@ std::string serialize(const DictionarySettings& settings) {
     if (settings.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
     bytes += settings.learning ? "learning=on\n" : "learning=off\n";
+    if (settings.startup_ime_off) bytes += "startup-ime-off=on\n";
     validate_candidate_settings(settings.candidates);
     // Old/default settings retain their representation and behavior.
     if (settings.candidates.show_after != 1)
@@ -209,7 +210,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     from_utf8(bytes); // Validate before interpreting keys or paths.
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    DictionarySettings settings; bool version = false, learning = false, romaji = false;
+    DictionarySettings settings; bool version = false, learning = false, romaji = false, startup_ime_off = false;
     std::set<std::string_view> inference_keys, candidate_options, diagnostic_options;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
@@ -225,6 +226,10 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else if (key == "learning") {
             if (learning || (value != "on" && value != "off")) throw std::invalid_argument("learning must appear at most once and equal on or off");
             learning = true; settings.learning = value == "on";
+        } else if (key == "startup-ime-off") {
+            if (startup_ime_off || (value != "on" && value != "off"))
+                throw std::invalid_argument("startup-ime-off must appear at most once and equal on or off");
+            startup_ime_off = true; settings.startup_ime_off = value == "on";
         } else if (key == "off-key-exclude") {
             settings.off_key_exclusions.push_back(wide_message(value));
             validate_off_key_exclusions(settings.off_key_exclusions);

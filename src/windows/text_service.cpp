@@ -233,7 +233,10 @@ public:
                 mode_actions_->tools_available = {tool_launcher_->available(ImeTool::Settings), tool_launcher_->available(ImeTool::Dictionary)};
                 mode_actions_->open_tool = [launcher = tool_launcher_](ImeTool tool) { return launcher->open(tool); };
                 input_mode_.Attach(new InputMode);
+                connecting_mode_ = true;
                 input_mode_->connect(manager_.Get(), client_, mode_actions_, engine_.mode());
+                connecting_mode_ = false;
+                apply_startup_mode();
                 for (std::size_t i = 0; i < mode_keys.size(); ++i) {
                     constexpr wchar_t description[] = L"nskkzime オン／オフ";
                     preserved_[i] = SUCCEEDED(keys_->PreserveKey(client_, mode_key_ids[i], &mode_keys[i], description, ARRAYSIZE(description) - 1));
@@ -251,6 +254,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE Deactivate() override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Deactivate, diagnostic_state());
+        startup_mode_pending_ = false;
         if (tool_launcher_) { tool_launcher_->close(); tool_launcher_.reset(); }
         mode_actions_.reset();
         auto mode = std::move(input_mode_); if (mode) mode->disconnect();
@@ -282,7 +286,7 @@ public:
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyFocus, diagnostic_state());
         trace_tsf(TsfEvent::KeyFocus, TsfReason::None, S_OK, foreground);
         if (!foreground) { cancel_quote(); finish_composition(TsfReason::FocusLost); }
-        else configure_container();
+        else { apply_startup_mode(); configure_container(); }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
@@ -294,6 +298,9 @@ public:
         const auto target = editing_context(context);
         if (target.Get() != context && !editable(target.Get())) return S_OK;
         context = target.Get();
+        // Request one real callback so startup policy never mutates Windows
+        // state during preflight, even when broker settings have just arrived.
+        if (startup_mode_pending_) { *eaten = TRUE; return S_OK; }
         update_tsf_trace(diagnostic_state(context));
         if (off_key_callback_needed(code)) { *eaten = TRUE; return S_OK; }
         if (mode_key(code, engine_.outer_mode())) { *eaten = TRUE; return S_OK; }
@@ -325,6 +332,9 @@ public:
         const auto resolved = editing_context(context);
         if (resolved.Get() != context && !editable(resolved.Get())) return S_OK;
         context = resolved.Get();
+        apply_startup_mode();
+        // Input already started: late broker settings must not reset its mode.
+        startup_mode_pending_ = false;
         update_tsf_trace(diagnostic_state(context, origin.Get()));
         if (const auto handled = handle_off_key(context, code, parameter)) {
             *eaten = *handled;
@@ -576,6 +586,14 @@ private:
         }
         return {};
     }
+    void apply_startup_mode() noexcept {
+        if (!startup_mode_pending_) return;
+        const auto remote = configuration_.broker ? container_configuration(dictionary_) : nullptr;
+        if (configuration_.broker && !remote) return;
+        const auto& settings = remote ? remote->configuration.settings : configuration_.dictionaries.settings;
+        startup_mode_pending_ = false;
+        if (settings.startup_ime_off) change_mode(Mode::Latin);
+    }
     void configure_container() noexcept {
         try {
             if (!configuration_.broker) return;
@@ -668,6 +686,8 @@ private:
         } catch (...) { if (inference_state_.pending && inference_state_.pending->id == id) cancel_inference(); }
     }
     void change_mode(Mode mode) noexcept {
+        // Initial compartment synchronization is not an explicit mode choice.
+        if (!connecting_mode_) startup_mode_pending_ = false;
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ModeChange, diagnostic_state());
         const ComPtr<TextService> self(this);
@@ -923,6 +943,7 @@ private:
     CandidateSettings candidate_settings_;
     CandidateVisibility candidate_visibility_;
     ComPtr<InputMode> input_mode_;
+    bool startup_mode_pending_ = true, connecting_mode_ = false;
     std::shared_ptr<ModeActions> mode_actions_;
     std::array<ToolCommand, 2> tool_commands_;
     std::shared_ptr<ToolLauncher> tool_launcher_;

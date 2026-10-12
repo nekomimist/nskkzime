@@ -27,6 +27,7 @@ struct DictionarySettings {
         std::filesystem::path directory;
     } tsf_log;
     std::vector<std::wstring> off_key_exclusions;
+    bool startup_ime_off = false; // Initial TSF activation only; later mode choices remain available.
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;

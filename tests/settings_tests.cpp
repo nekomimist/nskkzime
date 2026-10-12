@@ -54,6 +54,17 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/startup-ime-off-opt-in-roundtrip-and-validation", [&] {
+            require(!parse_dictionary_settings("version=1\n").startup_ime_off, "old settings forced IME off");
+            for (const bool enabled : {true, false}) {
+                const auto settings = parse_dictionary_settings(std::string("version=1\nstartup-ime-off=") + (enabled ? "on\n" : "off\n"));
+                const auto file = files.path(enabled ? L"startup-on.ini" : L"startup-off.ini");
+                save_dictionary_settings(file, settings);
+                require(read_dictionary_settings(file).startup_ime_off == enabled, "startup mode lost on save");
+            }
+            for (const auto invalid : {"", "ON", "true", "1", "on\nstartup-ime-off=off"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\nstartup-ime-off=") + invalid + "\n"); });
+        }},
         {"settings/off-key-exclusions-roundtrip-and-exact-case-insensitive-match", [&] {
             const auto settings = parse_dictionary_settings("version=1\noff-key-exclude=Code.EXE\noff-key-exclude=WindowsTerminal.exe\n");
             const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));

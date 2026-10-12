@@ -47,8 +47,11 @@ int main() {
         config.file = files.root / "settings.ini";
         config.settings.dictionaries = {files.root / "missing.skk", first, second};
         config.settings.off_key_exclusions = {L"Code.exe", L"WindowsTerminal.exe"};
+        config.settings.startup_ime_off = true;
         const auto partial = build_broker_snapshot(config, dictionary_configuration_id(config));
         const auto response = nlohmann::json::from_cbor(partial.bytes);
+        check(parse_dictionary_settings(response.at("settings").get<std::string>()).startup_ime_off,
+            "startup mode not transferred to container");
         check(parse_dictionary_settings(response.at("settings").get<std::string>()).off_key_exclusions ==
             config.settings.off_key_exclusions, "OFF key exclusions not transferred to container");
         const auto candidates = lookup(response);
