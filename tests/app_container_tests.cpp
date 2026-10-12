@@ -1,4 +1,5 @@
 #include "app_container.h"
+#include "broker_snapshot.h"
 #include "container_runtime.h"
 #include "dictionary_wait.h"
 #include "tsf_mode_host.h"
@@ -382,6 +383,14 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << "allowed child=" << code << std::endl; check(code == 0, "container client failed");
             check(!private_seen.load(), "broker received protected text");
             if (!real_model) {
+                // The fixture answers generation after 160 ms; this client stops waiting first.
+                NativeHandle abandon(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+                const auto generation = decode_broker_bootstrap(container_exchange("INI3", GetTickCount64() + 5000, abandon.get())).generation;
+                bool abandoned = false;
+                try { (void)container_operation(generation, "INF1", encode_request({1, U"とりけし", U"", U"", 1}), GetTickCount64() + 40, abandon.get()); }
+                catch (...) { abandoned = true; }
+                check(abandoned, "abandoned inference was answered");
+                Sleep(300); // The broker notices the closed client and ends the request.
                 const auto learned = read_user_dictionary(user).lookup({U"かんじ", 0});
                 check(!learned.empty() && learned.front().text == U"感じ", "broker learning did not persist");
             }
@@ -435,6 +444,8 @@ int wmain(int argc, wchar_t** argv) {
                 degraded |= kind == "snapshot_ready" && event.at("failed_sources") == 1;
                 check(!event.contains("request") && !event.contains("response"), "diagnostics included input payload");
                 check(!(kind == "request_failed" && event.at("operation") == "LRN1/WAT1"), "closed learning wait logged as a failure");
+                check(!(kind == "request_failed" && event.at("operation") == "INF1" && event.at("client_pid") == GetCurrentProcessId()),
+                    "abandoned inference logged as a failure");
             }
             check(created && probe && received && acked && failed && degraded, "broker diagnostic stages missing");
         }

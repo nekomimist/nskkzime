@@ -256,19 +256,25 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 const auto cancelled = [&] { return GetTickCount64() >= deadline || WaitForSingleObject(stop, 0) == WAIT_OBJECT_0 ||
                     !pipe_peer_open(listener.pipe.get()); };
                 const auto response = handler(request, cancelled);
-                check_deadline(deadline, stop); native_need(pipe_peer_open(listener.pipe.get()));
+                check_deadline(deadline, stop);
+                if (!pipe_peer_open(listener.pipe.get())) throw Failure(ContainerReason::Cancelled); // The client stopped waiting.
                 phase(ContainerPhase::Write);
                 piped([&] { send_frame(listener.pipe.get(), response, container_response_limit, deadline, stop); });
                 phase(ContainerPhase::Acknowledge);
                 piped([&] { receive_receipt(listener.pipe.get(), GetTickCount64() + 1000, stop); });
                 if (bootstrap) { diagnostic.event = ContainerEvent::BootstrapComplete; diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic); }
             } catch (const Failure& failure) {
+                // A client closes a learning wait to write or stop, and an
+                // inference request when newer input supersedes it or its
+                // display deadline passes, possibly while the answer is sent.
+                const bool client_left = failure.reason == ContainerReason::Cancelled || (failure.reason == ContainerReason::Win32 &&
+                    (failure.error == ERROR_BROKEN_PIPE || failure.error == ERROR_NO_DATA || failure.error == ERROR_PIPE_NOT_CONNECTED));
                 // Ordinary idle accept deadlines, accepts cancelled for a repair,
-                // closed learning waits and shutdown are not faults.
+                // requests their clients abandoned and shutdown are not faults.
                 if (!(diagnostic.phase == ContainerPhase::Accept && failure.reason == ContainerReason::Timeout) &&
                     !(diagnostic.phase == ContainerPhase::Accept && failure.reason == ContainerReason::Win32 &&
                         failure.error == ERROR_OPERATION_ABORTED) &&
-                    !(diagnostic.operation == ContainerOperation::LearningWait && failure.reason == ContainerReason::Cancelled) &&
+                    !((diagnostic.operation == ContainerOperation::LearningWait || diagnostic.operation == ContainerOperation::Inference) && client_left) &&
                     WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
                     diagnostic.reason = failure.reason; diagnostic.error = failure.error;
                     diagnostic.elapsed_ms = GetTickCount64() - started; emit(observer, diagnostic);

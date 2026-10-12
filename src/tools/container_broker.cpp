@@ -98,13 +98,18 @@ struct Broker {
             std::jthread monitor([&](std::stop_token stopped) { while (!stopped.stop_requested()) {
                 if (cancelled()) { SetEvent(cancel.get()); return; } Sleep(5);
             }});
-            if (cancelled() || GetTickCount64() >= deadline) throw std::runtime_error("cancelled inference");
+            if (cancelled()) throw ContainerFailure(ContainerReason::Cancelled);
             InferenceLauncher launch;
             if (!settings->server.empty()) launch = [&](DWORD idle) {
                 return launch_zenz_server(settings->server, settings->model, settings->token, settings->threads,
                     (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)), idle);
             };
-            return encode_response(inference_exchange_launching(settings->token, request, deadline, cancel.get(), launch, settings->idle_ms));
+            try { return encode_response(inference_exchange_launching(settings->token, request, deadline, cancel.get(), launch, settings->idle_ms)); }
+            catch (const InferenceFailure& failure) {
+                // Only cancelled() sets the event: the client closed, or the broker stops or gives up.
+                if (failure.status == InferenceStatus::Cancelled) throw ContainerFailure(ContainerReason::Cancelled);
+                throw;
+            }
         }
         if (operation == "LOG2") {
             if (!config.settings.zenz.enabled || !config.settings.zenz.log_input) return "OFF";
