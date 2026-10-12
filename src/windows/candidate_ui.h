@@ -31,7 +31,8 @@ std::optional<std::size_t> candidate_row_at(POINT, SIZE client, int padding, int
     bool registration, std::size_t first, std::size_t end) noexcept;
 inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
 inline constexpr GUID reading_ui_guid = {0x3eb96c26, 0x5b51, 0x4a45, {0x8c, 0x5a, 0x26, 0x29, 0x80, 0xa3, 0x19, 0x0b}};
-enum class PopupKind { Candidates, Editor, Reading };
+inline constexpr GUID notice_ui_guid = {0x136083bb, 0x0951, 0x45e4, {0x97, 0x1d, 0xc0, 0x59, 0x97, 0xfb, 0xd0, 0x4d}};
+enum class PopupKind { Candidates, Editor, Reading, Notice };
 // Count accepted user conversion steps, independently of candidate reordering
 // and async generation. A failed host edit must not advance this state.
 class CandidateVisibility {
@@ -73,6 +74,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetCurrentPage(UINT*) override;
 
     void update(const Engine&, ITfDocumentMgr*);
+    void notice(std::wstring_view, ITfDocumentMgr*);
     void locate(HWND owner, const RECT* anchor) noexcept;
     void close() noexcept;
     std::size_t shortcut_index(std::size_t slot) const noexcept;
@@ -117,15 +119,25 @@ class CandidatePresenter {
 public:
     ~CandidatePresenter() { close(); }
     void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false,
-        bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers) noexcept;
-    void locate(ITfContext*, ITfComposition*, TfEditCookie) noexcept;
+        bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers, std::wstring_view notice = {}) noexcept;
+    // Also captures a position before a text mutation, even without a popup.
+    void locate(ITfContext*, ITfComposition*, TfEditCookie, std::uint64_t session = 0, bool capture_position = false) noexcept;
+    void dismiss_notice() noexcept;
+    void invalidate_position() noexcept;
     void hide() noexcept;
     void close() noexcept;
     Key selection_key(Key, const Engine&) const noexcept;
     bool presentation_available() const { return list_ && list_->presentation_available(); }
 private:
+    void close_ui() noexcept;
     Microsoft::WRL::ComPtr<ITfUIElementMgr> manager_;
     Microsoft::WRL::ComPtr<CandidateList> list_;
+    Microsoft::WRL::ComPtr<ITfContext> position_context_;
+    Microsoft::WRL::ComPtr<ITfComposition> position_composition_;
+    Microsoft::WRL::ComPtr<IUnknown> position_view_;
+    HWND position_owner_ = nullptr;
+    RECT position_{};
+    std::uint64_t position_session_ = 0, generation_ = 0;
     DWORD id_ = 0;
     bool begun_ = false;
 };

@@ -1,4 +1,5 @@
 #include "candidate_ui.h"
+#include "tsf_test_host.h"
 #include <algorithm>
 #include <iostream>
 #include <limits>
@@ -57,10 +58,84 @@ void popup_events() {
     ime_events.clear(); popup->close(); popup->Show(TRUE); drain_events();
     check(ime_events.empty(), "closed popup emitted visible IME events");
 }
+void presenter_positions() {
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager); host->show_ui = TRUE;
+    ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
+    ComPtr<test_host::ContextView> view; view.Attach(new test_host::ContextView); context->active_view = view.Get();
+    ComPtr<test_host::Composition> composition; composition.Attach(new test_host::Composition);
+    composition->range.Attach(new test_host::Range(context->doc, 0, 0));
+    Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});
+    CandidatePresenter presenter;
+    presenter.update(host.Get(), context.Get(), engine, {}, false, false);
+    presenter.locate(context.Get(), composition.Get(), 1, 7, true); // No visible candidate list yet.
+    engine.handle({KeyCode::Space}); engine.handle({KeyCode::Space});
+    check(engine.registering(), "test did not exhaust candidates");
+    view->text_status = TF_E_NOLAYOUT;
+    presenter.update(host.Get(), context.Get(), engine);
+    presenter.locate(context.Get(), composition.Get(), 1, 7);
+    BOOL shown = FALSE; check(host->ui && SUCCEEDED(host->ui->IsShown(&shown)) && shown && presenter.presentation_available(),
+        "registration did not use the captured position while layout was pending");
+    const auto popup_window = [&] {
+        wchar_t name[96]{}; swprintf_s(name, L"nskkzime.Candidates.%p", static_cast<void*>(host->ui.Get()));
+        return FindWindowW(name, nullptr);
+    }();
+    RECT before{}; check(popup_window && GetWindowRect(popup_window, &before), "registration window missing");
+    presenter.invalidate_position(); view->text_status = S_OK; OffsetRect(&view->rect, 100, 100);
+    presenter.locate(context.Get(), composition.Get(), 1, 7);
+    RECT after{}; check(GetWindowRect(popup_window, &after) && !EqualRect(&before, &after), "ready layout did not move the registration window");
+
+    // A different view/session or explicitly clipped range cannot reuse it.
+    ComPtr<test_host::ContextView> replacement; replacement.Attach(new test_host::ContextView);
+    replacement->text_status = TF_E_NOLAYOUT; context->active_view = replacement.Get();
+    presenter.locate(context.Get(), composition.Get(), 1, 7);
+    check(!presenter.presentation_available(), "replacement view reused a stale position");
+    context->active_view = view.Get(); presenter.locate(context.Get(), composition.Get(), 1, 7);
+    view->text_status = TF_E_NOLAYOUT; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    check(!presenter.presentation_available(), "new composition session reused a stale position");
+    view->text_status = S_OK; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    view->clipped = TRUE; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    check(!presenter.presentation_available(), "clipped editor remained visible");
+    view->clipped = FALSE; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    view->text_status = E_FAIL; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    check(!presenter.presentation_available(), "hard layout failure reused a cached position");
+    view->text_status = S_OK; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    presenter.hide(); view->text_status = TF_E_NOLAYOUT; presenter.locate(context.Get(), composition.Get(), 1, 8);
+    check(!presenter.presentation_available(), "hidden view restored a stale position");
+
+    // A reentrant close during a query must invalidate its eventual result.
+    view->text_status = S_OK; bool closed = false;
+    view->text_query = [&](ITfRange*) { if (!closed) { closed = true; presenter.close(); } return S_OK; };
+    presenter.locate(context.Get(), composition.Get(), 1, 8, true);
+    check(!host->ui, "reentrant close restored a popup");
+    view->text_query = {}; view->text_status = TF_E_NOLAYOUT;
+    presenter.update(host.Get(), context.Get(), engine); presenter.locate(context.Get(), composition.Get(), 1, 8);
+    check(!presenter.presentation_available(), "reentrant query restored a cached position");
+    presenter.close();
+
+    view->text_status = S_OK; presenter.locate(context.Get(), composition.Get(), 1, 9, true);
+    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, L"保護された入力欄のため、単語登録を行いません。");
+    check(host->ui != nullptr, "notice UI missing");
+    GUID guid{}; host->ui->GetGUID(&guid); check(guid == notice_ui_guid, "notice identity incorrect");
+    ComPtr<ITfCandidateListUIElement> candidates;
+    check(host->ui.As(&candidates) == E_NOINTERFACE, "notice exposed candidate selection");
+    BSTR reason = nullptr; host->ui->GetDescription(&reason);
+    const bool explained = reason && std::wstring_view(reason).find(L"保護された入力欄") != std::wstring_view::npos;
+    SysFreeString(reason); check(explained, "notice reason unavailable to host");
+    presenter.locate(context.Get(), composition.Get(), 1, 9);
+    check(presenter.presentation_available(), "notice popup not visible");
+    presenter.dismiss_notice(); check(!host->ui, "notice not dismissed");
+    presenter.update(host.Get(), context.Get(), engine);
+    presenter.locate(context.Get(), composition.Get(), 1, 9);
+    host->ui_end_query = [&] { presenter.close(); };
+    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, L"保護された入力欄のため、単語登録を行いません。");
+    check(!host->ui, "UI kind switch restored a popup after reentrant close");
+    host->ui_end_query = {};
+}
 }
 int main() {
     try {
         popup_events();
+        presenter_positions();
         {
             enable_input_timing(true);
             Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});

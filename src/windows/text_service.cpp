@@ -119,15 +119,16 @@ std::optional<Mode> mode_key(WPARAM code, Mode current) {
     return {};
 }
 
-bool learning_allowed(ITfContext* context, ITfComposition* composition, TfEditCookie cookie, std::wstring& reason) {
+enum class LearningPermission { Allowed, Protected, Unavailable };
+LearningPermission learning_permission(ITfContext* context, ITfComposition* composition, TfEditCookie cookie, std::wstring& reason) {
     // Inspect the entire conversion before modifying it. A caret at its end can
     // be outside the scope. Only an explicit password/private scope suppresses
     // persistence: many hosts (Office etc.) expose no input scope at all.
     reason = L"変換範囲を取得できません";
     ComPtr<ITfRange> range;
-    if (!composition || FAILED(composition->GetRange(&range)) || !range) return false;
+    if (!composition || FAILED(composition->GetRange(&range)) || !range) return LearningPermission::Unavailable;
     reason = L"パスワードまたはプライベート入力欄";
-    return input_permission(context, range.Get(), cookie) != InputPermission::Restricted;
+    return input_permission(context, range.Get(), cookie) == InputPermission::Restricted ? LearningPermission::Protected : LearningPermission::Allowed;
 }
 
 bool finishes_before_key(WPARAM code) {
@@ -459,6 +460,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnLayoutChange(ITfContext* context, TfLayoutCode code, ITfContextView*) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::LayoutChange, diagnostic_state(context));
         if (context != composition_state_.context.Get() || !composition_state_.composition) return S_OK;
+        candidates_.invalidate_position();
         if (code == TF_LC_DESTROY) {
             cancel_inference();
             ++layout_generation_; layout_pending_ = false;
@@ -475,8 +477,13 @@ public:
                     update_tsf_trace(self->diagnostic_state());
                     if (self->layout_generation_ != generation) return S_OK;
                     self->layout_pending_ = false;
-                    if (self->composition_state_.composition)
-                        self->candidates_.locate(self->composition_state_.context.Get(), self->composition_state_.composition.Get(), cookie);
+                    const auto context = self->composition_state_.context;
+                    const auto current = self->composition_state_.composition;
+                    const auto session = self->composition_state_.session;
+                    const auto revision = self->engine_.revision();
+                    if (current) self->candidates_.locate(context.Get(), current.Get(), cookie, session);
+                    if (self->composition_state_.context.Get() == context.Get() && self->composition_state_.composition.Get() == current.Get() &&
+                        self->composition_state_.session == session && self->engine_.revision() == revision) self->cancel_unshown_editor();
                     return S_OK;
                 });
             if (FAILED(status)) layout_pending_ = false;
@@ -657,6 +664,12 @@ private:
                     const bool fallback = pending.plan.purpose == InferencePurpose::Fallback ||
                         (pending.plan.purpose == InferencePurpose::LongReading && next.candidates().empty());
                     const bool changed = adjusted || (fallback && next.resume_registration());
+                    if (changed && next.registering()) {
+                        self->candidates_.locate(pending.context.Get(), pending.composition.Get(), cookie, pending.session, true);
+                        if (!self->manager_ || self->engine_.revision() != pending.revision ||
+                            self->composition_state_.composition.Get() != pending.composition.Get() ||
+                            self->composition_state_.context.Get() != pending.context.Get() || self->composition_state_.session != pending.session) return S_OK;
+                    }
                     if (changed && FAILED(self->apply(pending.context.Get(),cookie,U"",next))) {
                         set_inference_status(self.Get(),L"推論: 応答を反映できません。現在の入力を維持します");
                         return S_OK;
@@ -700,6 +713,20 @@ private:
         const auto binding = input_mode_; if (binding) binding->publish(engine_.mode());
     }
     HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied, ITfContext* origin = nullptr) {
+        const auto before_notice = composition_state_.composition;
+        const auto notice_revision = engine_.revision(), notice_session = composition_state_.session;
+        candidates_.dismiss_notice();
+        if (!manager_ || composition_state_.composition.Get() != before_notice.Get() ||
+            composition_state_.session != notice_session || engine_.revision() != notice_revision) return S_OK;
+        // A destroyed or clipped view must not keep capturing registration
+        // input while its own editor is hidden.
+        if ((engine_.registering() || engine_.forgetting()) && !candidates_.presentation_available()) {
+            const auto current = composition_state_.composition;
+            const auto revision = engine_.revision(), session = composition_state_.session;
+            candidates_.locate(target, current.Get(), cookie, session, true);
+            if (composition_state_.composition.Get() != current.Get() || composition_state_.session != session || engine_.revision() != revision) return S_OK;
+            cancel_unshown_editor();
+        }
         InputPhaseTiming core(InputTimingPhase::Core);
         auto next = engine_;
         const auto result = next.handle(key);
@@ -707,12 +734,15 @@ private:
         if (!result.consumed) return S_OK;
         const auto revision = engine_.revision();
         const auto current = composition_state_.composition;
+        const auto session = composition_state_.session;
         const bool was_pending = inference_state_.pending.has_value();
         std::wstring learning_reason;
         const bool starting_registration = next.registration_depth() > engine_.registration_depth();
         const bool starting_forget = next.forgetting() && !engine_.forgetting() && next.forget_target().has_value();
-        const bool persistence_allowed = (result.learning || result.forgetting || starting_registration || starting_forget) &&
-            learning_allowed(target, current.Get(), cookie, learning_reason);
+        const auto permission = (result.learning || result.forgetting || starting_registration || starting_forget) ?
+            learning_permission(target, current.Get(), cookie, learning_reason) : LearningPermission::Unavailable;
+        const bool persistence_allowed = permission == LearningPermission::Allowed;
+        const bool protected_registration = starting_registration && permission == LearningPermission::Protected;
         // Property callbacks can end or replace the composition while answering.
         if (engine_.revision() != revision || composition_state_.composition.Get() != current.Get()) return S_OK;
         if (starting_registration && !persistence_allowed) next.abandon_registration();
@@ -748,6 +778,13 @@ private:
             }
         }
         auto visibility = candidate_visibility_;
+        if (next.registering() || next.forgetting() || protected_registration) {
+            // Capture layout before changing a candidate back into the reading.
+            // This also works with a delayed candidate list or a dictionary miss.
+            candidates_.locate(target, current.Get(), cookie, session, true);
+            if (!manager_ || engine_.revision() != revision || composition_state_.composition.Get() != current.Get() ||
+                composition_state_.context.Get() != target || composition_state_.session != session) return S_OK;
+        }
         const auto status = apply(target, cookie, result.committed, next);
         if (SUCCEEDED(status)) {
             cancel_inference();
@@ -765,7 +802,7 @@ private:
             } else if (result.learning || ((result.forgetting || starting_registration || starting_forget) && !persistence_allowed)) {
                 skip_runtime_learning(dictionary_, std::move(learning_reason));
             }
-            refresh_candidates(cookie);
+            refresh_candidates(cookie, protected_registration ? L"保護された入力欄のため、単語登録を行いません。" : L"");
             if (scored) {
                 set_inference_status(this, promoted ? L"推論: 表示前の採点で最良の辞書候補を先頭へ移動" : L"推論: 表示前に採点し、辞書候補の順位を維持");
                 try { if (log_scored && inference_state_.client && inference_state_.client->input_log_enabled())
@@ -815,14 +852,25 @@ private:
             if (FAILED(status) && selection_request_ == request) selection_pending_ = false;
         } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
     }
-    void refresh_candidates(TfEditCookie cookie) noexcept {
+    void refresh_candidates(TfEditCookie cookie, std::wstring_view notice = {}) noexcept {
         const InputPhaseTiming timing(InputTimingPhase::Candidates);
+        const auto context = composition_state_.context;
+        const auto current = composition_state_.composition;
+        const auto revision = engine_.revision(), session = composition_state_.session;
+        const auto unchanged = [&] {
+            return manager_ && composition_state_.context.Get() == context.Get() && composition_state_.composition.Get() == current.Get() &&
+                composition_state_.session == session && engine_.revision() == revision;
+        };
         // Common EDIT's full parent permits direct editing but does not paint
         // display attributes. Present its reading separately from document text.
         const bool show_reading = composition_state_.origin && composition_state_.origin.Get() != composition_state_.context.Get();
-        candidates_.update(manager_.Get(), composition_state_.context.Get(), engine_, candidate_actions_, show_reading,
-            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys);
-        candidates_.locate(composition_state_.context.Get(), composition_state_.composition.Get(), cookie);
+        candidates_.update(manager_.Get(), context.Get(), engine_, candidate_actions_, show_reading,
+            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice);
+        if (!unchanged()) return;
+        candidates_.locate(context.Get(), current.Get(), cookie, session);
+        if (unchanged()) cancel_unshown_editor();
+    }
+    void cancel_unshown_editor() noexcept {
         if (engine_.forgetting() && !candidates_.presentation_available()) {
             engine_.cancel_forgetting(); candidates_.close();
         }

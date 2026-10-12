@@ -1,5 +1,6 @@
 #include "dictionary_wait.h"
 #include "module.h"
+#include "candidate_ui.h"
 #include "learning_ipc.h"
 #include "local_storage.h"
 #include "tsf_test_host.h"
@@ -150,7 +151,10 @@ int wmain(int argc, wchar_t** argv) {
         {
             context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE;
             type(keys.Get(), context.Get(), "/secret"); key(keys.Get(), context.Get(), VK_SPACE);
-            check(context->doc->text == L"secret" && !host->ui, "private field started registration");
+            check(context->doc->text == L"secret" && host->ui, "private field suppression notice missing");
+            BSTR notice = nullptr; host->ui->GetDescription(&notice);
+            const bool explained = notice && std::wstring_view(notice).find(L"保護された入力欄") != std::wstring_view::npos;
+            SysFreeString(notice); check(explained, "private field did not explain registration suppression");
             key(keys.Get(), context.Get(), VK_RETURN); type(keys.Get(), context.Get(), "kana");
             check(context->doc->text == L"secretかな", "private field lost normal input");
         }
@@ -272,6 +276,68 @@ int wmain(int argc, wchar_t** argv) {
         context.Attach(new test_host::Context); type(keys.Get(), context.Get(), "Q99en"); key(keys.Get(), context.Get(), VK_SPACE);
         check(context->doc->text == L"九十九円", "Q numeric kana input failed in TSF");
         key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        host->show_ui = TRUE;
+        for (const bool missing : {false, true}) {
+            context.Attach(new test_host::Context); context->input_scope = IS_URL;
+            ComPtr<test_host::ContextView> view; view.Attach(new test_host::ContextView); context->active_view = view.Get();
+            if (missing) type(keys.Get(), context.Get(), "/layout-miss");
+            else { type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_SPACE); }
+            const auto reading = missing ? L"layout-miss" : L"かんじ";
+            unsigned queries = 0;
+            view->text_query = [&](ITfRange*) { return queries++ == 0 ? S_OK : TF_E_NOLAYOUT; };
+            key(keys.Get(), context.Get(), VK_SPACE);
+            BOOL shown = FALSE; GUID guid{};
+            check(host->ui && SUCCEEDED(host->ui->IsShown(&shown)) && shown, "pending layout discarded registration popup");
+            host->ui->GetGUID(&guid); check(guid == registration_ui_guid && context->doc->text == reading, "pending layout did not preserve registration");
+            type(keys.Get(), context.Get(), "a");
+            BSTR draft = nullptr; host->ui->GetDescription(&draft);
+            const bool edited = draft && std::wstring_view(draft).find(L"あ") != std::wstring_view::npos;
+            SysFreeString(draft); check(edited && context->doc->text == reading, "visible registration lost input or leaked its draft");
+            view->text_query = {}; OffsetRect(&view->rect, 100, 100);
+            context->layout->OnLayoutChange(context.Get(), TF_LC_CHANGE, view.Get()); context->pump();
+            check(host->ui && SUCCEEDED(host->ui->IsShown(&shown)) && shown, "layout recovery canceled registration");
+            key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        }
+        // Without any usable position, keep normal input rather than a hidden editor.
+        context.Attach(new test_host::Context);
+        ComPtr<test_host::ContextView> unavailable; unavailable.Attach(new test_host::ContextView);
+        unavailable->text_status = TF_E_NOLAYOUT; context->active_view = unavailable.Get();
+        type(keys.Get(), context.Get(), "/no-anchor"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(!host->ui && context->doc->text == L"no-anchor", "missing position retained invisible registration");
+        key(keys.Get(), context.Get(), VK_RETURN); type(keys.Get(), context.Get(), "a");
+        check(context->doc->text == L"no-anchorあ", "missing position captured normal input in hidden registration");
+        for (const auto scope : {IS_PASSWORD, IS_PRIVATE, IS_NUMERIC_PASSWORD, IS_NUMERIC_PIN, IS_ALPHANUMERIC_PIN, IS_ALPHANUMERIC_PIN_SET}) {
+            context.Attach(new test_host::Context); context->input_scope = scope;
+            ComPtr<test_host::ContextView> view; view.Attach(new test_host::ContextView); context->active_view = view.Get();
+            type(keys.Get(), context.Get(), "/protected"); key(keys.Get(), context.Get(), VK_SPACE);
+            BOOL shown = FALSE; GUID guid{};
+            check(host->ui && SUCCEEDED(host->ui->IsShown(&shown)) && shown, "protected field notice not visible");
+            host->ui->GetGUID(&guid); check(guid == notice_ui_guid, "protected field opened an editor instead of a notice");
+            BSTR notice = nullptr; host->ui->GetDescription(&notice);
+            const bool safe = notice && std::wstring_view(notice).find(L"保護された入力欄") != std::wstring_view::npos &&
+                std::wstring_view(notice).find(L"protected") == std::wstring_view::npos;
+            SysFreeString(notice); check(safe, "suppression notice omitted its reason or included input text");
+            BOOL probe = FALSE; keys->OnTestKeyDown(context.Get(), 'A', 0, &probe);
+            check(probe && host->ui, "key preflight dismissed the notice");
+            type(keys.Get(), context.Get(), "a");
+            check(!host->ui && context->doc->text == L"protecteda", "notice consumed input or left a hidden editor");
+            key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
+        }
+        context.Attach(new test_host::Context); context->input_scope = IS_PRIVATE;
+        ComPtr<test_host::ContextView> notice_view; notice_view.Attach(new test_host::ContextView); context->active_view = notice_view.Get();
+        type(keys.Get(), context.Get(), "/notice-focus"); key(keys.Get(), context.Get(), VK_SPACE);
+        check(host->ui != nullptr, "focus test notice missing"); keys->OnSetFocus(FALSE); context->pump();
+        check(!host->ui, "focus loss retained protected-field notice"); keys->OnSetFocus(TRUE);
+
+        // A host callback during pre-write layout capture may deactivate the service.
+        context.Attach(new test_host::Context);
+        ComPtr<test_host::ContextView> reentrant; reentrant.Attach(new test_host::ContextView); context->active_view = reentrant.Get();
+        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_SPACE);
+        const auto previous_text = context->doc->text; bool deactivated = false;
+        reentrant->text_query = [&](ITfRange*) { if (!deactivated) { deactivated = true; service->Deactivate(); } return S_OK; };
+        check(!key(keys.Get(), context.Get(), VK_SPACE), "stale registration applied after reentrant deactivation"); context->pump();
+        check(!host->ui && context->doc->text == previous_text, "reentrant layout capture restored stale UI or rewrote text");
+        check(read_user_dictionary(file).revision() == 13, "UI recovery or protected notices persisted input");
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
         std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private and unknown scopes, focus/UI failure\n";
         result = 0;

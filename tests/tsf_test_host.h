@@ -27,8 +27,10 @@ public:
     ComPtr<ITfThreadMgrEventSink> events;
     ComPtr<ITfUIElement> ui;
     bool reject_ui = false;
+    BOOL show_ui = FALSE;
     DWORD ui_id = 0;
     int ui_begins = 0, ui_updates = 0, ui_ends = 0;
+    std::function<void()> ui_end_query;
     TEST_REFS(Manager);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
@@ -51,10 +53,13 @@ public:
     HRESULT STDMETHODCALLTYPE BeginUIElement(ITfUIElement* value, BOOL* show, DWORD* id) override {
         if (reject_ui) return E_FAIL;
         if (ui) return E_UNEXPECTED;
-        ui = value; *show = FALSE; *id = ++ui_id; ++ui_begins; return S_OK;
+        ui = value; *show = show_ui; *id = ++ui_id; ++ui_begins; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE UpdateUIElement(DWORD id) override { if (!ui || id != ui_id) return E_INVALIDARG; ++ui_updates; return S_OK; }
-    HRESULT STDMETHODCALLTYPE EndUIElement(DWORD id) override { if (!ui || id != ui_id) return E_INVALIDARG; ui.Reset(); ++ui_ends; return S_OK; }
+    HRESULT STDMETHODCALLTYPE EndUIElement(DWORD id) override {
+        if (!ui || id != ui_id) return E_INVALIDARG;
+        ui.Reset(); ++ui_ends; if (ui_end_query) ui_end_query(); return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetUIElement(DWORD id, ITfUIElement** out) override { if (id != ui_id) return E_INVALIDARG; return ui.CopyTo(out); }
     UNUSED_METHOD(EnumUIElements, IEnumTfUIElements**)
     UNUSED_METHOD(Activate, TfClientId*)
@@ -301,6 +306,27 @@ public:
     UNUSED_METHOD(EnumRanges, TfEditCookie, IEnumTfRanges**, ITfRange*)
     UNUSED_METHOD(GetContext, ITfContext**)
 };
+class ContextView final : public ITfContextView {
+public:
+    HRESULT text_status = S_OK;
+    RECT rect{100, 100, 110, 120};
+    BOOL clipped = FALSE;
+    HWND window = GetDesktopWindow();
+    unsigned queries = 0;
+    std::function<HRESULT(ITfRange*)> text_query;
+    TEST_REFS(ContextView);
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        *out = nullptr; if (iid != IID_IUnknown && iid != IID_ITfContextView) return E_NOINTERFACE;
+        *out = static_cast<ITfContextView*>(this); AddRef(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetTextExt(TfEditCookie, ITfRange* range, RECT* out, BOOL* cut) override {
+        ++queries; const auto status = text_query ? text_query(range) : text_status;
+        *out = rect; *cut = clipped; return status;
+    }
+    HRESULT STDMETHODCALLTYPE GetWnd(HWND* out) override { *out = window; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetScreenExt(RECT* out) override { *out = {0, 0, 1000, 800}; return S_OK; }
+    UNUSED_METHOD(GetRangeFromPoint, TfEditCookie, const POINT*, DWORD, ITfRange**)
+};
 class Context final : public ITfContext, public ITfContextComposition, public ITfInsertAtSelection, public ITfSource {
 public:
     Context() {
@@ -325,6 +351,7 @@ public:
     ComPtr<ITfTextEditSink> edits;
     ComPtr<ITfTextLayoutSink> layout;
     unsigned layout_queries = 0;
+    ComPtr<ITfContextView> active_view;
     ComPtr<ITfDocumentMgr> document_manager;
     ComPtr<Composition> composition;
     std::vector<ComPtr<ITfEditSession>> queued;
@@ -403,7 +430,7 @@ public:
     UNUSED_METHOD(GetStart, TfEditCookie, ITfRange**)
     UNUSED_METHOD(GetEnd, TfEditCookie, ITfRange**)
     HRESULT STDMETHODCALLTYPE GetActiveView(ITfContextView** view) override {
-        ++layout_queries; *view = nullptr; return E_NOTIMPL;
+        ++layout_queries; *view = nullptr; return active_view ? active_view.CopyTo(view) : E_NOTIMPL;
     }
     UNUSED_METHOD(EnumViews, IEnumTfContextViews**)
     UNUSED_METHOD(GetProperty, REFGUID, ITfProperty**)

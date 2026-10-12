@@ -78,7 +78,7 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
         *value = SysAllocString(description.c_str()); return *value ? S_OK : E_OUTOFMEMORY;
     } catch (...) { return E_OUTOFMEMORY; }
 }
-HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Reading ? reading_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
+HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Notice ? notice_ui_guid : kind_ == PopupKind::Reading ? reading_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
 HRESULT CandidateList::Show(BOOL show) { if (!show) { cancel_pointer(); discard_candidate_timing(paint_timing_); } requested_visible_ = show != FALSE; render(); return S_OK; }
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
@@ -191,6 +191,13 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     selection_ = selection;
     if (updated_ && kind_ == PopupKind::Candidates) replace_candidate_timing(paint_timing_);
 }
+void CandidateList::notice(std::wstring_view reason, ITfDocumentMgr* document) {
+    if (closed_ || kind_ != PopupKind::Notice) return;
+    heading_ = L"単語登録"; draft_ = reason;
+    hint_ = L"別の入力欄で登録してください。入力を続けると閉じます。";
+    rows_.clear(); pages_.clear(); selection_ = 0;
+    document_ = document; updated_ = all_updates;
+}
 void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
     if (!anchor || owner_ != owner || !EqualRect(&anchor_, anchor)) cancel_pointer();
     owner_ = owner;
@@ -236,7 +243,7 @@ void CandidateList::render() noexcept {
                 trace(L"owner-context", owner_process == GetCurrentProcessId(), root_process == GetCurrentProcessId(), owner_ == root);
             }
             window_ = CreateWindowExW(popup_ex_style,
-                class_name_.c_str(), kind_ == PopupKind::Reading ? L"nskkzime 読み" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
+                class_name_.c_str(), kind_ == PopupKind::Notice ? L"nskkzime 通知" : kind_ == PopupKind::Reading ? L"nskkzime 読み" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
                 owner_, nullptr, module_instance, this);
             if (!window_) { trace(L"window-failed", GetLastError()); UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
@@ -256,7 +263,11 @@ void CandidateList::render() noexcept {
         const auto footer_text = footer(); SIZE footer_size{};
         GetTextExtentPoint32W(dc.value, footer_text.c_str(), static_cast<int>(footer_text.size()), &footer_size);
         int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
-        if (kind_ == PopupKind::Editor) width = std::max(width, MulDiv(580, dpi_, 96));
+        if (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice) width = std::max(width, MulDiv(580, dpi_, 96));
+        if (kind_ == PopupKind::Notice) {
+            SIZE size{}; GetTextExtentPoint32W(dc.value, draft_.c_str(), static_cast<int>(draft_.size()), &size);
+            width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
+        }
         if (kind_ == PopupKind::Reading) {
             const auto text = label(draft_); SIZE size{};
             GetTextExtentPoint32W(dc.value, text.c_str(), static_cast<int>(text.size()), &size);
@@ -268,7 +279,7 @@ void CandidateList::render() noexcept {
             width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
         }
         width = std::min(width, MulDiv(680, dpi_, 96));
-        int height = (static_cast<int>(visible_end - first + 1) + (kind_ == PopupKind::Editor ? 2 : 0)) * line_height_ + padding_ * 2;
+        int height = (static_cast<int>(visible_end - first + 1) + (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice ? 2 : 0)) * line_height_ + padding_ * 2;
         // The measured text and padding describe the client area. The border
         // must be added before passing the outer dimensions to SetWindowPos.
         RECT outer{0, 0, width, height};
@@ -304,7 +315,10 @@ void CandidateList::paint(HDC dc) const {
     };
     if (kind_ != PopupKind::Candidates) {
         SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-        if (kind_ == PopupKind::Editor) line(label(heading_));
+        if (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice) line(label(heading_));
+        if (kind_ == PopupKind::Notice) {
+            line(label(draft_)); SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT)); line(footer()); return;
+        }
         // Keep the currently edited tail visible for a long registration.
         const auto offset = draft_.size() > 160 ? draft_.size() - 160 : 0;
         auto tail = draft_.substr(offset);
@@ -389,19 +403,34 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     return DefWindowProcW(window, message, wparam, lparam);
 }
 void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions, bool show_reading,
-    bool show_candidates, CandidateKeys keys) noexcept {
+    bool show_candidates, CandidateKeys keys, std::wstring_view notice) noexcept {
     try {
+        ++generation_;
+        if (position_context_ && position_context_.Get() != context) invalidate_position();
+        const bool notifying = !notice.empty();
         const bool reading = show_reading && !engine.registering() && engine.stage() != Stage::Selecting && !engine.preedit().empty();
-        if (!reading && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close(); return; }
-        const auto kind = reading ? PopupKind::Reading : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
-        if (kind == PopupKind::Candidates && !show_candidates) { close(); return; }
-        if (list_ && (list_->kind() != kind || list_->keys() != keys)) close();
+        if (!notifying && !reading && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close_ui(); return; }
+        const auto kind = notifying ? PopupKind::Notice : reading ? PopupKind::Reading : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
+        if (kind == PopupKind::Candidates && !show_candidates) { close_ui(); return; }
+        if (list_ && (list_->kind() != kind || list_->keys() != keys)) {
+            const auto closing_generation = generation_ + 1;
+            close_ui();
+            if (generation_ != closing_generation) return;
+        }
+        const auto generation = generation_;
         ComPtr<ITfDocumentMgr> document;
-        if (!context || FAILED(context->GetDocumentMgr(&document)) || !document) { close(); return; }
+        const auto document_status = context ? context->GetDocumentMgr(&document) : E_INVALIDARG;
+        if (generation != generation_) return;
+        if (FAILED(document_status) || !document) { close(); return; }
         if (!list_) {
-            if (!thread || FAILED(thread->QueryInterface(IID_PPV_ARGS(&manager_)))) return;
-            list_.Attach(new CandidateList(kind, std::move(actions), keys));
-            list_->update(engine, document.Get());
+            ComPtr<ITfUIElementMgr> ui_manager;
+            const auto manager_status = thread ? thread->QueryInterface(IID_PPV_ARGS(&ui_manager)) : E_INVALIDARG;
+            if (generation != generation_) return;
+            if (FAILED(manager_status) || !ui_manager) return;
+            manager_ = std::move(ui_manager);
+            list_.Attach(new CandidateList(kind, notifying ? std::weak_ptr<CandidateActions>{} : std::move(actions), keys));
+            if (notifying) list_->notice(notice, document.Get());
+            else list_->update(engine, document.Get());
             BOOL show = TRUE;
             const auto list = list_; const auto manager = manager_;
             DWORD id = 0;
@@ -413,45 +442,79 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
             // A UILess host starts drawing at UpdateUIElement, not Begin.
             if (!show && list_.Get() == list.Get() && FAILED(manager->UpdateUIElement(id_)) && list_.Get() == list.Get()) close();
         } else {
-            list_->update(engine, document.Get());
+            if (notifying) list_->notice(notice, document.Get());
+            else list_->update(engine, document.Get());
             DWORD flags = 0; list_->GetUpdatedFlags(&flags);
             const auto list = list_; const auto manager = manager_;
             if (flags && FAILED(manager->UpdateUIElement(id_)) && list_.Get() == list.Get()) close();
         }
     } catch (...) { close(); }
 }
-void CandidatePresenter::locate(ITfContext* context, ITfComposition* composition, TfEditCookie cookie) noexcept {
+void CandidatePresenter::locate(ITfContext* context, ITfComposition* composition, TfEditCookie cookie, std::uint64_t session, bool capture_position) noexcept {
+    if (!list_ && !capture_position) return;
+    const auto generation = ++generation_;
     const auto list = list_;
-    if (!list) return;
     // Host callbacks can end the composition while answering a layout query.
     const ComPtr<ITfContext> target(context);
     const ComPtr<ITfComposition> current(composition);
+    const auto unavailable = [&] {
+        if (generation != generation_) return;
+        invalidate_position();
+        if (list && list_.Get() == list.Get()) list->locate(nullptr, nullptr);
+    };
     ComPtr<ITfContextView> view;
+    ComPtr<IUnknown> view_identity;
     ComPtr<ITfRange> range, caret;
     RECT rect{}; BOOL clipped = FALSE; HWND owner = nullptr;
     if (!target || !current || FAILED(target->GetActiveView(&view)) || !view ||
-        FAILED(current->GetRange(&range)) || !range || FAILED(range->Clone(&caret)) || !caret) {
+        FAILED(view.As(&view_identity)) || FAILED(current->GetRange(&range)) || !range || FAILED(range->Clone(&caret)) || !caret) {
         trace(L"no-view-or-range");
-        list->locate(nullptr, nullptr); return;
+        unavailable(); return;
     }
+    if (FAILED(view->GetWnd(&owner)) || !owner) owner = GetFocus();
     auto hr = caret->Collapse(cookie, TF_ANCHOR_START);
     if (SUCCEEDED(hr)) hr = view->GetTextExt(cookie, caret.Get(), &rect, &clipped);
-    if (FAILED(hr) || rect.bottom <= rect.top) hr = view->GetTextExt(cookie, range.Get(), &rect, &clipped);
-    if (FAILED(view->GetWnd(&owner)) || !owner) owner = GetFocus();
+    if (FAILED(hr) || rect.bottom <= rect.top) {
+        rect = {}; clipped = FALSE;
+        hr = view->GetTextExt(cookie, range.Get(), &rect, &clipped);
+    }
     trace(L"anchor", hr, clipped, rect.bottom > rect.top);
     trace(L"owner", owner != nullptr);
-    if (FAILED(hr) || clipped || rect.bottom <= rect.top) { list->locate(nullptr, nullptr); return; }
-    if (list_.Get() == list.Get()) list->locate(owner, &rect);
+    if (generation != generation_) return;
+    if (owner && !IsWindow(owner)) { unavailable(); return; }
+    if (hr == TF_E_NOLAYOUT && !clipped && position_context_.Get() == target.Get() &&
+        position_composition_.Get() == current.Get() && position_session_ == session &&
+        position_view_.Get() == view_identity.Get() && position_owner_ == owner) {
+        // SetText can invalidate layout until OnLayoutChange. The position
+        // captured before that write still belongs to this composition/view.
+        if (list && list_.Get() == list.Get()) list->locate(owner, &position_);
+        return;
+    }
+    if (FAILED(hr) || clipped || rect.bottom <= rect.top) { unavailable(); return; }
+    position_context_ = target; position_composition_ = current; position_view_ = view_identity;
+    position_owner_ = owner; position_ = rect; position_session_ = session;
+    if (list && list_.Get() == list.Get()) list->locate(owner, &rect);
 }
-void CandidatePresenter::hide() noexcept { if (list_) list_->locate(nullptr, nullptr); }
+void CandidatePresenter::invalidate_position() noexcept {
+    ++generation_;
+    position_context_.Reset(); position_composition_.Reset(); position_view_.Reset();
+    position_owner_ = nullptr; position_ = {}; position_session_ = 0;
+}
+void CandidatePresenter::hide() noexcept { invalidate_position(); if (list_) list_->locate(nullptr, nullptr); }
+void CandidatePresenter::dismiss_notice() noexcept { if (list_ && list_->kind() == PopupKind::Notice) close_ui(); }
 Key CandidatePresenter::selection_key(Key key, const Engine& engine) const noexcept {
-    if (list_ && !engine.forgetting() && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character) {
+    if (list_ && list_->kind() != PopupKind::Notice && list_->kind() != PopupKind::Reading &&
+        !engine.forgetting() && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character) {
         const auto slot = candidate_keys(list_->keys()).find(key.character);
         if (slot != std::string_view::npos) return {KeyCode::SelectCandidate, 0, list_->shortcut_index(slot)};
     }
     return key;
 }
 void CandidatePresenter::close() noexcept {
+    invalidate_position(); close_ui();
+}
+void CandidatePresenter::close_ui() noexcept {
+    ++generation_;
     // Invalidate before notifying the host; retained elements cannot reopen UI.
     auto list = std::move(list_); auto manager = std::move(manager_);
     const auto id = id_; const auto begun = begun_; begun_ = false;
