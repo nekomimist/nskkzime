@@ -36,47 +36,15 @@ struct Descriptor {
     }
     ~Descriptor() { LocalFree(value); }
 };
-DWORD finish_io(HANDLE handle, OVERLAPPED& operation, BOOL immediate, DWORD timeout) {
-    const auto error = immediate ? ERROR_SUCCESS : GetLastError();
-    if (!immediate && error != ERROR_IO_PENDING) throw std::runtime_error("dictionary IPC operation failed");
-    DWORD bytes = 0;
-    if (!GetOverlappedResultEx(handle, &operation, &bytes, timeout, FALSE)) {
-        CancelIoEx(handle, &operation);
-        // Keep the OVERLAPPED and buffer alive until cancellation completes.
-        GetOverlappedResult(handle, &operation, &bytes, TRUE);
-        throw std::runtime_error("dictionary IPC timed out or disconnected");
-    }
-    return bytes;
-}
-void transfer(HANDLE handle, char* data, std::size_t size, bool write, ULONGLONG deadline) {
-    while (size) {
-        NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr)); need(event.valid(), "cannot allocate IPC event");
-        OVERLAPPED operation{}; operation.hEvent = event.get();
-        const auto now = GetTickCount64(); need(now < deadline, "dictionary IPC deadline exceeded");
-        const auto amount = static_cast<DWORD>(size);
-        const auto started = write ? WriteFile(handle, data, amount, nullptr, &operation) : ReadFile(handle, data, amount, nullptr, &operation);
-        const auto done = finish_io(handle, operation, started, static_cast<DWORD>(deadline - now));
-        need(done != 0 && done <= size, "dictionary IPC closed"); data += done; size -= done;
-    }
-}
-void send_frame(HANDLE pipe, std::string_view bytes, ULONGLONG deadline) {
-    need(bytes.size() <= learning_max_bytes + 16, "dictionary IPC frame too large");
-    std::uint32_t size = static_cast<std::uint32_t>(bytes.size());
-    transfer(pipe, reinterpret_cast<char*>(&size), sizeof(size), true, deadline);
-    transfer(pipe, const_cast<char*>(bytes.data()), bytes.size(), true, deadline);
-}
-std::string receive_frame(HANDLE pipe, ULONGLONG deadline, std::size_t maximum) {
-    std::uint32_t size = 0; transfer(pipe, reinterpret_cast<char*>(&size), sizeof(size), false, deadline);
-    need(size && size <= maximum, "invalid dictionary IPC frame size");
-    std::string bytes(size, '\0'); transfer(pipe, bytes.data(), bytes.size(), false, deadline); return bytes;
-}
 }
 std::filesystem::path learning_file_path() { return learning_file_path(dictionary_settings_path()); }
 std::filesystem::path learning_file_path(const std::filesystem::path& settings_file) {
     return checked_path(settings_file.parent_path() / L"user-dictionary.nskkdb");
 }
+void validate_learning_file(const std::filesystem::path& file) { (void)checked_path(file); }
 namespace {
-// Shared by the pipe and change events: one endpoint per user and dictionary path.
+// Names the change events: one endpoint per user and dictionary path. Earlier
+// builds also named their helper's pipe with it; readers of any build share it.
 std::wstring endpoint_name(const std::filesystem::path& file) {
     auto name = checked_path(file).native();
     need(name.size() <= 32767, "user dictionary path too long");
@@ -102,9 +70,36 @@ void signal_change(const std::filesystem::path& file, std::uint64_t replaced) no
     try { const auto event = change_event(file, replaced, EVENT_MODIFY_STATE); if (event.valid()) SetEvent(event.get()); }
     catch (...) { /* Readers also re-check on a long timeout. */ }
 }
+NativeHandle lock_writer(const std::filesystem::path& file, DWORD timeout_ms) {
+    std::filesystem::create_directories(file.parent_path());
+    // An exclusive handle also excludes writers reached through path aliases.
+    const auto name = file.native() + L".lock";
+    const auto deadline = GetTickCount64() + timeout_ms;
+    for (DWORD delay = 5;; delay = (std::min)(delay * 2, DWORD{50})) {
+        NativeHandle lock(CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (lock.valid()) return lock;
+        need(GetLastError() == ERROR_SHARING_VIOLATION, "cannot open user dictionary lock");
+        const auto now = GetTickCount64(); need(now < deadline, "user dictionary is busy");
+        Sleep((std::min)(delay, static_cast<DWORD>(deadline - now)));
+    }
 }
-std::wstring learning_pipe_name(const std::filesystem::path& file) {
-    return L"\\\\.\\pipe\\" + endpoint_name(file);
+template<class Request> UserDictionary commit(const std::filesystem::path& path, const Request& request, DWORD timeout_ms) {
+    const auto file = checked_path(path);
+    const auto lock = lock_writer(file, timeout_ms);
+    auto dictionary = read_user_dictionary(file); // Corruption never becomes an empty, writable database.
+    const auto replaced = dictionary.revision();
+    if (dictionary.apply(request)) {
+        write_file_atomic(file, dictionary.serialize());
+        signal_change(file, replaced);
+    }
+    return dictionary;
+}
+}
+UserDictionary commit_learning(const std::filesystem::path& file, const LearningRequest& request, DWORD timeout_ms) {
+    return commit(file, request, timeout_ms);
+}
+UserDictionary commit_import(const std::filesystem::path& file, const ImportRequest& request, DWORD timeout_ms) {
+    return commit(file, request, timeout_ms);
 }
 NativeHandle learning_change_event(const std::filesystem::path& file, std::uint64_t revision) {
     return change_event(file, revision, SYNCHRONIZE);
@@ -188,86 +183,6 @@ std::optional<std::string> learning_wait_response(const std::filesystem::path& f
             if (!changed.valid()) Sleep(slice);
             else if (WaitForSingleObject(changed.get(), slice) == WAIT_OBJECT_0) { signaled = true; break; }
         }
-    }
-}
-std::string learning_exchange(const std::filesystem::path& file, std::string_view request, DWORD timeout_ms) {
-    const auto name = learning_pipe_name(file);
-    const auto deadline = GetTickCount64() + timeout_ms;
-    HANDLE raw = INVALID_HANDLE_VALUE;
-    do {
-        raw = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_ANONYMOUS, nullptr);
-        if (raw != INVALID_HANDLE_VALUE) break;
-        const auto error = GetLastError();
-        need(error == ERROR_PIPE_BUSY || error == ERROR_FILE_NOT_FOUND, "cannot connect to dictionary server");
-        if (error == ERROR_FILE_NOT_FOUND) throw std::runtime_error("dictionary server is unavailable");
-        const auto now = GetTickCount64(); need(now < deadline, "dictionary server is busy");
-        WaitNamedPipeW(name.c_str(), static_cast<DWORD>(deadline - now));
-    } while (GetTickCount64() < deadline);
-    NativeHandle pipe(raw); need(pipe.valid(), "cannot connect to dictionary server");
-    send_frame(pipe.get(), request, deadline);
-    auto response = receive_frame(pipe.get(), deadline, learning_max_bytes + 16);
-    char ack = 1; transfer(pipe.get(), &ack, 1, true, deadline); return response;
-}
-NativeHandle launch_dictionary_server(const std::filesystem::path& executable, const std::filesystem::path& file, DWORD idle_ms) {
-    const auto target = checked_path(file); const auto program = checked_path(executable);
-    std::wstring command = L"\"" + program.native() + L"\" --file \"" + target.native() + L"\" --idle-ms " + std::to_wstring(idle_ms);
-    STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION process{};
-    need(CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
-        program.parent_path().c_str(), &startup, &process) != 0, "cannot start dictionary server");
-    CloseHandle(process.hThread); return NativeHandle(process.hProcess);
-}
-int serve_dictionary(const std::filesystem::path& path, DWORD idle_ms) {
-    const auto file = checked_path(path); std::filesystem::create_directories(file.parent_path());
-    // An exclusive handle also prevents writers reached through path aliases.
-    NativeHandle writer(CreateFileW((file.native() + L".lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (!writer.valid()) return 3;
-    auto dictionary = read_user_dictionary(file); // Corruption never becomes an empty, writable database.
-    const auto name = learning_pipe_name(file); Descriptor descriptor(user_sid());
-    SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), descriptor.value, FALSE};
-    NativeHandle pipe(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536, 65536, 0, &attributes));
-    need(pipe.valid(), "cannot create dictionary server pipe");
-    for (;;) {
-        NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr)); need(event.valid(), "cannot allocate server event");
-        OVERLAPPED operation{}; operation.hEvent = event.get();
-        const auto connected = ConnectNamedPipe(pipe.get(), &operation);
-        const auto error = connected ? ERROR_SUCCESS : GetLastError();
-        if (!connected && error != ERROR_PIPE_CONNECTED) {
-            if (error != ERROR_IO_PENDING) throw std::runtime_error("dictionary server accept failed");
-            DWORD count = 0;
-            if (!GetOverlappedResultEx(pipe.get(), &operation, &count, idle_ms, FALSE)) {
-                CancelIoEx(pipe.get(), &operation); GetOverlappedResult(pipe.get(), &operation, &count, TRUE); return 0;
-            }
-        }
-        try {
-            const auto request = receive_frame(pipe.get(), GetTickCount64() + 15000, learning_max_bytes);
-            std::string response;
-            try {
-                const auto commit = [&](UserDictionary next) {
-                    write_file_atomic(file, next.serialize());
-                    const auto replaced = dictionary.revision(); dictionary = std::move(next);
-                    signal_change(file, replaced);
-                };
-                if (request.starts_with("NKL1") || request.starts_with("NKF1")) {
-                    const auto update = decode_learning(request); auto next = dictionary;
-                    if (next.apply(update)) commit(std::move(next));
-                    response = "OKAY";
-                } else if (request.starts_with("NKI1")) {
-                    const auto update = decode_import(request); auto next = dictionary;
-                    if (next.apply(update)) commit(std::move(next));
-                    response = "OKAY";
-                } else if (request.size() == 12 && request.starts_with("GET1")) {
-                    if (request == snapshot_request(dictionary.revision())) response = "SAME";
-                    else response = "DATA" + dictionary.serialize();
-                } else response = "FAIL";
-            } catch (const std::exception&) { response = "FAIL"; }
-            send_frame(pipe.get(), response, GetTickCount64() + 1500);
-            // Client acknowledges receipt before disconnect, without an unbounded FlushFileBuffers on a pipe.
-            char ack = 0; transfer(pipe.get(), &ack, 1, false, GetTickCount64() + 1500);
-        } catch (const std::exception&) { /* Isolate malformed or disconnected clients. No text logging. */ }
-        DisconnectNamedPipe(pipe.get());
     }
 }
 } // namespace nskkzime::windows

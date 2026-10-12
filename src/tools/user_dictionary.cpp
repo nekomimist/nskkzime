@@ -34,8 +34,8 @@ void import_dictionary(const std::filesystem::path& file, const std::filesystem:
     const auto preview = prepare_dictionary_import(file, source, encoding);
     std::cout << "Validated " << preview.candidates << " source candidates (" << encoding_name(preview.encoding)
         << "): " << preview.added << " new, " << preview.candidates - preview.added << " already present.\n";
-    if (check_only || preview.payload.empty()) { std::cout << "User dictionary unchanged.\n"; return; }
-    apply_dictionary_import(preview, dictionary_manager_helper_path());
+    if (check_only || preview.request.entries.empty()) { std::cout << "User dictionary unchanged.\n"; return; }
+    apply_dictionary_import(preview);
     std::cout << "Import saved. Existing priorities and annotations were preserved.\n";
 }
 }
@@ -49,7 +49,7 @@ int wmain(int argc, wchar_t** argv) {
             file = argv[++index]; ++index;
         } else file = learning_file_path();
         // Validates paths even for the read-only commands.
-        (void)learning_pipe_name(file);
+        validate_learning_file(file);
         const std::wstring_view action(argv[index++]);
         if (action == L"--import" || action == L"--check-import") {
             if (argc-index != 1 && argc-index != 3) { help(); return 2; }
@@ -79,7 +79,7 @@ int wmain(int argc, wchar_t** argv) {
                     if (request.event.okuri.empty()) throw std::invalid_argument("--okuri requires a nonempty suffix; use --okuri-key for generic candidates");
                 }
             }
-            forget_dictionary_entry(file, request.event, dictionary_manager_helper_path());
+            forget_dictionary_entry(file, request.event);
             std::cout << "User dictionary entry forgotten. Shared dictionary candidates remain available.\n"; return 0;
         }
         if (action != L"--list" && action != L"--export") { help(); return 2; }

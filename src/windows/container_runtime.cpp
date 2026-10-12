@@ -84,7 +84,7 @@ RuntimeDictionarySnapshot bootstrap() {
     if (learning) {
         try {
             base = std::make_shared<LearningDictionary>(base,
-                config->configuration.file.parent_path() / L"user-dictionary.nskkdb", std::filesystem::path{}, config->generation);
+                config->configuration.file.parent_path() / L"user-dictionary.nskkdb", config->generation);
             registration = true;
         } catch (...) { status += L"\r\n学習: 初期化に失敗（通常の変換は利用できます）"; }
     } else status += L"\r\n学習: 無効、または辞書未設定・読み込み失敗のため停止";

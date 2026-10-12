@@ -1,7 +1,6 @@
 #include "learning_ipc.h"
 #include "learning_client.h"
 #include "local_storage.h"
-#include "helper_cleanup.h"
 #include <algorithm>
 #include <chrono>
 #include <functional>
@@ -27,7 +26,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock", L"held.nskkdb", L"held.nskkdb.lock", L"blocker"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -37,33 +36,33 @@ struct Child {
     NativeHandle process;
     ~Child() { if (process.valid() && WaitForSingleObject(process.get(), 2000) == WAIT_TIMEOUT) { TerminateProcess(process.get(), 99); WaitForSingleObject(process.get(), 2000); } }
 };
-void wait_ready(const std::filesystem::path& file) {
-    until([&] { try { return learning_exchange(file, snapshot_request(UINT64_MAX)).starts_with("DATA"); } catch (...) { return false; } });
-}
-UserDictionary snapshot(const std::filesystem::path& file) {
-    const auto bytes = learning_exchange(file, snapshot_request(UINT64_MAX));
-    check(bytes.starts_with("DATA"), "snapshot failed"); return UserDictionary::parse(std::string_view(bytes).substr(4));
-}
 NativeHandle client_process(const std::filesystem::path& exe, const std::filesystem::path& file, wchar_t id) {
     auto command = L"\"" + exe.native() + L"\" --client \"" + file.native() + L"\" " + id;
     STARTUPINFOW si{}; si.cb = sizeof(si); PROCESS_INFORMATION pi{};
     check(CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi) != 0, "cannot start test client");
     CloseHandle(pi.hThread); return NativeHandle(pi.hProcess);
 }
+// Opens the file without delete sharing, so an atomic replacement fails.
+NativeHandle block_saves(const std::filesystem::path& file) {
+    NativeHandle handle(CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
+    check(handle.valid(), "cannot block saves"); return handle;
+}
+// What a writer of an earlier build holds for its whole lifetime.
+NativeHandle hold_writer_lock(const std::filesystem::path& file) {
+    NativeHandle handle(CreateFileW((file.native() + L".lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+    check(handle.valid(), "cannot hold writer lock"); return handle;
+}
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc == 4 && std::wstring_view(argv[1]) == L"--client") {
         try {
-            for (std::uint64_t i = 1; i <= 12; ++i) {
-                const auto request = update(std::string(32, static_cast<char>(argv[3][0])), i, U"候補" + ascii(std::to_string(i)));
-                check(learning_exchange(argv[2], encode_learning(request), 5000) == "OKAY", "child write failed");
-            }
+            for (std::uint64_t i = 1; i <= 12; ++i)
+                commit_learning(argv[2], update(std::string(32, static_cast<char>(argv[3][0])), i, U"候補" + ascii(std::to_string(i))), 5000);
             return 0;
         } catch (...) { return 1; }
     }
-    if (argc != 2) return 2;
+    if (argc != 1) return 2;
     Files files; const auto file = files.root / L"user.nskkdb";
-    const std::filesystem::path server(argv[1]);
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
         {"client/numeric-template-pending-persisted-restarted-and-deleted", [&] {
             const auto isolated = files.root / L"numeric.nskkdb";
@@ -71,7 +70,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto type = [](Engine& engine, std::string_view text) {
                 for (const auto ch : text) engine.handle({KeyCode::Character, ch});
             };
-            auto client = std::make_shared<LearningDictionary>(base, isolated, server);
+            auto client = std::make_shared<LearningDictionary>(base, isolated);
             Engine engine(client); type(engine, "/98"); engine.handle({KeyCode::Space});
             const auto result = engine.handle({KeyCode::SelectCandidate, 0, 2});
             check(result.committed == U"九八" && result.learning->key == LookupKey{U"#"}, "numeric selection did not produce a template");
@@ -82,7 +81,7 @@ int wmain(int argc, wchar_t** argv) {
             engine.handle({KeyCode::Cancel}); engine.handle({KeyCode::Cancel});
             until([&] { return !client->registration_pending(*result.learning); });
             check(read_user_dictionary(isolated).lookup({U"#"})[0].text == U"#2", "numeric template was not saved raw");
-            auto restarted = std::make_shared<LearningDictionary>(base, isolated, server);
+            auto restarted = std::make_shared<LearningDictionary>(base, isolated);
             until([&] { return restarted->lookup({U"#"})[0].text == U"#2"; });
             Engine next(restarted); type(next, "/99"); next.handle({KeyCode::Space});
             check(next.candidates()[0].text == U"九九", "restarted learning lost to exact base entry");
@@ -138,48 +137,58 @@ int wmain(int argc, wchar_t** argv) {
                 rejects([&] { encode_learning(request); });
             }
         }},
-        {"ipc/serialize-multiple-processes-retry-and-restart", [&] {
-            Child helper{launch_dictionary_server(server, file, 1000)}; wait_ready(file);
-            Child duplicate{launch_dictionary_server(server, file, 1000)};
-            check(WaitForSingleObject(duplicate.process.get(), 3000) == WAIT_OBJECT_0, "second writer remained alive");
-            DWORD exit = 0; GetExitCodeProcess(duplicate.process.get(), &exit); check(exit == 3, "second writer not rejected");
-            const auto request = update(); check(learning_exchange(file, encode_learning(request)) == "OKAY", "first update failed");
-            check(learning_exchange(file, "BAD!") == "FAIL", "malformed message accepted");
+        {"commit/serialize-multiple-processes-and-deduplicate", [&] {
+            const auto request = update(); check(commit_learning(file, request).revision() == 1, "first update failed");
             wchar_t exe[32768]{}; GetModuleFileNameW(nullptr, exe, ARRAYSIZE(exe));
             Child first{client_process(exe, file, L'b')}, second{client_process(exe, file, L'c')};
             for (const auto handle : {first.process.get(), second.process.get()}) {
                 check(WaitForSingleObject(handle, 10000) == WAIT_OBJECT_0, "concurrent client hung");
-                GetExitCodeProcess(handle, &exit); check(exit == 0, "concurrent client failed");
+                DWORD exit = 1; GetExitCodeProcess(handle, &exit); check(exit == 0, "concurrent client failed");
             }
-            check(snapshot(file).revision() == 25, "concurrent updates were lost");
-            check(TerminateProcess(helper.process.get(), 99) != 0 && WaitForSingleObject(helper.process.get(), 3000) == WAIT_OBJECT_0,
-                "cannot simulate an owned helper crash");
-            Child restarted{launch_dictionary_server(server, file, 1000)}; wait_ready(file);
-            check(learning_exchange(file, encode_learning(request)) == "OKAY" && snapshot(file).revision() == 25, "restart lost deduplication");
-            check(WaitForSingleObject(restarted.process.get(), 3000) == WAIT_OBJECT_0, "idle server did not exit");
+            check(read_user_dictionary(file).revision() == 25, "concurrent updates were lost");
+            check(commit_learning(file, request).revision() == 25 && read_user_dictionary(file).revision() == 25, "retry applied twice");
         }},
-        {"ipc/save-failure-preserves-disk-and-memory", [&] {
-            Child helper{launch_dictionary_server(server, file, 1000)}; wait_ready(file);
-            const auto revision = snapshot(file).revision(); const auto request = update(std::string(32, 'd'), 1, U"失敗テスト");
+        {"commit/save-failure-preserves-disk", [&] {
+            const auto revision = read_user_dictionary(file).revision(); const auto request = update(std::string(32, 'd'), 1, U"失敗テスト");
             {
-                NativeHandle lock(CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr)); check(lock.valid(), "cannot lock fixture");
-                check(learning_exchange(file, encode_learning(request)) == "FAIL", "locked save accepted");
-                check(snapshot(file).revision() == revision && read_user_dictionary(file).revision() == revision, "failed save changed state");
+                const auto blocked = block_saves(file);
+                rejects([&] { commit_learning(file, request); });
+                check(read_user_dictionary(file).revision() == revision, "failed save changed the file");
             }
-            check(learning_exchange(file, encode_learning(request)) == "OKAY" && snapshot(file).revision() == revision + 1, "retry after save failure failed");
+            check(commit_learning(file, request).revision() == revision + 1, "retry after save failure failed");
+        }},
+        {"commit/waits-for-an-earlier-builds-writer", [&] {
+            const auto isolated = files.root / L"held.nskkdb";
+            auto client = std::make_shared<LearningDictionary>(demo_dictionary(), isolated);
+            const auto event = update(std::string(32, 'e'), 1, U"待機").event;
+            {
+                const auto held = hold_writer_lock(isolated);
+                rejects([&] { commit_learning(isolated, update(), 200); });
+                client->learn(event); Sleep(500);
+                check(client->registration_pending(event) && client->lookup({U"かんじ"})[0].text == U"待機", "held lock lost a pending update");
+                check(!std::filesystem::exists(isolated), "a writer ignored the held lock");
+            }
+            until([&] { return !client->registration_pending(event); });
+            check(read_user_dictionary(isolated).lookup({U"かんじ"})[0].text == U"待機", "update was not saved after the lock was released");
+            std::jthread release;
+            {
+                auto held = std::make_shared<NativeHandle>(hold_writer_lock(isolated));
+                release = std::jthread([held]() mutable { Sleep(300); held.reset(); });
+            }
+            check(commit_learning(isolated, update(std::string(32, 'f'), 1, U"後続"), 3000).lookup({U"かんじ"})[0].text == U"後続", "writer did not wait for the lock");
         }},
         {"client/async-update-cross-client-snapshot-and-selection-stability", [&] {
-            auto first = std::make_shared<LearningDictionary>(demo_dictionary(), file, server);
-            auto second = std::make_shared<LearningDictionary>(demo_dictionary(), file, server);
+            auto first = std::make_shared<LearningDictionary>(demo_dictionary(), file);
+            auto second = std::make_shared<LearningDictionary>(demo_dictionary(), file);
             Engine active(first); for (const auto ch : std::string("Kanji")) active.handle({KeyCode::Character, ch}); active.handle({KeyCode::Space});
             const auto displayed = active.candidates();
             const auto start = GetTickCount64(); first->learn(update(std::string(32, 'e'), 1, U"感じ").event);
-            check(GetTickCount64() - start < 500, "queue waited for IPC or disk");
+            check(GetTickCount64() - start < 500, "queue waited for disk");
             until([&] { return second->lookup({U"かんじ"})[0].text == U"感じ"; });
             check(active.candidates()[0].text == displayed[0].text, "snapshot change reordered active selection");
             check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"感じ", "async acknowledgement was not durable");
             auto removed = update(std::string(32, 'f'), 1, U"感じ"); removed.action = DictionaryAction::Forget;
-            check(learning_exchange(file, encode_learning(removed)) == "OKAY", "cross-client deletion failed");
+            commit_learning(file, removed);
             until([&] { return second->lookup({U"かんじ"})[0].text != U"感じ"; });
             check(active.candidates()[0].text == displayed[0].text, "deletion changed active selection");
             // Register then delete without ever looking up the saved generation.
@@ -187,85 +196,72 @@ int wmain(int argc, wchar_t** argv) {
             Engine immediate(first); first->learn(registration); immediate.remember_registration(registration);
             until([&] { return !first->registration_pending(registration); });
             removed.sequence = 2; removed.event = registration;
-            check(learning_exchange(file, encode_learning(removed)) == "OKAY", "registration deletion failed");
+            commit_learning(file, removed);
             until([&] { return first->lookup({U"みち"}).empty(); });
             for (const auto ch : std::string("Michi")) immediate.handle({KeyCode::Character, ch});
             immediate.handle({KeyCode::Space});
             check(immediate.registering(), "temporary cache resurrected a deleted registration");
         }},
-        {"client/change-notification-lets-idle-helper-exit", [&] {
+        {"client/change-notification-with-open-reader", [&] {
             const auto isolated = files.root / L"notify.nskkdb";
-            Child helper{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
-            auto observer = std::make_shared<LearningDictionary>(demo_dictionary(), isolated, server);
-            check(learning_exchange(isolated, encode_learning(update(std::string(32, '7'), 1, U"通知"))) == "OKAY", "notified update failed");
+            auto observer = std::make_shared<LearningDictionary>(demo_dictionary(), isolated);
+            commit_learning(isolated, update(std::string(32, '7'), 1, U"通知"));
             until([&] { return observer->lookup({U"かんじ"})[0].text == U"通知"; });
-            check(WaitForSingleObject(helper.process.get(), 5000) == WAIT_OBJECT_0, "idle reader kept the helper alive");
-            DWORD exit = 1; GetExitCodeProcess(helper.process.get(), &exit); check(exit == 0, "helper was not the idle writer");
-            Child restarted{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
             {
                 // An open reader (FILE_SHARE_DELETE) must not make the next save fail.
                 NativeHandle reader(CreateFileW(isolated.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     nullptr, OPEN_EXISTING, 0, nullptr));
                 check(reader.valid(), "cannot open reader");
-                check(learning_exchange(isolated, encode_learning(update(std::string(32, '7'), 2, U"再通知"))) == "OKAY", "open reader blocked a save");
+                commit_learning(isolated, update(std::string(32, '7'), 2, U"再通知"));
             }
             until([&] { return observer->lookup({U"かんじ"})[0].text == U"再通知"; });
         }},
-        {"ipc/forget-save-failure-retry-and-restart", [&] {
+        {"commit/forget-save-failure-and-stale-retries", [&] {
             const auto isolated = files.root / L"forget.nskkdb";
-            Child helper{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
             const auto initial = update(); auto removed = update(std::string(32, 'b')); removed.action = DictionaryAction::Forget;
-            check(learning_exchange(isolated, encode_learning(initial)) == "OKAY", "cannot seed deletion fixture");
+            commit_learning(isolated, initial);
             {
-                NativeHandle lock(CreateFileW(isolated.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
-                check(lock.valid(), "cannot lock deletion fixture");
-                check(learning_exchange(isolated, encode_learning(removed)) == "FAIL", "failed deletion save acknowledged");
-                check(snapshot(isolated).lookup({U"かんじ"}).size() == 1 && read_user_dictionary(isolated).revision() == 1, "failed delete changed memory or disk");
+                const auto blocked = block_saves(isolated);
+                rejects([&] { commit_learning(isolated, removed); });
+                check(read_user_dictionary(isolated).lookup({U"かんじ"}).size() == 1 && read_user_dictionary(isolated).revision() == 1, "failed delete changed the file");
             }
-            check(learning_exchange(isolated, encode_learning(removed)) == "OKAY", "delete retry failed");
-            check(snapshot(isolated).lookup({U"かんじ"}).empty() && read_user_dictionary(isolated).revision() == 2, "deletion not durable");
-            check(WaitForSingleObject(helper.process.get(), 3000) == WAIT_OBJECT_0, "deletion helper did not stop");
-            Child restarted{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
-            check(learning_exchange(isolated, encode_learning(initial)) == "OKAY" && snapshot(isolated).revision() == 2, "old learning retry resurrected deleted word");
-            check(learning_exchange(isolated, encode_learning(update(std::string(32, 'a'), 2))) == "OKAY", "explicit relearning failed");
-            check(learning_exchange(isolated, encode_learning(removed)) == "OKAY" && snapshot(isolated).revision() == 3 &&
-                snapshot(isolated).lookup({U"かんじ"}).size() == 1, "old delete retry removed a newer registration");
+            check(commit_learning(isolated, removed).lookup({U"かんじ"}).empty() && read_user_dictionary(isolated).revision() == 2, "deletion not durable");
+            check(commit_learning(isolated, initial).revision() == 2, "old learning retry resurrected deleted word");
+            commit_learning(isolated, update(std::string(32, 'a'), 2));
+            const auto saved = commit_learning(isolated, removed);
+            check(saved.revision() == 3 && saved.lookup({U"かんじ"}).size() == 1, "old delete retry removed a newer registration");
         }},
-        {"ipc/atomic-import-save-failure-concurrent-learning-retry-and-refresh", [&] {
-            Child helper{launch_dictionary_server(server,file,1000)}; wait_ready(file);
-            auto observer=std::make_shared<LearningDictionary>(demo_dictionary(),file,server);
+        {"commit/atomic-import-save-failure-concurrent-learning-and-retry", [&] {
+            auto observer=std::make_shared<LearningDictionary>(demo_dictionary(),file);
             ImportRequest batch{std::string(32,'1'),1,{}};
             for(unsigned i=0;i<200;++i) batch.entries.push_back({{U"とりこみ"+ascii(std::to_string(i))},{},{"",U"語"+ascii(std::to_string(i)),std::u32string(100,U'注')}});
             batch.entries.push_back({{U"わ",'k'},{},{"",U"湧",U"共通"}});
-            const auto bytes=encode_import(batch); check(bytes.size()>20000,"batch did not exercise expanded IPC limit");
-            const auto before=snapshot(file).serialize();
+            const auto before=read_user_dictionary(file).serialize();
             {
-                NativeHandle lock(CreateFileW(file.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr)); check(lock.valid(),"cannot lock import fixture");
-                check(learning_exchange(file,bytes,5000)=="FAIL","failed import save acknowledged");
-                check(snapshot(file).serialize()==before && read_user_dictionary(file).serialize()==before,"failed import changed memory or disk");
+                const auto blocked=block_saves(file);
+                rejects([&]{commit_import(file,batch,5000);});
+                check(read_user_dictionary(file).serialize()==before,"failed import changed the file");
             }
             wchar_t exe[32768]{}; GetModuleFileNameW(nullptr,exe,ARRAYSIZE(exe));
             Child concurrent{client_process(exe,file,L'2')};
-            check(learning_exchange(file,bytes,5000)=="OKAY","import retry failed");
+            commit_import(file,batch,5000);
             check(WaitForSingleObject(concurrent.process.get(),5000)==WAIT_OBJECT_0,"concurrent import learner hung");
             DWORD exit=1; GetExitCodeProcess(concurrent.process.get(),&exit); check(exit==0,"concurrent import learner failed");
-            auto saved=snapshot(file);
+            auto saved=read_user_dictionary(file);
             check(saved.revision()==UserDictionary::parse(before).revision()+13 && saved.lookup({U"とりこみ199"}).size()==1,"import overwrote concurrent learning or lost entries");
             until([&]{return observer->lookup({U"わ",'k'},U"く").size()==1;});
             check(observer->lookup({U"わ",'k'},U"け")[0].text==U"湧","snapshot lost generic okuri");
             auto removal=update(std::string(32,'3')); removal.action=DictionaryAction::Forget; removal.event=batch.entries.front();
-            check(learning_exchange(file,encode_learning(removal))=="OKAY","cannot remove imported entry");
-            observer.reset();
-            check(WaitForSingleObject(helper.process.get(),5000)==WAIT_OBJECT_0,"import helper did not stop");
-            Child restarted{launch_dictionary_server(server,file,1000)}; wait_ready(file);
-            check(learning_exchange(file,bytes,5000)=="OKAY" && snapshot(file).lookup(batch.entries.front().key).empty(),"retry after restart resurrected a deleted import");
+            commit_learning(file,removal);
+            check(commit_import(file,batch,5000).lookup(batch.entries.front().key).empty(),"import retry resurrected a deleted entry");
         }},
-        {"client/unavailable-server-keeps-base-conversion", [&] {
-            LearningDictionary client(demo_dictionary(), files.root / L"absent" / L"dictionary.nskkdb", files.root / L"not-installed.exe");
+        {"client/unwritable-dictionary-keeps-base-conversion", [&] {
+            write_file_atomic(files.root / L"blocker", "not a folder");
+            LearningDictionary client(demo_dictionary(), files.root / L"blocker" / L"dictionary.nskkdb");
             const auto start = GetTickCount64(); client.learn(update().event);
             const auto candidates = client.lookup({U"かんじ"});
             check(candidates[0].text == U"感じ" && std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.text == U"漢字"; }) &&
-                GetTickCount64() - start < 500, "failed helper blocked conversion or lost base candidate");
+                GetTickCount64() - start < 500, "failed save blocked conversion or lost base candidate");
         }},
         {"client/pending-forget-scope-and-learn-order-survive-save-failure", [&] {
             const auto isolated = files.root / L"queued.nskkdb";
@@ -275,12 +271,10 @@ int wmain(int argc, wchar_t** argv) {
             auto other = exact; other.okuri = U"け";
             initial.apply(ImportRequest{std::string(32, 'a'), 1, {common, exact, other}});
             write_file_atomic(isolated, initial.serialize());
-            Child helper{launch_dictionary_server(server, isolated, 1000)}; wait_ready(isolated);
-            auto client = std::make_shared<LearningDictionary>(demo_dictionary(), isolated, server);
+            auto client = std::make_shared<LearningDictionary>(demo_dictionary(), isolated);
             until([&] { return client->forget_target(common.key, U"く", U"描").has_value(); });
             {
-                NativeHandle lock(CreateFileW(isolated.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr));
-                check(lock.valid(), "cannot hold queued-save fixture");
+                const auto blocked = block_saves(isolated);
                 check(client->forget(exact), "cannot enqueue exact deletion");
                 check(client->forget_target(common.key, U"く", U"描")->okuri.empty(), "pending deletion still resolves exact scope");
                 check(client->forget(common), "cannot enqueue generic deletion");
@@ -296,13 +290,14 @@ int wmain(int argc, wchar_t** argv) {
             check(saved.lookup_scope(common.key, U"く").empty() && saved.lookup_scope(common.key, {}).empty() && saved.lookup_scope(common.key, U"け").size() == 1,
                 "queued retry changed unrelated scope or resurrected deletion");
         }},
-        {"store/corrupt-file-is-not-overwritten", [&] {
-            const auto broken = files.root / L"broken.nskkdb"; write_file_atomic(broken, "broken user data");
-            Child helper{launch_dictionary_server(server, broken, 1000)};
-            check(WaitForSingleObject(helper.process.get(), 3000) == WAIT_OBJECT_0, "corrupt database accepted");
-            DWORD exit = 0; GetExitCodeProcess(helper.process.get(), &exit); check(exit == 2, "corrupt store did not fail");
-            rejects([&] { read_user_dictionary(broken); });
-            check(std::filesystem::file_size(broken) == 16, "corrupt database overwritten");
+        {"store/corrupt-or-newer-file-is-not-overwritten", [&] {
+            const auto broken = files.root / L"broken.nskkdb";
+            for (const auto contents : {std::string("broken user data"), std::string("NKUD9") + std::string(40, '\0')}) {
+                write_file_atomic(broken, contents);
+                rejects([&] { commit_learning(broken, update()); });
+                rejects([&] { read_user_dictionary(broken); });
+                check(std::filesystem::file_size(broken) == contents.size(), "unreadable database overwritten");
+            }
         }}
     };
     unsigned passed = 0;
@@ -311,8 +306,6 @@ int wmain(int argc, wchar_t** argv) {
         catch (const std::exception& error) { std::cerr << "FAIL " << name << ": " << error.what() << '\n'; }
     }
     std::cout << passed << '/' << cases.size() << " passed\n";
-    // Release the helpers' locks so the fixture files can be removed.
-    Sleep(300);
-    for (const auto name : {L"user.nskkdb", L"forget.nskkdb", L"queued.nskkdb", L"notify.nskkdb", L"numeric.nskkdb"}) stop_dictionary_helper(files.root / name);
+    Sleep(300); // Let background saves release the writer locks before removing the fixtures.
     return passed == cases.size() ? 0 : 1;
 }

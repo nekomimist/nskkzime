@@ -15,10 +15,8 @@ RuntimeConfiguration capture_runtime_configuration(DictionaryConfiguration dicti
     if (settings_file.empty()) try { settings_file = dictionary_settings_path(); } catch (...) {}
     try { result.user_file = learning_file_path(settings_file); }
     catch (...) { result.learning_paths_failed = true; }
-    try {
-        result.learning_helper = learning_helper_path();
-        result.inference_server = result.learning_helper.parent_path() / L"nkkz-ime-server.exe";
-    } catch (...) { result.learning_paths_failed = true; }
+    try { result.inference_server = product_directory() / L"nkkz-ime-server.exe"; }
+    catch (...) { /* Inference reports the missing server when it is enabled. */ }
     result.tools = tool_commands(settings_file, result.user_file);
     return result;
 }

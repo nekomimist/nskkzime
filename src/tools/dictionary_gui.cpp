@@ -25,7 +25,7 @@ struct Work {
 };
 struct Manager {
     HWND window = nullptr;
-    std::filesystem::path file, server;
+    std::filesystem::path file;
     bool valid = false;
     std::vector<DictionaryRow> rows;
     std::vector<std::size_t> visible;
@@ -136,13 +136,13 @@ void start(Manager& manager, Action action, std::filesystem::path path = {}, Lea
         return;
     auto work = std::make_shared<Work>();
     work->action = action;
-    const auto file = manager.file, server = manager.server;
+    const auto file = manager.file;
     // Establish completion delivery before allowing a worker to mutate anything.
     if (!SetTimer(manager.window, 1, 75, nullptr))
         throw std::runtime_error("cannot start operation timer");
     manager.work = work;
     try {
-        std::thread([work, file, server, path = std::move(path), entry = std::move(entry),
+        std::thread([work, file, path = std::move(path), entry = std::move(entry),
                      preview = std::move(preview)] {
             try {
                 switch (work->action) {
@@ -150,11 +150,11 @@ void start(Manager& manager, Action action, std::filesystem::path path = {}, Lea
                     work->preview = prepare_dictionary_import(file, path);
                     break;
                 case Action::Import:
-                    apply_dictionary_import(*preview, server);
+                    apply_dictionary_import(*preview);
                     work->message = L"取り込みを保存しました。既存の順位と注釈は保持しました。";
                     break;
                 case Action::Forget:
-                    forget_dictionary_entry(file, entry, server);
+                    forget_dictionary_entry(file, entry);
                     work->message = L"選択した範囲の語を学習辞書から削除しました。読み取り専用辞書の候補は残ります。";
                     break;
                 case Action::Export:
@@ -209,7 +209,7 @@ void finish(Manager& manager) {
     controls(manager);
     if (work->preview) {
         auto& preview = *work->preview;
-        if (preview.payload.empty()) {
+        if (preview.request.entries.empty()) {
             status(manager, L"取り込む候補は0件です。学習辞書は変更していません。");
             return;
         }
@@ -341,8 +341,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             manager.file = arguments[2];
         else
             throw std::invalid_argument("nskkzime_dictionary_gui.exe [--file 学習辞書の絶対パス]");
-        (void)learning_pipe_name(manager.file);
-        manager.server = dictionary_manager_helper_path();
+        validate_learning_file(manager.file);
     } catch (const std::exception& error) {
         LocalFree(arguments);
         MessageBoxW(nullptr, wide_message(error.what()).c_str(), L"nskkzime 学習辞書", MB_OK | MB_ICONERROR);

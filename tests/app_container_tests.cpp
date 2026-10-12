@@ -4,7 +4,6 @@
 #include "tsf_mode_host.h"
 #include "candidate_ui.h"
 #include "inference_client.h"
-#include "helper_cleanup.h"
 #include <userenv.h>
 #include <aclapi.h>
 #include <cstdint>
@@ -461,8 +460,6 @@ int wmain(int argc, wchar_t** argv) {
             NativeHandle process(OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid));
             check(process.valid() && TerminateProcess(process.get(), 0), "stop fixture model"); WaitForSingleObject(process.get(), 5000);
         }
-        // The broker's dictionary helper otherwise keeps the lock until its idle timeout.
-        stop_dictionary_helper(user);
         // Retain fixtures only when a check fails.
         std::filesystem::remove_all(root);
         std::cout << "AppContainer broker, TSF, learning, inference, cancellation and peer checks passed\n";

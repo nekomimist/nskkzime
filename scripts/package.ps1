@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$binaries = @('nskkzime_tsf.dll', 'nskkzime_dictionary_server.exe', 'nskkzime_settings.exe',
+$binaries = @('nskkzime_tsf.dll', 'nskkzime_settings.exe',
     'nskkzime_dictionary_gui.exe', 'nskkzime_config.exe', 'nskkzime_user_dictionary.exe', 'ime_probe.exe')
 $baseLicenses = @('licenses/nlohmann-MIT.txt', 'licenses/Unicode-3.0.txt')
 $zenzLicenses = @('licenses/skk-zenz-MIT.txt', 'licenses/llama-MIT.txt')
@@ -96,7 +96,7 @@ function Get-MetadataIdentity($Metadata) {
     } else { throw 'マニフェストのビルド情報が一致しません。' }
     ConvertTo-Json -InputObject $ordered -Compress -Depth 4
 }
-function Get-PackageNames([bool]$WithZenz, [int]$Format = 4) {
+function Get-PackageNames([bool]$WithZenz, [int]$Format = 5) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
@@ -104,13 +104,15 @@ function Get-PackageNames([bool]$WithZenz, [int]$Format = 4) {
     if ($Format -ge 2) { $names += @('tools/install.ps1', 'tools/installation.psm1') }
     if ($Format -ge 3) { $names += 'bin/nskkzime_broker.exe' }
     if ($Format -ge 4) { $names += @('bin/x86/nskkzime_tsf.dll', 'bin/x86/ime_probe.exe') }
+    # Format 5 writes the user dictionary from the IME itself, without a helper.
+    if ($Format -le 4) { $names += 'bin/nskkzime_dictionary_server.exe' }
     $names | Sort-Object -CaseSensitive
 }
 function Test-PackageContents($Contents) {
     if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
     if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
     $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
-    if ($manifest.format_version -notin @(1, 2, 3, 4) -or $manifest.product -cne 'nskkzime' -or
+    if ($manifest.format_version -notin @(1, 2, 3, 4, 5) -or $manifest.product -cne 'nskkzime' -or
         $manifest.architecture -cne 'x64' -or $manifest.configuration -cne 'Release' -or
         $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
         ($manifest.format_version -ge 2 -and $manifest.variant -cne 'zenz-cpu')) {
@@ -191,7 +193,8 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
     for ($ancestor = $root; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
         if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '再解析ポイントは検査できません。' }
     }
-    $names = @(Get-PackageNames $true 4) + @('manifest.json')
+    # Installed folders of earlier versions remain verifiable for rollback.
+    $names = @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
     $contents = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
     $folders = [Collections.Generic.Queue[string]]::new()
     $folders.Enqueue($path)
@@ -313,7 +316,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できませ�
 $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
-    format_version = 4; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
+    format_version = 5; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $buildMetadata.source_revision

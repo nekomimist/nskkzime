@@ -12,6 +12,9 @@ struct ToolCommand {
     ImeTool tool = ImeTool::Settings;
     std::string broker_generation; // Captured from this service's bootstrap.
 };
+// This build's x64 programs: GUI tools and the inference server. The x86
+// companion DLL resolves the same folder.
+std::filesystem::path product_directory();
 // Capture paths at service activation, without opening either data file.
 std::array<ToolCommand, 2> current_tool_commands() noexcept;
 std::array<ToolCommand, 2> tool_commands(const std::filesystem::path& settings,

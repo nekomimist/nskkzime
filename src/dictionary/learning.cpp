@@ -84,19 +84,6 @@ void validate_import(const ImportRequest& request) {
         event_check(entry,true); check(entry.candidate.source == CandidateSource::Dictionary);
     }
 }
-std::string encode_import(const ImportRequest& request) {
-    validate_import(request); Writer w; w.bytes = "NKI1";
-    w.string(request.client); w.number(request.sequence); w.number(request.entries.size());
-    for (const auto& entry : request.entries) w.event(entry);
-    check(w.bytes.size() <= learning_max_bytes); return w.bytes;
-}
-ImportRequest decode_import(std::string_view bytes) {
-    check(bytes.size() <= learning_max_bytes && bytes.starts_with("NKI1")); Reader r{bytes.substr(4)};
-    ImportRequest request; request.client = r.string(32); request.sequence = r.number();
-    const auto count = r.number(); check(count > 0 && count <= import_max_candidates);
-    for (std::uint64_t i = 0; i < count; ++i) request.entries.push_back(r.event(true));
-    check(r.bytes.empty()); validate_import(request); return request;
-}
 namespace {
 template<class Clients> auto find_client(Clients& clients, std::string_view client) {
     return std::find_if(clients.begin(), clients.end(), [&](const auto& item) { return item.first == client; });

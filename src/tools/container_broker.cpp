@@ -87,15 +87,8 @@ struct Broker {
                 return std::move(*response);
             }
             if (!body.starts_with("NKL1") && !body.starts_with("NKF1")) throw std::runtime_error("unsupported learning operation");
-            (void)decode_learning(body);
-            try { return learning_exchange(file, body); }
-            catch (...) {
-                const auto child = launch_dictionary_server(runtime.learning_helper, file);
-                for (int i = 0; i < 100 && !cancelled(); ++i) {
-                    try { return learning_exchange(file, body); } catch (...) { Sleep(10); }
-                }
-                throw std::runtime_error("learning helper unavailable");
-            }
+            (void)commit_learning(file, decode_learning(body));
+            return "OKAY";
         }
         if (operation == "INF1") {
             const auto settings = inference_config(runtime); if (!settings) throw std::runtime_error("inference disabled");

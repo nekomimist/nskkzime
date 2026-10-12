@@ -5,7 +5,6 @@
 #include "learning_ipc.h"
 #include "candidate_ui.h"
 #include "isolated_settings.h"
-#include "helper_cleanup.h"
 #include <iostream>
 #include <stdexcept>
 namespace nskkzime::windows {
@@ -326,6 +325,6 @@ int wmain(int argc, wchar_t** argv) {
         std::cout << "PASS mode labels, Windows state, quote keys, app exclusions, composition lifetime and teardown\n"; result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
-    Sleep(300); stop_dictionary_helper(root / L"user-dictionary.nskkdb");
+    Sleep(300); // Let background saves release the writer lock.
     std::error_code ignored; std::filesystem::remove_all(root, ignored); return result;
 }

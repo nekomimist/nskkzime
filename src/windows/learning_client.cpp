@@ -1,4 +1,3 @@
-#include "binary_layout.h"
 #include "learning_client.h"
 #include "app_container.h"
 #include "learning_ipc.h"
@@ -19,17 +18,11 @@ HMODULE pin_module() {
         throw std::runtime_error("cannot pin learning worker module");
     return module;
 }
-std::filesystem::path helper_path() {
-    const auto module = pin_module(); wchar_t path[32768]{};
-    const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path)); FreeLibrary(module);
-    if (!size || size == ARRAYSIZE(path)) throw std::runtime_error("cannot locate dictionary helper");
-    return shared_binary_directory(std::filesystem::path(path)) / L"nskkzime_dictionary_server.exe";
-}
 }
 struct LearningDictionary::State {
     std::shared_ptr<const Dictionary> base;
     std::atomic<std::shared_ptr<const UserDictionary>> snapshot{std::make_shared<UserDictionary>()};
-    std::filesystem::path file, server;
+    std::filesystem::path file;
     std::string container_generation;
     // Readers outside an AppContainer open the change events directly. An
     // AppContainer cannot, so the broker waits for the change on its behalf.
@@ -60,17 +53,16 @@ struct LearningDictionary::State {
     }
     void update_status(std::wstring value) { const std::lock_guard lock(mutex); report = std::move(value); }
     struct StaleSettings : std::runtime_error { StaleSettings() : std::runtime_error("stale settings") {} };
+    // Broker-backed workers only; others read and write the file themselves.
     std::string exchange(std::string_view body, DWORD timeout = 1500, HANDLE cancel = nullptr) {
-        if (container_generation.empty()) return learning_exchange(file, body);
         NativeHandle local(cancel ? INVALID_HANDLE_VALUE : CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!cancel) cancel = local.get();
         auto response = container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + timeout, cancel);
         if (response == "STAL") throw StaleSettings();
         return response;
     }
-    // Desktop readers use the saved file directly, so only writes need the
-    // helper process and it can exit when idle. Other readers ask the broker;
-    // with wait, the broker holds the request until a newer revision is saved.
+    // Desktop readers use the saved file directly. Other readers ask the
+    // broker; with wait, it holds the request until a newer revision is saved.
     std::shared_ptr<UserDictionary> refresh(std::uint64_t revision, bool wait) {
         if (container_generation.empty()) {
             if (user_dictionary_revision(file) == revision) return nullptr;
@@ -89,7 +81,7 @@ struct LearningDictionary::State {
         try {
             constexpr std::uint64_t none = std::numeric_limits<std::uint64_t>::max();
             std::uint64_t revision = none;
-            ULONGLONG next_launch = 0, stop_deadline = 0; DWORD launch_delay = 5000, retry_delay = 250;
+            ULONGLONG stop_deadline = 0; DWORD retry_delay = 250;
             for (;;) {
                 // Reset before reading the queue, so a later enqueue() or stop ends the wait at once.
                 if (remote_wait) ResetEvent(interrupt.get());
@@ -104,11 +96,15 @@ struct LearningDictionary::State {
                 NativeHandle changed(!remote_wait && revision != none ? listen(revision) : NativeHandle{});
                 const bool wait = remote_wait && !request && revision != none;
                 try {
-                    if (request) {
-                        const auto response = exchange(encode_learning(*request));
-                        if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
+                    std::shared_ptr<UserDictionary> next;
+                    if (request && container_generation.empty()) {
+                        // The saved result is the next snapshot; no second read.
+                        auto saved = std::make_shared<UserDictionary>(commit_learning(file, *request));
+                        if (saved->revision() != revision) next = std::move(saved);
+                    } else {
+                        if (request && exchange(encode_learning(*request)) != "OKAY") throw std::runtime_error("dictionary update rejected");
+                        next = refresh(revision, wait);
                     }
-                    auto next = refresh(revision, wait);
                     const bool published = next != nullptr;
                     // Keep the event pending until its acknowledged generation
                     // has been published. Engine caches can then safely retire,
@@ -119,7 +115,7 @@ struct LearningDictionary::State {
                         if (request) queue.pop_front();
                     }
                     update_status(L"学習: 保存済み・同期済み（世代 " + std::to_wstring(revision) + L"）");
-                    launch_delay = 5000; retry_delay = 250;
+                    retry_delay = 250;
                     if (published && !remote_wait) continue; // Listen on the new revision's event.
                 } catch (const StaleSettings&) {
                     // This generation can no longer save. The next activation
@@ -131,16 +127,9 @@ struct LearningDictionary::State {
                 } catch (const std::exception&) {
                     // A write or stop closed the remote wait; not a failure.
                     if (wait && WaitForSingleObject(interrupt.get(), 0) == WAIT_OBJECT_0) continue;
-                    update_status(request ? L"学習: 接続または保存に失敗。未保存分を再試行中（通常の変換は利用できます）"
+                    // A busy lock, a corrupt or newer file, or a failed save.
+                    update_status(request ? L"学習: 保存に失敗。未保存分を再試行中（通常の変換は利用できます）"
                                           : L"学習: ユーザー辞書を読めません。再試行中（通常の変換は利用できます）");
-                    // Only a pending write needs the helper. If it cannot start
-                    // (e.g. a corrupt file it refuses to open), back off instead
-                    // of spawning a process every few seconds from every app.
-                    const auto now = GetTickCount64();
-                    if (request && container_generation.empty() && now >= next_launch) {
-                        next_launch = now + launch_delay; launch_delay = (std::min)(launch_delay * 2, DWORD{300000});
-                        try { const auto process = launch_dictionary_server(server, file); } catch (...) {}
-                    }
                     WaitForSingleObject(wake.get(), retry_delay);
                     retry_delay = (std::min)(retry_delay * 2, request ? DWORD{5000} : DWORD{60000});
                     continue;
@@ -166,12 +155,12 @@ struct LearningDictionary::State {
         work->state->run();
     }
 };
-LearningDictionary::LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server, std::string container_generation)
+LearningDictionary::LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::string container_generation)
     : state_(std::make_shared<State>()) {
     if (!state_->wake.valid() || !state_->interrupt.valid()) throw std::runtime_error("cannot allocate learning worker event");
     state_->remote_wait = !container_generation.empty() && in_app_container();
     state_->container_generation = std::move(container_generation);
-    state_->base = std::move(base); state_->file = std::move(file); state_->server = std::move(server);
+    state_->base = std::move(base); state_->file = std::move(file);
     auto work = std::make_unique<State::Work>(); work->state = state_; work->module = pin_module();
     if (!TrySubmitThreadpoolCallback(State::callback, work.get(), nullptr)) {
         FreeLibrary(work->module); throw std::runtime_error("cannot start learning worker");
@@ -252,5 +241,4 @@ std::wstring LearningDictionary::status() const {
 void publish_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
     if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary.get())) learning->learn(event);
 }
-std::filesystem::path learning_helper_path() { return helper_path(); }
 } // namespace nskkzime::windows

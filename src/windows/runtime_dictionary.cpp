@@ -126,27 +126,26 @@ std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration&
         const auto& cache_root = settings.cache_root;
         const bool learning = settings.learning;
         const auto user_file = learning ? settings.user_file : std::filesystem::path{};
-        const auto helper = learning ? settings.learning_helper : std::filesystem::path{};
         const bool learning_paths_failed = learning && settings.learning_paths_failed;
         std::wstring key = configuration.demo ? L"demo" : L"file";
         append_key(key,configuration.file.native());
         for (const auto& path : configuration.settings.dictionaries) append_key(key,path.native());
         append_key(key,learning ? L"learn" : L"no-learn");
-        append_key(key,user_file.native()); append_key(key,helper.native());
+        append_key(key,user_file.native());
         append_key(key,learning_paths_failed ? L"invalid" : L"valid");
         append_key(key,cache_root ? cache_root->native() : L"cache-off");
         const std::lock_guard lock(cache_mutex);
         std::erase_if(cache,[](const auto& entry) { return entry.second.expired(); });
         if (const auto found = cache.find(key); found != cache.end()) result = found->second.lock();
         if (!result) {
-            auto load = [configuration,learning,user_file,helper,learning_paths_failed,cache_root] {
+            auto load = [configuration,learning,user_file,learning_paths_failed,cache_root] {
                 auto loaded = load_dictionaries(configuration,cache_root);
                 if (loaded.failed) { OutputDebugStringW(loaded.status.c_str()); OutputDebugStringW(L"\n"); }
                 bool registration = false;
                 if (learning && !loaded.failed) {
                     try {
                         if (learning_paths_failed) throw std::runtime_error("invalid learning path");
-                        loaded.dictionary = std::make_shared<LearningDictionary>(loaded.dictionary,user_file,helper);
+                        loaded.dictionary = std::make_shared<LearningDictionary>(loaded.dictionary,user_file);
                         registration = true;
                     } catch (...) { loaded.status += L"\r\n学習: 初期化に失敗（通常の変換は利用できます）"; }
                 } else loaded.status += L"\r\n学習: 無効、または辞書未設定・読み込み失敗のため停止";

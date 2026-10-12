@@ -25,7 +25,7 @@ try {
     # The product package is created, verifies as an archive and as expanded files, and detects tampering.
     $created = & $PackageScript @arguments
     $verified = & $PackageScript -Verify $created.Path
-    Assert-Package ($verified.Verified -and $verified.Files -eq 19 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
+    Assert-Package ($verified.Verified -and $verified.Files -eq 18 -and $verified.Variant -eq 'zenz-cpu') 'Incomplete zenz package.'
     $expanded = Join-Path $fixture 'expanded'
     [IO.Compression.ZipFile]::ExtractToDirectory($created.Path, $expanded)
     Assert-Package ((& $PackageScript -VerifyDirectory $expanded).Verified) 'Expanded package verification failed.'

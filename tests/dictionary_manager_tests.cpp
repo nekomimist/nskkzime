@@ -37,27 +37,7 @@ struct Files {
         std::filesystem::remove(root, ignored);
     }
 };
-struct Child {
-    NativeHandle handle;
-    ~Child() {
-        if (WaitForSingleObject(handle.get(), 1500) == WAIT_TIMEOUT) {
-            TerminateProcess(handle.get(), 99);
-            WaitForSingleObject(handle.get(), 2000);
-        }
-    }
-};
-void ready(const std::filesystem::path& file) {
-    const auto deadline = GetTickCount64() + 5000;
-    do {
-        try {
-            if (learning_exchange(file, snapshot_request(UINT64_MAX)).starts_with("DATA"))
-                return;
-        } catch (...) {
-        }
-        Sleep(20);
-    } while (GetTickCount64() < deadline);
-    throw std::runtime_error("test helper did not start");
-}
+
 LearningEvent word(std::u32string reading, std::u32string spelling, char key = 0, std::u32string suffix = {}) {
     return {{std::move(reading), key}, std::move(suffix), {"test", std::move(spelling), U"注釈𠮷"}};
 }
@@ -68,10 +48,9 @@ void learn(UserDictionary& data, LearningEvent entry) {
         data.apply(LearningRequest{learning_client_id(), 1, std::move(entry)});
 }
 } // namespace
-int wmain(int argc, wchar_t** argv) {
-    if (argc != 2)
+int wmain(int argc, wchar_t**) {
+    if (argc != 1)
         return 2;
-    const std::filesystem::path server = argv[1];
     Files files;
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
         {"rows-filter-unicode-and-exact-scope",
@@ -99,15 +78,15 @@ int wmain(int argc, wchar_t** argv) {
              const auto preview = prepare_dictionary_import(file, source);
              check(preview.candidates == 1 && preview.added == 1 && !std::filesystem::exists(file) &&
                        !std::filesystem::exists(file.native() + L".lock"),
-                   "preflight wrote or started a helper");
+                   "preflight wrote or locked the dictionary");
              write_file_atomic(source, "かな /仮名/\nbroken\n");
              rejects([&] { prepare_dictionary_import(file, source); });
              write_file_atomic(source, "かな /(unknown-function)/\n");
              rejects([&] { prepare_dictionary_import(file, source); });
              write_file_atomic(source, ";; empty\n");
              const auto empty = prepare_dictionary_import(file, source);
-             check(empty.payload.empty() && empty.candidates == 0, "empty import has updates");
-             apply_dictionary_import(empty, files.root / L"absent.exe");
+             check(empty.request.entries.empty() && empty.candidates == 0, "empty import has updates");
+             apply_dictionary_import(empty);
              check(!std::filesystem::exists(file), "empty import wrote a dictionary");
              write_file_atomic(file, "broken database");
              rejects([&] { prepare_dictionary_import(file, source); });
@@ -124,11 +103,9 @@ int wmain(int argc, wchar_t** argv) {
              const auto preview = prepare_dictionary_import(file, source);
              check(preview.candidates == 3 && preview.added == 2, "preflight count wrong");
              write_file_atomic(source, "へんこう /変更/\n");
-             Child helper{launch_dictionary_server(server, file, 1000)};
-             ready(file);
              const LearningRequest concurrent{learning_client_id(), 1, word(U"かんじ", U"幹事")};
-             check(learning_exchange(file, encode_learning(concurrent)) == "OKAY", "concurrent learning failed");
-             apply_dictionary_import(preview, server);
+             commit_learning(file, concurrent);
+             apply_dictionary_import(preview);
              auto saved = read_user_dictionary(file);
              const auto words = saved.lookup({U"かんじ"});
              check(words.size() == 3 && words[0].text == U"幹事" && words[1].annotation == U"注釈𠮷" &&
@@ -136,7 +113,7 @@ int wmain(int argc, wchar_t** argv) {
                    "import replaced priority or annotation");
              check(saved.lookup({U"へんこう"}).empty() && !saved.lookup({U"かな"}).empty(),
                    "source was reread after approval");
-             apply_dictionary_import(preview, server);
+             apply_dictionary_import(preview);
              check(read_user_dictionary(file).serialize() == saved.serialize(),
                    "identical import retry changed the dictionary");
          }},
@@ -149,21 +126,19 @@ int wmain(int argc, wchar_t** argv) {
              learn(data, word(U"か", U"描", 'k', U"け"));
              learn(data, word(U"か", U"書", 'k', U"く"));
              write_file_atomic(file, data.serialize());
-             Child helper{launch_dictionary_server(server, file, 1000)};
-             ready(file);
              const auto rows = read_dictionary_rows(file);
              const auto row = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
                  return row.entry.okuri == U"く" && row.entry.candidate.text == U"描";
              });
              check(row != rows.end(), "test row missing");
-             forget_dictionary_entry(file, row->entry, server);
+             forget_dictionary_entry(file, row->entry);
              const auto after = read_dictionary_rows(file);
              check(after.size() == 3, "deletion removed wrong number of entries");
              check(std::none_of(
                        after.begin(), after.end(),
                        [](const auto& row) { return row.entry.okuri == U"く" && row.entry.candidate.text == U"描"; }),
                    "selected exact scope remains");
-             forget_dictionary_entry(file, word(U"か", U"描", 'k'), server);
+             forget_dictionary_entry(file, word(U"か", U"描", 'k'));
              const auto remaining = read_dictionary_rows(file);
              check(remaining.size() == 2 && std::any_of(remaining.begin(), remaining.end(),
                                                         [](const auto& row) {

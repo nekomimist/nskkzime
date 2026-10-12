@@ -5,7 +5,6 @@
 #include "tsf_test_host.h"
 #include "dictionary_settings.h"
 #include "isolated_settings.h"
-#include "helper_cleanup.h"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -195,7 +194,7 @@ int wmain(int argc, wchar_t** argv) {
         result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
-    Sleep(300); stop_dictionary_helper(file); // Release the helper's lock on these test files.
+    Sleep(300); // Let background saves release the writer lock on these test files.
     std::error_code ignored; std::filesystem::remove_all(root, ignored);
     return result;
 }

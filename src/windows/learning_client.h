@@ -4,11 +4,10 @@
 
 namespace nskkzime::windows {
 // Activation starts a background worker. lookup() reads memory; learn() only
-// queues an event. Neither method opens a file, pipe, or process.
+// queues an event. Neither method opens a file or pipe.
 class LearningDictionary final : public Dictionary {
 public:
-    LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::filesystem::path server,
-        std::string container_generation = {});
+    LearningDictionary(std::shared_ptr<const Dictionary> base, std::filesystem::path file, std::string container_generation = {});
     ~LearningDictionary() override;
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
     std::vector<LookupCandidate> lookup_many(std::span<const LookupKey>, std::u32string_view okuri = {}) const override;
@@ -23,6 +22,5 @@ private:
     struct State;
     std::shared_ptr<State> state_;
 };
-std::filesystem::path learning_helper_path();
 void publish_learning(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
 } // namespace nskkzime::windows

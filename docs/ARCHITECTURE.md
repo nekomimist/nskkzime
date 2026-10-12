@@ -1,25 +1,23 @@
 # 構成
 
 nskkzimeはWindows x64向けのTSF IME。SKK風の入力コアを各アプリのプロセスに読み込み、
-辞書の学習とzenzによる推論は別プロセスで行う。推論が止まっても辞書入力は続けられる。
+zenzによる推論は別プロセスで行う。推論が止まっても辞書入力は続けられる。
 
 ## プロセス
 
 ```text
 各アプリ ── nskkzime_tsf.dll（x64／x86）
    ├─ 共有メモリー: 解析済みの読み取り専用辞書（ユーザー・セッション単位）
-   ├─ ファイル読み取り＋名前付きイベント: ユーザー辞書の同期
-   ├─ 名前付きパイプ ─ nskkzime_dictionary_server.exe（ユーザー辞書への書き込み）
+   ├─ ファイル＋ロックファイル＋名前付きイベント: ユーザー辞書の読み書きと同期
    ├─ 名前付きパイプ ─ nkkz-ime-server.exe（zenzの生成・採点）
-   └─ AppContainer／仮想化されたアプリ ─ nskkzime_broker.exe ─ 上記へ中継
+   └─ AppContainer／仮想化されたアプリ ─ nskkzime_broker.exe ─ 上記を代行
 GUI: nskkzime_settings.exe（設定）、nskkzime_dictionary_gui.exe（学習辞書の管理）
 CLI: nskkzime_config.exe、nskkzime_user_dictionary.exe、skk_trace.exe
 ```
 
 | プロセス | 起動と終了 | 役割 |
 |---|---|---|
-| TSF DLL | 各アプリが読み込む | キー処理、composition、候補UI、入力モード |
-| `nskkzime_dictionary_server` | 未保存の学習・削除があるときにDLLが起動。無通信10秒で終了 | ユーザー辞書の唯一の書き手。保存ごとに世代の変更を通知 |
+| TSF DLL | 各アプリが読み込む | キー処理、composition、候補UI、入力モード、ユーザー辞書の保存 |
 | `nkkz-ime-server` | 推論要求時にDLLが起動。無通信 `zenz-idle-seconds`（既定30分）で終了 | llama.cppでモデルを保持し、convert／scoreを1要求ずつ処理 |
 | `nskkzime_broker` | サインイン時（HKCU Run）と導入時に起動して常駐 | AppContainer（Windows検索・Store）と、設定が仮想化されたアプリに設定・辞書・学習・推論を中継 |
 
@@ -34,7 +32,7 @@ CLI: nskkzime_config.exe、nskkzime_user_dictionary.exe、skk_trace.exe
 | `src/dictionary` | SKK辞書の読み込み、解析済み辞書、ユーザー辞書の形式と順位 |
 | `src/server` | 推論プロトコル、推論の方針（生成・採点の判断）、zenzバックエンド |
 | `src/windows` | TSF、設定、辞書キャッシュ、学習・推論・brokerのIPC |
-| `src/tools` | CLI、GUI、補助プロセス、入力検証アプリ |
+| `src/tools` | CLI、GUI、broker・推論サーバー、入力検証アプリ |
 | `third_party` | nlohmann/json、JIS X 0212対応表、skk-zenzのprompt/model |
 
 ## 入力コアとTSF
@@ -58,11 +56,18 @@ GUIの保存先へ同じ値を渡す。辞書本体はバックグラウンド�
   元ファイルの内容ハッシュでキャッシュを選ぶため、起動ごとに元ファイルを読む。
 - ユーザー辞書（`user-dictionary.nskkdb`）は独自のバイナリー形式。読み・送りキー・送り仮名ごとに
   確定した候補を先頭にし、1組32候補・50,000組・16 MiBまで。
-- 書き込みは補助プロセスに集約する。各IMEは保存ファイルを直接読み、手元の世代の名前付きイベントを待つ。
-  補助プロセスは保存のたびに、置き換えた世代のイベントを通知する。取りこぼしに備えて60秒ごとに
-  ファイル先頭の世代だけを確認する。保存はPOSIX方式のリネームで行い、読み手がいても失敗しない。
+- 学習・削除はIMEの作業スレッドが保存する（AppContainerではbroker、GUI・CLIは自身）。
+  版の異なるIMEが混在しても同じファイルを更新できるよう、書き手はすべて次の手順に従う。
+  1. `user-dictionary.nskkdb.lock` を共有なしで開く。開けなければ待って再試行する。
+     以前の版は辞書専用の補助プロセスが起動中ずっと開いていたため、その終了（無通信10秒）を待つことになる。
+  2. ロック中に保存ファイルを読み直し、1件を適用する。読めないファイル（破損・新しい版の形式）は置き換えない。
+  3. POSIX方式のリネームで置き換え（読み手がいても失敗しない）、置き換えた世代の名前付きイベントを通知する。
+  ロック名・イベント名・形式の判定を変えると、旧版と混在したときに書き込みや通知が届かなくなる。
+- 各IMEは保存ファイルを直接読み、手元の世代の名前付きイベントを待つ。取りこぼしに備えて60秒ごとに
+  ファイル先頭の世代だけを確認する。
 - 再送の重複排除のため、送り手ID（プロセスごと）と連番を保存する。IDは最近の1,024個だけ保持する。
 - IMEは未保存の学習・削除を受付順に検索結果へ反映し、選択中の候補一覧は変えない。
+  保存に失敗した分は待ち行列に残し、間隔を空けて再試行する。
 
 ## 推論
 
@@ -109,7 +114,7 @@ GUIの保存先へ同じ値を渡す。辞書本体はバックグラウンド�
 Windows検索（`MicrosoftWindows.Client.CBS_cw5n1h2txyewy`）とMicrosoft Store
 （`Microsoft.WindowsStore_8wekyb3d8bbwe`）のAppContainerでは、DLLが私用ファイルを読めない。
 brokerは通常権限で常駐し、コンテナーSIDとセッションごとの名前空間にパイプを作る。
-初回に設定・ローマ字・解析済み辞書をCBORでまとめて渡し、以後は学習・推論・入力ログを中継する。
+初回に設定・ローマ字・解析済み辞書をCBORでまとめて渡し、以後は学習の保存・推論・入力ログを代行する。
 接続はユーザー・セッション・コンテナーSIDと、DLLと同じフォルダーのbroker実行ファイルであることを相互に確認する。
 任意のファイルやコマンドの要求は受け付けず、AppContainerからはGUIを起動しない。
 `NSKKZIME_CONFIG` を指定したプロセスは、その設定ファイルに対応する別のbrokerにつなぐ。

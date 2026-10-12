@@ -22,8 +22,6 @@ struct ImportRequest {
     std::vector<LearningEvent> entries; // Source priority within each exact scope.
 };
 void validate_import(const ImportRequest&);
-std::string encode_import(const ImportRequest&);
-ImportRequest decode_import(std::string_view);
 class UserDictionary final : public Dictionary {
 public:
     bool apply(const LearningRequest&); // false for an already acknowledged sequence

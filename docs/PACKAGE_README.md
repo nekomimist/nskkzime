@@ -5,9 +5,9 @@ Windows x64用のSKK風IME。zenzによる推論サーバーを同梱した開�
 
 ## 内容と前提
 
-- `bin/`: IME DLL、辞書補助プロセス、推論サーバー（`nkkz-ime-server.exe`）、AppContainer用broker、
+- `bin/`: IME DLL、推論サーバー（`nkkz-ime-server.exe`）、AppContainer用broker、
   設定GUI、学習辞書の管理GUI、設定CLI、辞書管理CLI、入力検証アプリ
-- `bin/x86/`: 32bitアプリ用のIME DLLと入力検証アプリ（辞書・推論・GUIはx64版を共用）
+- `bin/x86/`: 32bitアプリ用のIME DLLと入力検証アプリ（推論・GUIはx64版を共用）
 - `tools/`: 導入スクリプトとZIP検査スクリプト、`manifest.json`: 各ファイルのSHA-256とビルド情報
 - Visual C++ v14 Redistributable のx64とx86が必要（同梱しない）。
 - zenzにはAVX2/FMA/F16C/BMI2に対応したCPUが必要。`.\bin\nskkzime_config.exe --check-cpu` で確認できる。

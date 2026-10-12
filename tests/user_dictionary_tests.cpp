@@ -83,7 +83,7 @@ int wmain(int argc, wchar_t** argv) {
         }},
         {"import/generic-and-exact-scopes-rank-annotations-and-export", [] {
             auto request = imported(U";; okuri-ari entries.\nかk /書;一般/描/[く/描;個別/掻/]/[け/書;可能/]/\n;; okuri-nasi entries.\nかな /仮名/かな/\n");
-            UserDictionary data; check(data.apply(decode_import(encode_import(request))),"import not applied");
+            UserDictionary data; check(data.apply(request),"import not applied");
             const auto exact = data.lookup({U"か",'k'},U"く"), other = data.lookup({U"か",'k'},U"こ");
             check(exact.size()==3 && exact[0].text==U"描" && exact[0].annotation==U"個別" && exact[1].text==U"掻" && exact[2].text==U"書","exact scopes changed");
             check(other.size()==2 && other[0].text==U"書" && other[1].text==U"描","generic candidates lost");
@@ -110,15 +110,13 @@ int wmain(int argc, wchar_t** argv) {
             rejects([&]{data.apply(request);}); check(data.serialize()==before,"invalid entry partly imported");
             request=imported(U"いっぱい /1/\n"); check(data.apply(request) && data.lookup({U"いっぱい"}).front().text==U"32","full group duplicate reranked or rejected");
         }},
-        {"import/codec-limits-and-corruption", [] {
-            const auto request=imported(U";; okuri-ari entries.\nかk /書/\n"); const auto bytes=encode_import(request);
-            for(std::size_t size=0;size<bytes.size();++size) rejects([&]{decode_import(bytes.substr(0,size));});
-            rejects([&]{decode_import(bytes+"extra");}); rejects([&]{decode_learning(bytes);});
-            auto bad=request; bad.sequence=0; rejects([&]{encode_import(bad);});
-            bad=request; bad.entries.clear(); rejects([&]{encode_import(bad);});
-            bad=request; bad.entries.resize(import_max_candidates+1,request.entries.front()); rejects([&]{encode_import(bad);});
-            bad=request; bad.entries.front().candidate.learning=LearningPolicy::DoNotLearn; rejects([&]{encode_import(bad);});
-            bad=request; bad.entries.front().candidate.source=CandidateSource::GeneratedLong; rejects([&]{encode_import(bad);});
+        {"import/request-limits", [] {
+            const auto request=imported(U";; okuri-ari entries.\nかk /書/\n"); validate_import(request);
+            auto bad=request; bad.sequence=0; rejects([&]{validate_import(bad);});
+            bad=request; bad.entries.clear(); rejects([&]{validate_import(bad);});
+            bad=request; bad.entries.resize(import_max_candidates+1,request.entries.front()); rejects([&]{validate_import(bad);});
+            bad=request; bad.entries.front().candidate.learning=LearningPolicy::DoNotLearn; rejects([&]{validate_import(bad);});
+            bad=request; bad.entries.front().candidate.source=CandidateSource::GeneratedLong; rejects([&]{validate_import(bad);});
             LearningRequest learning{request.client,1,request.entries.front()}; rejects([&]{encode_learning(learning);});
         }},
         {"import/generic-delete-is-distinct-from-learned-okuri", [] {

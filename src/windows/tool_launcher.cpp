@@ -16,14 +16,16 @@ HMODULE pin_module() {
         throw std::runtime_error("cannot pin tool launcher");
     return module;
 }
-std::filesystem::path module_directory() {
+}
+std::filesystem::path product_directory() {
     const auto module = pin_module();
     wchar_t path[32768]{};
     const auto count = GetModuleFileNameW(module, path, ARRAYSIZE(path));
     FreeLibrary(module);
-    if (!count || count == ARRAYSIZE(path)) throw std::runtime_error("cannot locate IME tools");
+    if (!count || count == ARRAYSIZE(path)) throw std::runtime_error("cannot locate IME programs");
     return shared_binary_directory(std::filesystem::path(path));
 }
+namespace {
 std::size_t index(ImeTool tool) { return static_cast<std::size_t>(tool); }
 void validate(const std::filesystem::path& path) {
     const auto& value = path.native();
@@ -57,7 +59,7 @@ std::array<ToolCommand, 2> tool_commands(const std::filesystem::path& settings,
     std::array<ToolCommand, 2> commands;
     commands[1].tool = ImeTool::Dictionary;
     try {
-        const auto directory = module_directory();
+        const auto directory = product_directory();
         commands[0].executable = directory / L"nskkzime_settings.exe";
         commands[1].executable = directory / L"nskkzime_dictionary_gui.exe";
         commands[0].file = settings; commands[1].file = user;

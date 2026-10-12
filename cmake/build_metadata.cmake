@@ -17,7 +17,7 @@ add_custom_target(nskkzime_build_metadata
     -Variant "${_metadata_variant}" ${_metadata_llama_args}
   BYPRODUCTS "${_metadata_source}"
   VERBATIM)
-foreach(_target nskkzime_tsf nskkzime_dictionary_server nskkzime_settings nskkzime_dictionary_gui
+foreach(_target nskkzime_tsf nskkzime_settings nskkzime_dictionary_gui
     nskkzime_config nskkzime_user_dictionary ime_probe nkkz-ime-server nskkzime_broker)
   if(NOT TARGET ${_target})
     continue()
