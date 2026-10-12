@@ -107,17 +107,28 @@ int wmain(int argc, wchar_t** argv) {
             std::wstring_view(description).find(L"▼") == std::wstring_view::npos;
         SysFreeString(description); check(in_draft, "inner selection did not settle in draft");
         Sleep(300); check(read_user_dictionary(file).revision() == 1, "inner selection learned before registration");
+        type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); key(keys.Get(), context.Get(), VK_NEXT);
+        context->reject_session = true;
+        check(!key(keys.Get(), context.Get(), VK_RETURN), "refused inner candidate Enter consumed key");
+        context->reject_session = false;
+        check(key(keys.Get(), context.Get(), VK_RETURN) && host->ui && context->doc->text == L"みち", "inner candidate Enter registered or changed host text");
+        check(context->doc->writes == draft_writes && !context->composition->ended, "inner candidate Enter rewrote or ended host composition");
+        host->ui->GetDescription(&description);
+        const bool entered_draft = description && std::wstring_view(description).find(L"日本漢字") != std::wstring_view::npos &&
+            std::wstring_view(description).find(L"▼") == std::wstring_view::npos;
+        SysFreeString(description); check(entered_draft, "paged candidate Enter did not append to existing draft");
+        Sleep(300); check(read_user_dictionary(file).revision() == 1, "inner candidate Enter learned before registration");
         context->doc->reject_write = true;
         check(!key(keys.Get(), context.Get(), VK_RETURN), "failed registration consumed Enter");
         context->doc->reject_write = false;
         check(key(keys.Get(), context.Get(), VK_RETURN), "registration retry failed");
-        check(context->doc->text == L"日本", "registered text not applied");
+        check(context->doc->text == L"日本漢字", "registered text not applied");
         // Reuse immediately, before waiting for IPC or a snapshot refresh.
         type(keys.Get(), context.Get(), "Michi"); key(keys.Get(), context.Get(), VK_SPACE);
-        check(context->doc->text == L"日本日本" && host->ui && SUCCEEDED(host->ui.As(&list)), "new registration not immediately available");
+        check(context->doc->text == L"日本漢字日本漢字" && host->ui && SUCCEEDED(host->ui.As(&list)), "new registration not immediately available");
         list.Reset(); key(keys.Get(), context.Get(), VK_ESCAPE); key(keys.Get(), context.Get(), VK_ESCAPE);
         until([&] { return read_user_dictionary(file).revision() == 2; });
-        check(read_user_dictionary(file).lookup({U"みち"})[0].text == U"日本", "registered word not saved");
+        check(read_user_dictionary(file).lookup({U"みち"})[0].text == U"日本漢字", "registered word not saved");
 
         context.Attach(new test_host::Context);
         type(keys.Get(), context.Get(), "/outer"); key(keys.Get(), context.Get(), VK_SPACE);

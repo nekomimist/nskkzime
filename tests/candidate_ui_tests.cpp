@@ -176,6 +176,13 @@ int main() {
             BSTR description = nullptr; element->GetDescription(&description);
             const std::wstring contents(description, SysStringLen(description)); SysFreeString(description);
             check(contents.find(L"みち") != contents.npos && contents.find(L"▼日本") != contents.npos, "registration description lost reading or draft");
+            check(contents.find(L"/Enter: 欄へ追加") != contents.npos && contents.find(L"Enter: 登録") == contents.npos,
+                "registration candidate hint offered to register on Enter");
+            engine.handle({KeyCode::Enter}); popup->update(engine, nullptr);
+            element->GetDescription(&description);
+            const std::wstring settled(description, SysStringLen(description)); SysFreeString(description);
+            check(settled.find(L"日本") != settled.npos && settled.find(L"▼") == settled.npos && settled.find(L"Enter: 登録") != settled.npos,
+                "settled registration draft lost its registration hint");
             popup->close(); element->Show(TRUE); BOOL shown = TRUE; element->IsShown(&shown);
             check(!shown, "retained registration element reopened");
         }

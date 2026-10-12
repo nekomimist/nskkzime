@@ -173,7 +173,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
         const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
         const auto draft = wide(engine.registration_text());
         const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
-            engine.input_stage() == Stage::Selecting ? L"クリック/" + std::wstring(candidate_labels(keys_)) + L": 欄へ追加  PgDn/PgUp: 7件  Enter: 登録  Esc: 戻る" :
+            engine.input_stage() == Stage::Selecting ? L"クリック/" + std::wstring(candidate_labels(keys_)) + L"/Enter: 欄へ追加  PgDn/PgUp: 7件  Esc: 戻る" :
             L"語幹を入力  Enter: 登録  C-j: かな  Esc: 取消";
         if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
         heading_ = heading; draft_ = draft; hint_ = hint;

@@ -333,7 +333,8 @@ Result Engine::handle_forgetting(Key key) {
 }
 Result Engine::handle_registration(Key key) {
     Result result; result.consumed = true;
-    if (key.code == KeyCode::Enter) {
+    // A candidate Enter settles only the inner conversion in the draft.
+    if (key.code == KeyCode::Enter && input_.stage != Stage::Selecting) {
         const auto word = registrations_.back().draft + input_literal();
         if (word.empty()) { cancel_registration(); return result; }
         if (word.size() > 1024) { result.registration_limit = true; return result; }

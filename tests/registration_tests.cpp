@@ -29,16 +29,47 @@ struct Session {
 }
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
-        {"miss-draft-conversion-and-single-enter", [] {
+        {"miss-draft-conversion-and-separate-registration-enter", [] {
             Session s; s.start(); equal(s.engine.composition_text(), U"みち");
             s.type("Nihon"); s.space(); s.type("Kanji"); s.space();
             equal(s.engine.registration_text(), U"日本▼漢字"); equal(s.document, U"");
             equal(s.engine.composition_text(), U"みち"); check(s.saved.empty(), "tentative inner conversion learned");
+            const auto selected = s.key({KeyCode::Enter});
+            check(selected.consumed && !selected.registration && !selected.learning && selected.committed.empty(), "candidate Enter registered tentative draft");
+            equal(s.engine.registration_text(), U"日本漢字");
+            check(s.engine.registering() && s.saved.empty(), "candidate Enter ended registration or learned");
             const auto result = s.key({KeyCode::Enter});
             equal(s.document, U"日本漢字"); check(result.registration && result.learning.has_value(), "registration event missing");
             equal(result.learning->key.reading, U"みち"); equal(result.learning->candidate.text, U"日本漢字");
             check(!s.engine.registering() && s.saved.size() == 1, "inner conversion leaked a learning event");
             s.type("Michi"); s.space(); equal(s.engine.preedit(), U"▼日本漢字");
+        }},
+        {"candidate-enter-allows-completing-or-canceling-kaini", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>();
+            dictionary->add({U"かい"}, {{"kai-1", U"海", {}}, {"kai-2", U"改", {}}});
+            dictionary->add({U"に"}, {{"ni-1", U"二", {}}});
+            for (const auto confirm : {Key{KeyCode::Enter}, Key{KeyCode::SelectCandidate, 0, 1}}) {
+                for (const bool cancel : {false, true}) {
+                    Session s{Engine(dictionary)}; s.start("Kaini");
+                    s.type("Kai"); s.space(); s.key({KeyCode::PageDown});
+                    equal(s.engine.registration_text(), U"▼改");
+                    const auto selected = s.key(confirm);
+                    check(selected.consumed && selected.committed.empty() && !selected.registration && !selected.learning,
+                        "inner candidate confirmation registered kaini");
+                    check(s.engine.registering() && s.engine.input_stage() == Stage::Direct && s.saved.empty(),
+                        "inner candidate confirmation ended draft editing");
+                    equal(s.engine.registration_text(), U"改"); equal(s.engine.composition_text(), U"かいに"); equal(s.document, U"");
+                    s.type("Ni"); s.space(); s.enter();
+                    equal(s.engine.registration_text(), U"改二"); equal(s.document, U"");
+                    check(s.engine.registering() && s.saved.empty(), "second candidate Enter registered draft");
+                    if (cancel) { s.cancel(); equal(s.engine.preedit(), U"▽かいに"); equal(s.document, U""); check(s.saved.empty(), "canceled draft learned"); }
+                    else {
+                        const auto registered = s.key({KeyCode::Enter});
+                        check(registered.registration && registered.learning && s.saved.size() == 1, "completed draft not registered exactly once");
+                        equal(s.document, U"改二"); equal(s.saved[0].key.reading, U"かいに"); equal(s.saved[0].candidate.text, U"改二");
+                    }
+                }
+            }
         }},
         {"exhaustion-and-cancel-back-to-reading", [] {
             Session s; s.type("Kanji"); s.space(); s.space();
@@ -54,7 +85,9 @@ int main() {
             equal(s.engine.registration_text(), U"▼感じ"); equal(s.engine.composition_text(), U"みち");
             check(s.saved.empty(), "paging in a registration learned tentative text");
             s.key({KeyCode::PageUp}); equal(s.engine.registration_text(), U"▼漢字");
-            s.key({KeyCode::PageDown}); s.enter(); equal(s.document, U"感じ");
+            s.key({KeyCode::PageDown}); s.enter(); equal(s.engine.registration_text(), U"感じ"); equal(s.document, U"");
+            check(s.engine.registering() && s.saved.empty(), "paged candidate Enter registered draft");
+            s.enter(); equal(s.document, U"感じ");
             check(s.saved.size() == 1 && s.saved[0].key.reading == U"みち", "inner paging changed registration key");
         }},
         {"numeric-selection-appends-to-draft-without-registering", [] {
@@ -81,6 +114,7 @@ int main() {
         {"okuri-register-stem-only", [] {
             Session s; s.type("MiRu"); check(s.engine.registering(), "unknown okuri did not register");
             equal(s.engine.registration_reading(), U"み*る"); s.type("Kanji"); s.space(); s.enter();
+            equal(s.engine.registration_text(), U"漢字"); check(s.engine.registering() && s.saved.empty(), "candidate Enter registered okuri stem"); s.enter();
             equal(s.document, U"漢字る"); check(s.saved[0].key == LookupKey{U"み", 'r'}, "wrong okuri key");
             equal(s.saved[0].okuri, U"る"); equal(s.saved[0].candidate.text, U"漢字");
             s.type("MiRu"); equal(s.engine.preedit(), U"▼漢字る");
@@ -100,10 +134,13 @@ int main() {
         }},
         {"recursive-registration-and-immediate-reuse", [] {
             Session s; s.start("/outer"); s.start("/inner"); check(s.engine.registration_depth() == 2, "wrong recursive depth");
-            s.type("Nihon"); s.space(); const auto inner = s.key({KeyCode::Enter});
+            s.type("Nihon"); s.space(); s.enter();
+            check(s.engine.registration_depth() == 2 && s.saved.empty(), "candidate Enter ended nested registration");
+            const auto inner = s.key({KeyCode::Enter});
             check(inner.registration && inner.committed.empty() && s.saved.size() == 1, "inner registration did not remain in draft");
             equal(s.engine.registration_text(), U"日本"); equal(s.engine.composition_text(), U"outer");
             s.type("/inner"); s.space(); equal(s.engine.registration_text(), U"日本▼日本"); s.enter();
+            check(s.engine.registration_depth() == 1 && s.saved.size() == 1, "reused candidate Enter registered outer draft"); s.enter();
             equal(s.document, U"日本日本"); check(s.saved.size() == 2, "recursive events missing or duplicated");
             equal(s.saved[0].key.reading, U"inner"); equal(s.saved[1].key.reading, U"outer");
         }},
