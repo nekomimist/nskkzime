@@ -360,7 +360,7 @@ int wmain(int argc, wchar_t** argv) {
                 if (response.scores.size() > 1 && request.reading == U"かいとう") response.scores[1] = 0;
             }
             else response.candidates = {U"蜜柑", U"みかん"}; return response;
-        }, "fixture", 10000, 5000); });
+        }, 10000, 5000); });
         const auto instance = config_broker_instance(config); const auto stop = container_stop_event(instance);
         // Withhold the broker until both children have made their first choice.
         // This makes late-settings protection independent of bootstrap timing.

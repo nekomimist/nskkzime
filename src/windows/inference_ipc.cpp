@@ -1,8 +1,6 @@
 #include "inference_ipc.h"
 #include "cpu_requirements.h"
-#include <sddl.h>
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <optional>
 #include <thread>
@@ -10,127 +8,68 @@
 namespace nskkzime::windows {
 namespace {
 void need(bool value, InferenceStatus status = InferenceStatus::Unavailable) { if (!value) throw InferenceFailure(status); }
-std::wstring sid(HANDLE process) {
-    HANDLE raw = nullptr; need(OpenProcessToken(process, TOKEN_QUERY, &raw) != 0); NativeHandle token(raw);
-    DWORD length = 0; GetTokenInformation(token.get(), TokenUser, nullptr, 0, &length);
-    std::vector<unsigned char> bytes(length); need(GetTokenInformation(token.get(), TokenUser, bytes.data(), length, &length) != 0);
-    LPWSTR text = nullptr; need(ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(bytes.data())->User.Sid, &text) != 0);
-    std::wstring result; try { result = text; } catch (...) { LocalFree(text); throw; } LocalFree(text); return result;
+InferenceStatus status(const PipeFailure& failure) {
+    if (failure.reason == PipeError::Timeout) return InferenceStatus::Timeout;
+    if (failure.reason == PipeError::Cancelled) return InferenceStatus::Cancelled;
+    return InferenceStatus::Unavailable;
 }
 void check_peer(HANDLE pipe, bool server) {
     ULONG pid = 0;
     need((server ? GetNamedPipeClientProcessId(pipe, &pid) : GetNamedPipeServerProcessId(pipe, &pid)) != 0);
     NativeHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)); need(process.valid());
-    need(sid(process.get()) == sid(GetCurrentProcess()));
+    need(user_sid(process.get()) == user_sid());
 }
-DWORD remaining(ULONGLONG deadline) { const auto now = GetTickCount64(); need(now < deadline, InferenceStatus::Timeout); return static_cast<DWORD>(deadline - now); }
 void check_cancel(HANDLE cancel) { need(WaitForSingleObject(cancel, 0) != WAIT_OBJECT_0, InferenceStatus::Cancelled); }
-DWORD finish(HANDLE pipe, OVERLAPPED& operation, BOOL started, ULONGLONG deadline, HANDLE cancel) {
-    const auto error = started ? ERROR_SUCCESS : GetLastError();
-    need(started || error == ERROR_IO_PENDING);
-    DWORD count = 0;
-    if (!started) {
-        const HANDLE events[]{cancel, operation.hEvent};
-        const auto now = GetTickCount64();
-        const auto wait = WaitForMultipleObjects(2, events, FALSE, now < deadline ? static_cast<DWORD>(deadline - now) : 0);
-        if (wait != WAIT_OBJECT_0 + 1) {
-            CancelIoEx(pipe, &operation); GetOverlappedResult(pipe, &operation, &count, TRUE);
-            throw InferenceFailure(wait == WAIT_OBJECT_0 ? InferenceStatus::Cancelled : InferenceStatus::Timeout);
-        }
-    }
-    need(GetOverlappedResult(pipe, &operation, &count, FALSE) != 0);
-    check_cancel(cancel); remaining(deadline); return count;
+NativeHandle launch_hidden(const std::filesystem::path& program, std::wstring command) {
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION process{};
+    need(CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, program.parent_path().c_str(), &startup, &process) != 0);
+    CloseHandle(process.hThread); return NativeHandle(process.hProcess);
 }
-DWORD io(HANDLE pipe, char* buffer, DWORD size, bool write, ULONGLONG deadline, HANDLE cancel) {
-    check_cancel(cancel); remaining(deadline);
-    NativeHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr)); need(event.valid());
-    OVERLAPPED operation{}; operation.hEvent = event.get();
-    return finish(pipe, operation, write ? WriteFile(pipe, buffer, size, nullptr, &operation) : ReadFile(pipe, buffer, size, nullptr, &operation), deadline, cancel);
-}
-void send_line(HANDLE pipe, std::string line, ULONGLONG deadline, HANDLE cancel) {
-    need(line.size() <= inference_max_line, InferenceStatus::InvalidResponse); line += '\n';
-    std::size_t offset = 0;
-    while (offset < line.size()) {
-        const auto count = io(pipe, line.data() + offset, static_cast<DWORD>(line.size() - offset), true, deadline, cancel);
-        need(count != 0); offset += count;
-    }
-}
-std::string receive_line(HANDLE pipe, ULONGLONG deadline, HANDLE cancel) {
-    std::string result; std::array<char, 2048> buffer{};
-    for (;;) {
-        const auto count = io(pipe, buffer.data(), static_cast<DWORD>(buffer.size()), false, deadline, cancel); need(count != 0);
-        result.append(buffer.data(), count); const auto end = result.find('\n');
-        need(result.size() <= inference_max_line + 1, InferenceStatus::InvalidResponse);
-        if (end != std::string::npos) {
-            need(end + 1 == result.size(), InferenceStatus::InvalidResponse); result.pop_back();
-            if (!result.empty() && result.back() == '\r') result.pop_back(); return result;
-        }
-    }
-}
-struct Descriptor {
-    PSECURITY_DESCRIPTOR value = nullptr;
-    Descriptor() { const auto text = L"D:P(A;;GA;;;" + sid(GetCurrentProcess()) + L")";
-        need(ConvertStringSecurityDescriptorToSecurityDescriptorW(text.c_str(), SDDL_REVISION_1, &value, nullptr) != 0); }
-    ~Descriptor() { LocalFree(value); }
-};
 }
 std::wstring inference_pipe_name(std::wstring_view token) {
     need(!token.empty() && token.size() <= 64);
     for (const auto ch : token) need((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') || (ch >= L'0' && ch <= L'9') || ch == L'-');
-    return L"\\\\.\\pipe\\nkkz-ime-v1-" + sid(GetCurrentProcess()) + L"-" + std::wstring(token);
+    return L"\\\\.\\pipe\\nkkz-ime-v2-" + user_sid() + L"-" + std::wstring(token);
 }
 NativeHandle claim_inference_server(std::wstring_view token) {
     (void)inference_pipe_name(token);
-    Descriptor descriptor; SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES),descriptor.value,FALSE};
-    const auto name = L"Local\\nkkz-ime-start-"+sid(GetCurrentProcess())+L"-"+std::wstring(token);
-    NativeHandle claim(CreateEventW(&attributes,TRUE,FALSE,name.c_str()));
+    SecurityDescriptor descriptor(owner_only_sddl(user_sid()));
+    const auto name = L"Local\\nkkz-ime-start-v2-" + user_sid() + L"-" + std::wstring(token);
+    NativeHandle claim(CreateEventW(descriptor.attributes(), TRUE, FALSE, name.c_str()));
     const auto error = GetLastError(); need(claim.valid());
     if (error == ERROR_ALREADY_EXISTS) return NativeHandle{};
     return claim; // A named event is just a lifetime marker; no thread-owned lock.
 }
 InferenceResponse inference_exchange(std::wstring_view token, const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel) {
     const auto name = inference_pipe_name(token);
-    // Move-only handles intentionally have no assignment; keep the raw value
-    // local until the cancellable connection loop has finished.
-    HANDLE raw = INVALID_HANDLE_VALUE;
-    for (;;) {
-        check_cancel(cancel); remaining(deadline);
-        raw = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_ANONYMOUS, nullptr);
-        if (raw != INVALID_HANDLE_VALUE) break;
-        const auto error = GetLastError(); need(error == ERROR_FILE_NOT_FOUND || error == ERROR_PIPE_BUSY);
-        if (error == ERROR_FILE_NOT_FOUND) throw InferenceFailure(InferenceStatus::Unavailable);
-        WaitForSingleObject(cancel, (std::min)(remaining(deadline), DWORD(10)));
-    }
-    NativeHandle connected(raw); check_peer(connected.get(), false);
     try {
-        validate_inference_hello(receive_line(connected.get(), deadline, cancel));
-        send_line(connected.get(), encode_request(request), deadline, cancel);
-        return decode_response(receive_line(connected.get(), deadline, cancel), request);
+        const auto pipe = open_pipe(name, deadline, cancel);
+        check_peer(pipe.get(), false);
+        send_frame(pipe.get(), encode_request(request), inference_max_line, deadline, cancel);
+        const auto response = receive_frame(pipe.get(), inference_max_line, deadline, cancel);
+        send_receipt(pipe.get(), deadline, cancel);
+        return decode_response(response, request);
     } catch (const InferenceFailure&) { throw; }
+    catch (const PipeFailure& failure) { throw InferenceFailure(status(failure)); }
     catch (...) { throw InferenceFailure(InferenceStatus::InvalidResponse); }
 }
 InferenceResponse inference_exchange_launching(std::wstring_view token, const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel,
     const InferenceLauncher& launch, DWORD idle_ms) {
-    std::optional<NativeHandle> process; bool legacy = false;
+    std::optional<NativeHandle> process;
     for (;;) {
         try { return inference_exchange(token, request, deadline, cancel); }
         catch (const InferenceFailure& failure) { if (failure.status != InferenceStatus::Unavailable || !launch) throw; }
-        (void)remaining(deadline);
-        DWORD code = 0;
+        const auto now = GetTickCount64(); need(now < deadline, InferenceStatus::Timeout);
         if (!process) process.emplace(launch(idle_ms));
-        else if (!legacy && idle_ms > inference_legacy_idle_ms && WaitForSingleObject(process->get(), 0) == WAIT_OBJECT_0 &&
-            GetExitCodeProcess(process->get(), &code) && code == 2) { legacy = true; process.emplace(launch(inference_legacy_idle_ms)); }
-        if (WaitForSingleObject(cancel, (std::min)(remaining(deadline), DWORD{10})) == WAIT_OBJECT_0) throw InferenceFailure(InferenceStatus::Cancelled);
+        if (WaitForSingleObject(cancel, static_cast<DWORD>((std::min)(deadline - now, ULONGLONG{10}))) == WAIT_OBJECT_0)
+            throw InferenceFailure(InferenceStatus::Cancelled);
     }
 }
 NativeHandle launch_dummy_server(const std::filesystem::path& program, std::wstring_view token, DWORD delay_ms, DWORD idle_ms) {
     inference_pipe_name(token); need(program.is_absolute() && program.native().find(L'"') == std::wstring::npos && delay_ms <= 10000 && idle_ms <= inference_max_idle_ms);
-    auto command = L"\"" + program.native() + L"\" --dummy --pipe-token " + std::wstring(token) + L" --delay-ms " + std::to_wstring(delay_ms) + L" --idle-ms " + std::to_wstring(idle_ms);
-    STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION process{};
-    need(CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, program.parent_path().c_str(), &startup, &process) != 0);
-    CloseHandle(process.hThread); return NativeHandle(process.hProcess);
+    return launch_hidden(program, L"\"" + program.native() + L"\" --dummy --pipe-token " + std::wstring(token) +
+        L" --delay-ms " + std::to_wstring(delay_ms) + L" --idle-ms " + std::to_wstring(idle_ms));
 }
 int serve_dummy_inference(std::wstring_view token, DWORD delay_ms, DWORD idle_ms) {
     return serve_inference(token,[delay_ms](const InferenceRequest& request,const std::function<bool()>& cancelled) {
@@ -140,7 +79,7 @@ int serve_dummy_inference(std::wstring_view token, DWORD delay_ms, DWORD idle_ms
         InferenceResponse response{request.id,{U"試験〈"+request.reading+U"〉"}};
         if (request.count > 1) response.candidates.push_back(U"別候補〈"+request.reading+U"〉");
         return response;
-    },"dummy",idle_ms,delay_ms+1500);
+    },idle_ms,delay_ms+1500);
 }
 NativeHandle launch_zenz_server(const std::filesystem::path& program, const std::filesystem::path& model,
     std::wstring_view token, unsigned threads, DWORD timeout_ms, DWORD idle_ms) {
@@ -148,26 +87,18 @@ NativeHandle launch_zenz_server(const std::filesystem::path& program, const std:
     inference_pipe_name(token);
     for (const auto& path : {program,model}) need(path.is_absolute() && !path.filename().empty() && path.native().find_first_of(L"\"\r\n") == std::wstring::npos);
     need(threads >= 1 && threads <= 64 && timeout_ms >= 1 && timeout_ms <= 10000 && idle_ms >= 100 && idle_ms <= inference_max_idle_ms);
-    auto command = L"\""+program.native()+L"\" --model \""+model.native()+L"\" --pipe-token "+std::wstring(token)+
-        L" --threads "+std::to_wstring(threads)+L" --timeout-ms "+std::to_wstring(timeout_ms)+L" --idle-ms "+std::to_wstring(idle_ms);
-    STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION process{};
-    need(CreateProcessW(program.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,program.parent_path().c_str(),&startup,&process) != 0);
-    CloseHandle(process.hThread); return NativeHandle(process.hProcess);
+    return launch_hidden(program, L"\""+program.native()+L"\" --model \""+model.native()+L"\" --pipe-token "+std::wstring(token)+
+        L" --threads "+std::to_wstring(threads)+L" --timeout-ms "+std::to_wstring(timeout_ms)+L" --idle-ms "+std::to_wstring(idle_ms));
 }
-int serve_inference(std::wstring_view token, const InferenceHandler& handler, std::string_view backend, DWORD idle_ms, DWORD timeout_ms) {
+int serve_inference(std::wstring_view token, const InferenceHandler& handler, DWORD idle_ms, DWORD timeout_ms) {
     need(idle_ms >= 100 && idle_ms <= inference_max_idle_ms && timeout_ms >= 1 && timeout_ms <= 15000);
-    const auto name = inference_pipe_name(token); Descriptor descriptor;
-    SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), descriptor.value, FALSE};
-    NativeHandle first(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 16384, 16384, 0, &attributes));
-    need(first.valid());
+    const auto name = inference_pipe_name(token);
+    SecurityDescriptor descriptor(owner_only_sddl(user_sid()));
     // Create all instances before serving so another process cannot take over
     // the name while all listeners are busy.
-    std::vector<NativeHandle> extra;
-    for (int i = 0; i < 3; ++i) {
-        extra.emplace_back(CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 16384, 16384, 0, &attributes)); need(extra.back().valid());
+    std::vector<NativeHandle> pipes;
+    for (int i = 0; i < 4; ++i) {
+        pipes.push_back(create_pipe_instance(name, i == 0, 4, 16384, descriptor.attributes())); need(pipes.back().valid());
     }
     NativeHandle stop(CreateEventW(nullptr, TRUE, FALSE, nullptr)); need(stop.valid());
     std::atomic<ULONGLONG> activity{GetTickCount64()};
@@ -198,25 +129,23 @@ int serve_inference(std::wstring_view token, const InferenceHandler& handler, st
                     }
                 }
                 check_peer(pipe, true); activity = GetTickCount64();
-                send_line(pipe, inference_hello(backend), GetTickCount64() + 1000, stop.get());
-                const auto request = decode_request(receive_line(pipe, GetTickCount64() + 1000, stop.get()));
+                const auto request = decode_request(receive_frame(pipe, inference_max_line, GetTickCount64() + 1000, stop.get()));
                 const auto deadline = GetTickCount64()+timeout_ms;
                 auto cancelled = [&] {
                     const auto now = GetTickCount64(); activity = now;
-                    return now >= deadline || !PeekNamedPipe(pipe,nullptr,0,nullptr,nullptr,nullptr);
+                    return now >= deadline || !pipe_peer_open(pipe);
                 };
                 const auto response = handler(request,cancelled);
                 need(!cancelled(),InferenceStatus::Cancelled);
-                send_line(pipe, encode_response(response), GetTickCount64() + 1000, stop.get());
-                // Wait for the client to close after reading; never FlushFileBuffers.
-                for (int i = 0; i < 200 && PeekNamedPipe(pipe, nullptr, 0, nullptr, nullptr, nullptr); ++i) Sleep(5);
+                send_frame(pipe, encode_response(response), inference_max_line, GetTickCount64() + 1000, stop.get());
+                receive_receipt(pipe, GetTickCount64() + 1000, stop.get());
                 activity = GetTickCount64();
             } catch (...) { /* Drop malformed/disconnected clients without logging their text. */ }
             DisconnectNamedPipe(pipe);
         }
     };
     std::vector<std::jthread> workers;
-    workers.emplace_back(serve, first.get()); for (const auto& pipe : extra) workers.emplace_back(serve, pipe.get());
+    for (const auto& pipe : pipes) workers.emplace_back(serve, pipe.get());
     return 0; // jthread destructors join before the handles and ACL are released.
 }
 }

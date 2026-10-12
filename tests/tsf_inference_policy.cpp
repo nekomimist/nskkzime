@@ -1,4 +1,5 @@
 #include "dictionary_wait.h"
+#include "learning_ipc.h"
 #include "runtime_dictionary.h"
 #include "tsf_test_host.h"
 #include "inference_client.h"
@@ -60,7 +61,7 @@ int wmain(int argc,wchar_t** argv) {
         if(request.operation==InferenceOperation::Score) {response.scores.assign(request.candidates.size(),-5.0f);if(response.scores.size()>1)response.scores[1]=0;}
         else if(!empty) {response.candidates={request.reading==U"みかん" ? U"蜜柑" : U"有難うございます",U"共通候補"};response.scores={0,-2};}
         return response;
-    },"fixture",5000,3000);});
+    },5000,3000);});
     BYTE previous[256]{};GetKeyboardState(previous);CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);int result=1;
     try {
         NativeHandle stop(CreateEventW(nullptr,TRUE,FALSE,nullptr)); const auto ready=GetTickCount64()+3000;

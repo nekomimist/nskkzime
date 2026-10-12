@@ -1,28 +1,11 @@
 #pragma once
+#include "pipe_ipc.h"
 #include "nskkzime/learning.h"
-#include <windows.h>
 #include <filesystem>
 #include <functional>
 #include <optional>
-#include <utility>
 
 namespace nskkzime::windows {
-class NativeHandle {
-public:
-    explicit NativeHandle(HANDLE h = INVALID_HANDLE_VALUE) : value_(h) {}
-    ~NativeHandle() { if (value_ && value_ != INVALID_HANDLE_VALUE) CloseHandle(value_); }
-    NativeHandle(const NativeHandle&) = delete;
-    NativeHandle& operator=(const NativeHandle&) = delete;
-    NativeHandle(NativeHandle&& other) noexcept : value_(std::exchange(other.value_, INVALID_HANDLE_VALUE)) {}
-    NativeHandle& operator=(NativeHandle&& other) noexcept {
-        if (this != &other) NativeHandle old(std::exchange(value_, std::exchange(other.value_, INVALID_HANDLE_VALUE)));
-        return *this;
-    }
-    HANDLE get() const { return value_; }
-    bool valid() const { return value_ && value_ != INVALID_HANDLE_VALUE; }
-private:
-    HANDLE value_;
-};
 std::filesystem::path learning_file_path();
 std::filesystem::path learning_file_path(const std::filesystem::path& settings_file);
 // Throws unless the path can name a user dictionary (absolute, no quotes or controls).

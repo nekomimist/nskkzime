@@ -1,4 +1,5 @@
 #include "dictionary_wait.h"
+#include "learning_ipc.h"
 #include "runtime_dictionary.h"
 #include "tsf_test_host.h"
 #include "inference_client.h"

@@ -1,4 +1,5 @@
 #include "zenz_backend.h"
+#include "learning_ipc.h"
 #include "inference_ipc.h"
 #include <atomic>
 #include <future>

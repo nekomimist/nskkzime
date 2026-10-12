@@ -1,4 +1,5 @@
 #include "input_log.h"
+#include "learning_ipc.h"
 #include "inference_client.h"
 #include <aclapi.h>
 #include <algorithm>

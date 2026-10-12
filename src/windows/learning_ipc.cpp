@@ -3,7 +3,6 @@
 #include "local_storage.h"
 #include <bcrypt.h>
 #include <combaseapi.h>
-#include <sddl.h>
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -18,24 +17,6 @@ std::filesystem::path checked_path(const std::filesystem::path& path) {
     // it. Resolving the live file here would make IPC depend on file sharing.
     return path.lexically_normal();
 }
-std::wstring user_sid() {
-    HANDLE raw = nullptr; need(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw) != 0, "cannot open user token"); NativeHandle token(raw);
-    DWORD size = 0; GetTokenInformation(token.get(), TokenUser, nullptr, 0, &size);
-    std::vector<unsigned char> bytes(size);
-    need(GetTokenInformation(token.get(), TokenUser, bytes.data(), size, &size) != 0, "cannot read user token");
-    LPWSTR text = nullptr; need(ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(bytes.data())->User.Sid, &text) != 0, "cannot read user SID");
-    std::wstring result;
-    try { result = text; } catch (...) { LocalFree(text); throw; }
-    LocalFree(text); return result;
-}
-struct Descriptor {
-    PSECURITY_DESCRIPTOR value = nullptr;
-    explicit Descriptor(const std::wstring& sid) {
-        const auto sddl = L"D:P(A;;GA;;;" + sid + L")";
-        need(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &value, nullptr) != 0, "cannot create pipe ACL");
-    }
-    ~Descriptor() { LocalFree(value); }
-};
 }
 std::filesystem::path learning_file_path() { return learning_file_path(dictionary_settings_path()); }
 std::filesystem::path learning_file_path(const std::filesystem::path& settings_file) {
@@ -62,9 +43,8 @@ std::wstring endpoint_name(const std::filesystem::path& file) {
 // change can never fall between its read and its wait.
 NativeHandle change_event(const std::filesystem::path& file, std::uint64_t revision, DWORD access) {
     const auto name = L"Local\\" + endpoint_name(file) + L"-r" + std::to_wstring(revision);
-    Descriptor descriptor(user_sid());
-    SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), descriptor.value, FALSE};
-    return NativeHandle(CreateEventExW(&attributes, name.c_str(), CREATE_EVENT_MANUAL_RESET, access));
+    SecurityDescriptor descriptor(owner_only_sddl(user_sid()));
+    return NativeHandle(CreateEventExW(descriptor.attributes(), name.c_str(), CREATE_EVENT_MANUAL_RESET, access));
 }
 void signal_change(const std::filesystem::path& file, std::uint64_t replaced) noexcept {
     try { const auto event = change_event(file, replaced, EVENT_MODIFY_STATE); if (event.valid()) SetEvent(event.get()); }

@@ -102,7 +102,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto instance = token.empty() ? NativeHandle{} : claim_inference_server(token);
         if (!token.empty() && !instance.valid()) return 0; // Concurrent startup already owns this model endpoint.
         ZenzBackend inference(model,static_cast<int>(threads));
-        if (!token.empty()) return serve_inference(token,[&](const auto& input,const auto& cancel) { return inference.run(input,cancel); },backend,idle,timeout);
+        if (!token.empty()) return serve_inference(token,[&](const auto& input,const auto& cancel) { return inference.run(input,cancel); },idle,timeout);
         if (!convert) return stdio_server(inference,timeout);
         const auto deadline = GetTickCount64()+timeout;
         std::cout << encode_response(inference.run(request,[deadline] { return GetTickCount64() >= deadline; })) << '\n'; return 0;

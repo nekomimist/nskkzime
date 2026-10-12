@@ -1,4 +1,5 @@
 #include "inference_client.h"
+#include "learning_ipc.h"
 #include "dictionary_settings.h"
 #include "nskkzime/engine.h"
 #include <fstream>
@@ -17,7 +18,6 @@ void protocol_tests() {
     check(decoded.id == request.id && decoded.reading == request.reading && decoded.left == request.left && decoded.right == request.right,"request roundtrip");
     const InferenceResponse response{42,{U"仮名",U"かな😀"}};
     check(decode_response(encode_response(response),42,5).candidates == response.candidates,"response roundtrip");
-    validate_inference_hello(inference_hello());
     auto scoring = request; scoring.operation = InferenceOperation::Score; scoring.candidates = {U"仮名",U""};
     check(decode_request(encode_request(scoring)).candidates == scoring.candidates,"score request order");
     const InferenceResponse scored{42,{}, {-1.25f,-9.5f}, InferenceOperation::Score};
@@ -27,7 +27,6 @@ void protocol_tests() {
     rejected([&] { decode_response(R"({"id":42,"scores":[null,0]})",scoring); });
     rejected([&] { decode_response(R"({"id":42,"scores":[1e300,0]})",scoring); });
     rejected([&] { decode_response(R"({"id":42,"candidates":["語"],"scores":[]})",42,5); });
-    rejected([] { validate_inference_hello(R"({"hello":"nkkz-ime-server","protocol":99})"); });
     rejected([&] { decode_response(encode_response(response),43,5); });
     rejected([&] { decode_response(encode_response(response),42,1); });
     for (auto bad : {R"({"id":1,"id":2})",R"({"id":-1})",R"({"id":1,"error":"failure"})",R"({"id":1,"candidates":["\ud800"]})",R"({"id":1,"candidates":[""]})",R"({"id":1,"candidates":["a\n"]})",R"({"id":1,"candidates":[4]})"})
@@ -110,25 +109,12 @@ void ipc_tests(const std::filesystem::path& server) {
         check(inference_exchange(name,{100+i,U"接続",U"",U"",1},GetTickCount64()+1500,cancel.get()).id==100+i,"accept lost at idle-check boundary");
     }
     check(WaitForSingleObject(restarted.get(),3000)==WAIT_OBJECT_0,"restarted helper did not exit");
-    phase = "launch with legacy idle fallback";
+    phase = "launch on demand";
     {
-        // A server from an older install rejects a long --idle-ms and exits with 2.
         const auto fresh = token(); std::vector<DWORD> launched;
-        const InferenceLauncher launch = [&](DWORD idle) {
-            launched.push_back(idle);
-            if (idle <= inference_legacy_idle_ms) return launch_dummy_server(server,fresh,0,idle);
-            auto command = L"\"" + server.native() + L"\" --dummy --pipe-token " + fresh + L" --idle-ms 99999999999";
-            STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION info{};
-            check(CreateProcessW(server.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&startup,&info) != 0,"cannot start legacy fixture");
-            CloseHandle(info.hThread); return NativeHandle(info.hProcess);
-        };
-        check(inference_exchange_launching(fresh,{15,U"互換",U"",U"",1},GetTickCount64()+5000,cancel.get(),launch,inference_max_idle_ms).id==15 &&
-            launched.size()==2 && launched[1]==inference_legacy_idle_ms,"legacy server was not relaunched with its idle limit");
-        NativeHandle pipe(CreateFileW(inference_pipe_name(fresh).c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,SECURITY_SQOS_PRESENT|SECURITY_ANONYMOUS,nullptr));
-        ULONG pid = 0;
-        if (pipe.valid() && GetNamedPipeServerProcessId(pipe.get(),&pid)) {
-            NativeHandle helper(OpenProcess(PROCESS_TERMINATE,FALSE,pid)); if (helper.valid()) TerminateProcess(helper.get(),0);
-        }
+        const InferenceLauncher launch = [&](DWORD idle) { launched.push_back(idle); return launch_dummy_server(server,fresh,0,idle); };
+        check(inference_exchange_launching(fresh,{15,U"起動",U"",U"",1},GetTickCount64()+5000,cancel.get(),launch,600).id==15 &&
+            launched.size()==1 && launched[0]==600,"server was not launched once with its idle limit");
     }
     } catch (const InferenceFailure& failure) {
         throw std::runtime_error(std::string(phase) + ": IPC status " + std::to_string(static_cast<int>(failure.status)));

@@ -104,7 +104,4 @@ InferenceResponse decode_response(std::string_view line, const InferenceRequest&
 std::string inference_hello(std::string_view backend) {
     return Json{{"hello","nkkz-ime-server"},{"protocol",2},{"backend",backend},{"version","0.0.1"}}.dump();
 }
-void validate_inference_hello(std::string_view line) {
-    const auto value = parse(line); need(value.at("hello") == "nkkz-ime-server" && value.at("protocol") == 2);
-}
 }

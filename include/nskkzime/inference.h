@@ -24,6 +24,6 @@ InferenceRequest decode_request(std::string_view);
 std::string encode_response(const InferenceResponse&);
 InferenceResponse decode_response(std::string_view, std::uint64_t expected_id, unsigned maximum);
 InferenceResponse decode_response(std::string_view, const InferenceRequest&);
+// First line of the server's --stdio and --version output.
 std::string inference_hello(std::string_view backend = "dummy");
-void validate_inference_hello(std::string_view);
 }

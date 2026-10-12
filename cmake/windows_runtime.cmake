@@ -1,5 +1,5 @@
   add_library(nskkzime_runtime STATIC src/windows/dictionary_settings.cpp src/windows/runtime_dictionary.cpp src/windows/romaji_settings.cpp
-    src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp src/windows/input_timing.cpp src/windows/cpu_requirements.cpp
+    src/windows/pipe_ipc.cpp src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp src/windows/input_timing.cpp src/windows/cpu_requirements.cpp
     src/windows/app_container.cpp src/windows/container_runtime.cpp src/windows/broker_snapshot.cpp src/windows/runtime_configuration.cpp src/windows/diagnostic_file.cpp src/windows/tsf_diagnostics.cpp)
   target_include_directories(nskkzime_runtime PUBLIC src/windows)
   target_include_directories(nskkzime_runtime SYSTEM PUBLIC third_party)
