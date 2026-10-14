@@ -8,7 +8,8 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if (-not $IsWindows -or -not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) {
+if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64 -or
+    -not [Environment]::Is64BitProcess) {
     throw 'Windows x64のPowerShell 7で実行してください。'
 }
 Import-Module (Join-Path $PSScriptRoot 'installation.psm1') -Force

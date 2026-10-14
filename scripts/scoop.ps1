@@ -7,7 +7,8 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or -not [Environment]::Is64BitOperatingSystem) {
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
     throw 'nskkzime requires Windows x64.'
 }
 $directory = [IO.Path]::GetFullPath($PackageDirectory)
