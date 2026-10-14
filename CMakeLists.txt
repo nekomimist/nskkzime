@@ -242,9 +242,19 @@ if(WIN32)
     add_dependencies(app_container_tests nskkzime_broker nkkz-ime-server)
     add_test(NAME app_container COMMAND app_container_tests)
     set_tests_properties(app_container PROPERTIES TIMEOUT 120)
+    add_test(NAME app_container_startup_delay COMMAND app_container_tests --startup-scenario delayed-broker)
+    set_tests_properties(app_container_startup_delay PROPERTIES TIMEOUT 120)
+    add_test(NAME app_container_startup_failures COMMAND ${NSKKZIME_PWSH} -NoProfile -File
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/app_container_startup_tests.ps1 -Executable $<TARGET_FILE:app_container_tests>)
+    # Three sequential injected failures, each with a bounded 90-second cleanup.
+    set_tests_properties(app_container_startup_failures PROPERTIES TIMEOUT 300)
+    # All variants temporarily grant execute access to this same binary.
+    set_tests_properties(app_container app_container_startup_delay app_container_startup_failures
+      PROPERTIES RESOURCE_LOCK app_container_binary)
     if(NSKKZIME_WITH_ZENZ AND NSKKZIME_ZENZ_TEST_MODEL)
       add_test(NAME app_container_zenz COMMAND app_container_tests --model ${NSKKZIME_ZENZ_TEST_MODEL})
       set_tests_properties(app_container_zenz PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+      set_tests_properties(app_container_zenz PROPERTIES RESOURCE_LOCK app_container_binary)
     endif()
     add_executable(input_mode_tests tests/input_mode_tests.cpp src/windows/text_service.cpp
       src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/display_attributes.cpp)

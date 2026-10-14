@@ -34,6 +34,16 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
 デスクトップ用TSFテストは通常プロセスとして実行する。AppContainer内では辞書がbroker経由になり、
 テスト専用設定のローカル辞書を待つ試験が初期化タイムアウトになる。
+`app_container_startup_delay` はbrokerの生成を先行入力の後に6秒遅らせ、通知後に設定・辞書を待っても
+手動の入力モードと入力を保持することを検証する。AppContainerの準備待ちは本体の接続期限30秒に
+初期化・再試行の余裕を加えた35秒で打ち切る。性能の保証値ではない。
+`app_container_startup_failures` は子の先行失敗、broker生成失敗、接続できず準備が終わらない場合を
+順に注入し、失敗理由・両方の子の終了状態・生成したプロセスの回収を検査する。
+失敗時は実行ファイル横の `container-test-*/` に `startup.jsonl`、子ごとの `startup-*.log` と
+brokerの `diagnostics/`（後半の試験では `saved-diagnostics/`）を残す。時刻はプロセス間で比較できる
+Windowsの起動後ミリ秒で、段階・PID・待機結果・終了コードを記録する。
+準備待ちの時間切れでは短い診断用接続を追加し、通信の失敗種別とWin32エラーも記録する。
+CIもこれらの診断をartifactに保存する。設定・辞書・モデル・入力ログは収集しない。
 `tsf_diagnostics` はログ有効・無効で本文・キーの消費・ホスト呼び出し数が変わらないこと、
 終了理由、再入・非同期通知、本文を保存しないこと、保存上限・キューの欠落を検証する。
 `tsf_smoke` は一時的なフォーカス先なし・GetTop失敗・空のtopからの復帰、次キーが先行する場合、
