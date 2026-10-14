@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(nskkzime VERSION 0.0.1 LANGUAGES CXX)
+project(nskkzime VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -168,6 +168,14 @@ if(WIN32)
     add_test(NAME tool_launcher COMMAND tool_launcher_tests)
     set_tests_properties(tool_launcher PROPERTIES TIMEOUT 20)
     find_program(NSKKZIME_PWSH NAMES pwsh REQUIRED)
+    add_test(NAME scoop COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/scoop_tests.ps1
+      -ScoopScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scoop.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR}
+      -InstallScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/install.ps1)
+    find_program(NSKKZIME_WINDOWS_POWERSHELL NAMES powershell)
+    if(NSKKZIME_WINDOWS_POWERSHELL)
+      add_test(NAME scoop_windows_powershell COMMAND ${NSKKZIME_WINDOWS_POWERSHELL} -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/scoop_tests.ps1
+        -ScoopScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scoop.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR})
+    endif()
     set(NSKKZIME_PACKAGE_TEST_ARGS)
     if(NOT NSKKZIME_WITH_ZENZ)
       list(APPEND NSKKZIME_PACKAGE_TEST_ARGS -TestOnly)

@@ -16,8 +16,8 @@ function Assert-NskkzimePath([string]$Path) {
 }
 function Get-NskkzimeBundle([string]$Directory, [string]$Verifier) {
     $result = & $Verifier -VerifyDirectory $Directory
-    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5) -or $result.Variant -cne 'zenz-cpu') {
-        throw 'インストールには形式2・3・4のzenz入りパッケージが必要です。'
+    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6) -or $result.Variant -cne 'zenz-cpu') {
+        throw 'インストールには形式2～6のzenz入りパッケージが必要です。'
     }
     [pscustomobject]@{ Directory = $result.Path; Version = $result.ManifestSHA256;
         Dll = (Join-Path $result.Path 'bin/nskkzime_tsf.dll'); Paths = $result.Paths;

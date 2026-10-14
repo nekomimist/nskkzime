@@ -3,7 +3,8 @@
 param(
     [ValidateSet('Status', 'Install', 'Rollback', 'Unregister', 'Recover')][string]$Action = 'Status',
     [string]$PackageDirectory = (Join-Path $PSScriptRoot '..'),
-    [string]$Version
+    [string]$Version,
+    [string]$ExpectedUserSid
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -39,6 +40,10 @@ function Read-RegistrationView([Microsoft.Win32.RegistryView]$View) {
 $readRegistration = { Read-RegistrationView ([Microsoft.Win32.RegistryView]::Registry64) }
 $readX86Registration = { Read-RegistrationView ([Microsoft.Win32.RegistryView]::Registry32) }
 if ($Action -eq 'Status') { Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration; return }
+$invokingIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($ExpectedUserSid -and $invokingIdentity.User.Value -cne $ExpectedUserSid) {
+    throw '昇格前と実行ユーザーが異なります。使用する本人のアカウントで管理者権限を承認してください。'
+}
 # A packaged caller (including an inherited virtualized child) can silently
 # write HKCU Run to its private registry. Refuse before any installation writes.
 if (-not ('NskkzimeInstallContext' -as [type])) {
@@ -70,7 +75,7 @@ public static class NskkzimeInstallContext {
 if ([NskkzimeInstallContext]::Redirected()) {
     throw 'アプリのデータ仮想化を検出しました。HKCUの起動登録が別の場所へ保存されるため、変更しません。通常のExplorerから起動したPowerShellで実行してください。'
 }
-$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+$principal = [Security.Principal.WindowsPrincipal]::new($invokingIdentity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw '使用する本人のアカウントで、管理者として起動したPowerShell 7から実行してください。'
 }

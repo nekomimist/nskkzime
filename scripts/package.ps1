@@ -3,7 +3,7 @@
 param(
     [Parameter(ParameterSetName = 'Create')][string]$SourceDirectory,
     [Parameter(ParameterSetName = 'Create')][switch]$Zenz, # Legacy no-op; creation always includes zenz.
-    [Parameter(Mandatory, ParameterSetName = 'Create')][string]$Output,
+    [Parameter(ParameterSetName = 'Create')][string]$Output,
     [Parameter(Mandatory, ParameterSetName = 'Verify')][string]$Verify,
     [Parameter(Mandatory, ParameterSetName = 'Directory')][string]$VerifyDirectory
 )
@@ -96,7 +96,7 @@ function Get-MetadataIdentity($Metadata) {
     } else { throw 'マニフェストのビルド情報が一致しません。' }
     ConvertTo-Json -InputObject $ordered -Compress -Depth 4
 }
-function Get-PackageNames([bool]$WithZenz, [int]$Format = 5) {
+function Get-PackageNames([bool]$WithZenz, [int]$Format = 6) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
@@ -106,17 +106,22 @@ function Get-PackageNames([bool]$WithZenz, [int]$Format = 5) {
     if ($Format -ge 4) { $names += @('bin/x86/nskkzime_tsf.dll', 'bin/x86/ime_probe.exe') }
     # Format 5 writes the user dictionary from the IME itself, without a helper.
     if ($Format -le 4) { $names += 'bin/nskkzime_dictionary_server.exe' }
+    if ($Format -ge 6) { $names += @('LICENSE', 'tools/scoop.ps1') }
     $names | Sort-Object -CaseSensitive
 }
 function Test-PackageContents($Contents) {
     if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
     if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
     $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
-    if ($manifest.format_version -notin @(1, 2, 3, 4, 5) -or $manifest.product -cne 'nskkzime' -or
+    if ($manifest.format_version -notin @(1, 2, 3, 4, 5, 6) -or $manifest.product -cne 'nskkzime' -or
         $manifest.architecture -cne 'x64' -or $manifest.configuration -cne 'Release' -or
         $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
         ($manifest.format_version -ge 2 -and $manifest.variant -cne 'zenz-cpu')) {
         throw '未対応のパッケージ形式です。'
+    }
+    if ($manifest.format_version -ge 6 -and
+        ($manifest.version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $manifest.first_party_license -cne 'MIT')) {
+        throw '公開用パッケージの版番号またはライセンスが不正です。'
     }
     $names = @(Get-PackageNames ($manifest.variant -ceq 'zenz-cpu') $manifest.format_version)
     if ($Contents.Count -ne $names.Count + 1 -or $manifest.files.Count -ne $names.Count) { throw 'ファイル一覧が一致しません。' }
@@ -194,7 +199,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
         if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '再解析ポイントは検査できません。' }
     }
     # Installed folders of earlier versions remain verifiable for rollback.
-    $names = @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
+    $names = @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @(Get-PackageNames $true 6) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
     $contents = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
     $folders = [Collections.Generic.Queue[string]]::new()
     $folders.Enqueue($path)
@@ -229,7 +234,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
         }
     }
     $manifest = Test-PackageContents $contents
-    [pscustomobject]@{ Path = $path; Variant = $manifest.variant; Files = $manifest.files.Count;
+    [pscustomobject]@{ Path = $path; Version = $manifest.version; Variant = $manifest.variant; Files = $manifest.files.Count;
         FormatVersion = $manifest.format_version; ManifestSHA256 = (Get-Digest $contents['manifest.json']);
         Paths = @($contents.Keys | Sort-Object -CaseSensitive); Verified = $true }
     return
@@ -237,7 +242,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
 if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     $path = [IO.Path]::GetFullPath($Verify)
     $manifest = Read-Package $path
-    [pscustomobject]@{ Path = $path; Variant = $manifest.variant; Files = $manifest.files.Count;
+    [pscustomobject]@{ Path = $path; Version = $manifest.version; Variant = $manifest.variant; Files = $manifest.files.Count;
         SHA256 = (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant(); Verified = $true }
     return
 }
@@ -245,12 +250,19 @@ if (-not $SourceDirectory) {
     $SourceDirectory = Join-Path $repository 'out/build/windows-x64-zenz/Release'
 }
 $source = [IO.Path]::GetFullPath($SourceDirectory)
-$destination = [IO.Path]::GetFullPath($Output)
-if (Test-Path -LiteralPath $destination) { throw "出力先は既に存在します。上書きしません: $destination" }
 if ([IO.Path]::GetFileName($source) -cne 'Release') { throw 'Releaseディレクトリーを指定してください。' }
-$cache = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $source) 'CMakeCache.txt') -Raw
+$cacheBytes = [IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $source) 'CMakeCache.txt'))
+$cache = [Text.Encoding]::UTF8.GetString($cacheBytes)
 if ($cache -notmatch '(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$') { throw 'x64ビルドではありません。' }
 if ($cache -notmatch '(?m)^NSKKZIME_WITH_ZENZ:BOOL=ON\r?$') { throw 'zenzを含まないテスト専用ビルドは配布できません。' }
+if ($cache -notmatch '(?m)^CMAKE_PROJECT_VERSION:STATIC=(?<version>[0-9]+\.[0-9]+\.[0-9]+)\r?$') { throw 'CMakeの版番号がありません。再構成・再ビルドしてください。' }
+$packageVersion = $Matches.version
+if (-not $Output) { $Output = Join-Path $repository "out/packages/nskkzime-v$packageVersion-windows-x64.zip" }
+$destination = [IO.Path]::GetFullPath($Output)
+$checksumPath = $destination + '.sha256'
+foreach ($path in @($destination, $checksumPath)) {
+    if (Test-Path -LiteralPath $path) { throw "出力先は既に存在します。上書きしません: $path" }
+}
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 $vs = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Build Tools 2022が見つかりません。' }
@@ -266,8 +278,10 @@ $sources['bin/x86/ime_probe.exe'] = Join-Path $source 'x86/ime_probe.exe'
 $sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe'
 $sources['bin/nskkzime_broker.exe'] = Join-Path $source 'nskkzime_broker.exe'
 $sources['README.md'] = Join-Path $repository 'docs/PACKAGE_README.md'
+$sources['LICENSE'] = Join-Path $repository 'LICENSE'
 $sources['tools/package.ps1'] = $PSCommandPath
 $sources['tools/install.ps1'] = Join-Path $PSScriptRoot 'install.ps1'
+$sources['tools/scoop.ps1'] = Join-Path $PSScriptRoot 'scoop.ps1'
 $sources['tools/installation.psm1'] = Join-Path $PSScriptRoot 'installation.psm1'
 $sources['licenses/nlohmann-MIT.txt'] = Join-Path $repository 'third_party/nlohmann/LICENSE.MIT'
 $sources['licenses/Unicode-3.0.txt'] = Join-Path $repository 'third_party/unicode/LICENSE.txt'
@@ -310,13 +324,14 @@ foreach ($name in @(Get-PackageNames $true)) {
     $files += [pscustomobject]$record
 }
 Assert-CompanionSource $buildMetadata $x86Metadata
+if ($buildMetadata.cmake_cache_sha256 -cne (Get-Digest $cacheBytes)) { throw 'CMakeの構成とバイナリーのビルド情報が一致しません。再ビルドしてください。' }
 $revision = & git -C $repository rev-parse --verify HEAD
 if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できません。' }
 & git -C $repository diff --quiet HEAD --
 $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
-    format_version = 5; product = 'nskkzime'; version = '0.0.1-dev'; architecture = 'x64'; configuration = 'Release'
+    format_version = 6; product = 'nskkzime'; version = $packageVersion; architecture = 'x64'; configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $buildMetadata.source_revision
@@ -327,7 +342,7 @@ $manifest = [ordered]@{
     runtime_requirement = 'Microsoft Visual C++ v14 Redistributable x64 and x86, at least the toolset version used to build'
     inspected_with_msvc_tools = $toolset
     signing_note = 'Packaging does not sign files. SHA-256 verification checks consistency, not publisher identity.'
-    first_party_license = 'Not yet specified; development validation package, not a public release.'
+    first_party_license = 'MIT'
     includes_model = $false; includes_dictionary = $false; includes_user_settings = $false
     files = $files
 }
@@ -335,6 +350,7 @@ $payload['manifest.json'] = [Text.Encoding]::UTF8.GetBytes(($manifest | ConvertT
 $parent = Split-Path -Parent $destination
 [IO.Directory]::CreateDirectory($parent) | Out-Null
 $temporary = $destination + '.tmp-' + [Guid]::NewGuid().ToString('N')
+$temporaryChecksum = $temporary + '.sha256'
 try {
     $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try {
@@ -349,9 +365,16 @@ try {
         } finally { $zip.Dispose() }
     } finally { $stream.Dispose() }
     $null = Read-Package $temporary
+    $packageHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+    $checksumStream = [IO.File]::Open($temporaryChecksum, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $checksumStream.Write([Text.Encoding]::UTF8.GetBytes($packageHash + '  ' + [IO.Path]::GetFileName($destination) + "`n")); $checksumStream.Flush($true) }
+    finally { $checksumStream.Dispose() }
     [IO.File]::Move($temporary, $destination, $false)
+    [IO.File]::Move($temporaryChecksum, $checksumPath, $false)
 } finally {
-    if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary }
+    foreach ($path in @($temporary, $temporaryChecksum)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path }
+    }
 }
-[pscustomobject]@{ Path = $destination; Variant = $manifest.variant; Files = $files.Count;
-    SHA256 = (Get-FileHash -LiteralPath $destination).Hash.ToLowerInvariant(); Verified = $true }
+[pscustomobject]@{ Path = $destination; ChecksumPath = $checksumPath; Version = $manifest.version;
+    Variant = $manifest.variant; Files = $files.Count; SHA256 = $packageHash; Verified = $true }

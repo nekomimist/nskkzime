@@ -22,7 +22,25 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 
 ## 導入
 
-管理者のPowerShell 7（スタートメニューから起動したもの）で、ビルドしたReleaseを梱包して導入する。
+Scoopから導入する場合は、使用する本人の通常権限のPowerShellで実行する。
+
+```powershell
+scoop bucket add extras
+scoop bucket add nekomimist https://github.com/nekomimist/scoop-bucket
+scoop install nekomimist/nskkzime
+```
+
+PowerShell 7とVisual C++ランタイム（x64・x86）も導入する。IME登録時のUACは同じ本人の
+アカウントで承認する。IME本体は `%ProgramFiles%\nskkzime` に配置し、Scoopのフォルダーにも
+取得したパッケージを保持する。初版は一人の管理ユーザーが管理し、Scoopのglobal installには対応しない。
+
+更新時は使用中のアプリを閉じて `scoop update`、`scoop update nskkzime` を実行する。
+旧版の本体は復旧用に残す。`scoop uninstall nskkzime` はIME登録とbrokerの起動登録を解除し、
+本体・設定・学習辞書は保持する。本体も削除する場合は [完全削除](docs/PACKAGE_README.md#完全削除) を参照。
+
+ZIPで導入する場合は [GitHub Releases](https://github.com/nekomimist/nskkzime/releases) から取得し、
+展開先の `README.md` に従う。ビルドしたReleaseを導入する場合は、管理者のPowerShell 7
+（スタートメニューから起動したもの）で実行する。
 
 ```powershell
 .\scripts\register-dev.ps1
@@ -42,4 +60,4 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 ## ライセンス
 
 同梱の依存ライブラリ・データのライセンスは [third_party](third_party/README.md) を参照。
-本体のライセンスは未定。
+本体は [MIT License](LICENSE)。

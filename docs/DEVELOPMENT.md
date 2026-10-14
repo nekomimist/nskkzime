@@ -29,7 +29,7 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 | TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_diagnostics`, `tsf_dictionary_startup` |
 | 推論 | `inference`, `inference_policy`, `tsf_inference`, `tsf_inference_policy`, `zenz_backend`, `tsf_zenz` |
 | AppContainer | `app_container`（一時的なAppContainerプロファイルで実際に子プロセスを起動）, `broker_snapshot` |
-| 配布 | `package`（梱包と検査）, `installation`（登録は模擬。導入・更新・復帰・解除） |
+| 配布 | `package`（梱包と検査）, `installation`（登録は模擬。導入・更新・復帰・解除）, `scoop` / `scoop_windows_powershell`（昇格プロセスは模擬） |
 
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
 デスクトップ用TSFテストは通常プロセスとして実行する。AppContainer内では辞書がbroker経由になり、
@@ -83,8 +83,8 @@ skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Kanji<Space><Enter>'
 配布用ZIPを使う場合は次のとおり。
 
 ```powershell
-.\scripts\package.ps1 -Output out\packages\nskkzime.zip
-.\scripts\package.ps1 -Verify out\packages\nskkzime.zip
+.\scripts\package.ps1 # out/packages/nskkzime-v<版番号>-windows-x64.zip と .zip.sha256 を作成
+.\scripts\package.ps1 -Verify out\packages\nskkzime-v0.1.0-windows-x64.zip
 # 展開したフォルダーで、管理者のPowerShell 7から
 .\tools\install.ps1 -Action Install
 .\tools\install.ps1 -Action Status
@@ -97,9 +97,26 @@ skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Kanji<Space><Enter>'
   データが仮想化されたアプリ（パッケージ化されたターミナルなど）から実行すると、HKCUへの書き込みが
   別の場所に行くため拒否する。スタートメニューから起動したPowerShellを使う。
 - 起動中のアプリは古いDLLを使い続ける。全体を切り替えるにはサインアウト・サインインする。
-- ZIPにはマニフェスト（ハッシュ・依存DLL・ビルド情報）と依存ライセンスを含める。
+- 版番号は `CMakeLists.txt` の `project(... VERSION ...)` で管理する。梱包時はビルドの
+  `CMakeCache.txt` から取得し、キャッシュのハッシュがバイナリーのビルド情報と一致することも確認する。
+  `-Output` で出力先を変更できる。ZIPと `.zip.sha256` は上書きしない。
+- ZIPにはマニフェスト（版番号・ハッシュ・依存DLL・ビルド情報）、本体のMIT Licenseと依存ライセンスを含める。
   モデル・辞書・設定は含めない。各バイナリーにはビルド元のrevisionと内容ハッシュを埋め込み、
   別のビルドが混ざったZIPは作らない。署名はしていない。
+
+## 公開
+
+`main` へのpushとpull requestでは、GitHub ActionsがWindows 2022でx64・x86のReleaseをビルドし、
+テストとパッケージ検査を実行する。モデルはCIでは取得せず、実モデルが必要なテストはスキップする。
+ZIPと `.zip.sha256` はActionsのartifactに保存する。
+
+公開するときは `CMakeLists.txt` の版番号を更新してコミットし、同じ版の `v<版番号>` タグをpushする。
+ビルド・テスト・検査が成功し、タグとビルドの版番号が一致した場合だけ、通常のGitHub Releaseを
+作成してZIPとチェックサムを添付する。モデル・SKK辞書・個人の設定・学習データは公開しない。
+
+Scoop bucketの `nskkzime.json` は、このReleaseのZIPとチェックサムを参照する。
+bucketの既存の自動更新に通常リリースを追従させる。対話的なUAC、使用中のDLL、Scoopの
+install/update/uninstallとWindows検索での実入力は、公開前にクリーンなWindowsでも確認する。
 
 ## 評価と比較
 
