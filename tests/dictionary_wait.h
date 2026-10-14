@@ -4,8 +4,8 @@
 
 // Tests of ready-state behavior explicitly wait for background initialization.
 // Dedicated runtime tests below exercise input while loading without this wait.
-template<class Ready> void wait_for_dictionary(Ready ready) {
-    const auto deadline = GetTickCount64() + 5000;
+template<class Ready> void wait_for_dictionary(Ready ready, DWORD timeout_ms = 5000) {
+    const auto deadline = GetTickCount64() + timeout_ms;
     while (!ready()) {
         if (GetTickCount64() >= deadline) throw std::runtime_error("dictionary load did not complete");
         Sleep(1);

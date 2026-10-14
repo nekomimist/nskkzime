@@ -26,6 +26,18 @@ jobs:
         run: .\scripts\prepare-zenz.ps1 -SkipModel
       - name: Build and test x64 and x86
         run: .\scripts\build.ps1 -Configuration Release
+      - name: Preserve failed AppContainer diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appcontainer-failure-diagnostics
+          path: |
+            out/build/**/container-test-*/startup*.log
+            out/build/**/container-test-*/startup.jsonl
+            out/build/**/container-test-*/diagnostics/*.jsonl
+            out/build/**/container-test-*/saved-diagnostics/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Package and validate release version
         run: |
           $package = .\scripts\package.ps1

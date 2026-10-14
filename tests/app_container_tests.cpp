@@ -7,6 +7,7 @@
 #include "inference_client.h"
 #include <userenv.h>
 #include <aclapi.h>
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <future>
@@ -19,6 +20,61 @@ using namespace nskkzime::windows;
 using Microsoft::WRL::ComPtr;
 namespace {
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+// One production bootstrap attempt allows 30 seconds. Give initialization and
+// retry scheduling some margin; this is a test budget, not a latency guarantee.
+constexpr DWORD dictionary_ready_ms = 35000;
+constexpr DWORD startup_control_ms = 45000;
+nlohmann::json trace_record(const char* phase, nlohmann::json fields = {}) {
+    fields["format"] = "nskkzime-startup-test";
+    fields["phase"] = phase;
+    fields["pid"] = GetCurrentProcessId();
+    fields["uptime_ms"] = GetTickCount64();
+    return fields;
+}
+void child_trace(const char* phase, nlohmann::json fields = {}) {
+    std::cerr << trace_record(phase, std::move(fields)).dump() << '\n';
+}
+const char* reason_name(ContainerReason reason) {
+    switch (reason) {
+    case ContainerReason::None: return "none";
+    case ContainerReason::Win32: return "win32";
+    case ContainerReason::Timeout: return "timeout";
+    case ContainerReason::Cancelled: return "cancelled";
+    case ContainerReason::Validation: return "validation";
+    case ContainerReason::Internal: return "internal";
+    }
+    return "unknown";
+}
+struct StartupTrace {
+    std::ofstream output;
+    explicit StartupTrace(const std::filesystem::path& root) : output(root / L"startup.jsonl", std::ios::binary) {
+        check(output.good(), "create startup diagnostic log");
+    }
+    void record(const char* phase, nlohmann::json fields = {}) noexcept {
+        try { output << trace_record(phase, std::move(fields)).dump() << '\n'; output.flush(); }
+        catch (...) { std::cerr << "startup diagnostic write failed\n"; }
+    }
+};
+nlohmann::json process_state(const NativeHandle& process) {
+    if (!process.valid()) return {{"created", false}, {"running", false}};
+    const auto waited = WaitForSingleObject(process.get(), 0);
+    const auto wait_error = waited == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+    DWORD code = 0;
+    const bool read = GetExitCodeProcess(process.get(), &code) != FALSE;
+    const auto code_error = read ? ERROR_SUCCESS : GetLastError();
+    return {{"created", true}, {"pid", GetProcessId(process.get())}, {"running", waited == WAIT_TIMEOUT},
+        {"wait_result", waited}, {"wait_error", wait_error}, {"exit_code", code}, {"exit_error", code_error}};
+}
+DWORD remaining(ULONGLONG deadline) {
+    const auto now = GetTickCount64();
+    return now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+}
+void stop_owned_child(const NativeHandle& process) {
+    if (process.valid() && WaitForSingleObject(process.get(), 0) == WAIT_TIMEOUT) {
+        check(TerminateProcess(process.get(), 99) != FALSE, "terminate owned test child");
+        check(WaitForSingleObject(process.get(), 1000) == WAIT_OBJECT_0, "reap owned test child");
+    }
+}
 void messages() { MSG msg{}; while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); } }
 struct Profile {
     std::wstring name; PSID sid = nullptr;
@@ -39,19 +95,30 @@ struct FileGrant {
     }
     ~FileGrant() { SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, old, nullptr); LocalFree(descriptor); }
 };
-NativeHandle launch(const std::filesystem::path& exe, std::wstring args, PSID container = nullptr, HANDLE startup_gate = nullptr) {
+NativeHandle launch(const std::filesystem::path& exe, std::wstring args, PSID container = nullptr,
+    HANDLE startup_gate = nullptr, HANDLE broker_created = nullptr, HANDLE diagnostic_output = nullptr) {
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup);
     HANDLE output = nullptr;
-    check(DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_ERROR_HANDLE), GetCurrentProcess(), &output, 0, TRUE, DUPLICATE_SAME_ACCESS) != FALSE, "child output");
+    check(DuplicateHandle(GetCurrentProcess(), diagnostic_output ? diagnostic_output : GetStdHandle(STD_ERROR_HANDLE),
+        GetCurrentProcess(), &output, 0, TRUE, DUPLICATE_SAME_ACCESS) != FALSE, "child output");
     NativeHandle output_handle(output);
     HANDLE inherited_gate = nullptr;
     if (startup_gate) {
-        check(DuplicateHandle(GetCurrentProcess(), startup_gate, GetCurrentProcess(), &inherited_gate, 0, TRUE,
-            DUPLICATE_SAME_ACCESS) != FALSE, "startup gate inheritance");
+        check(DuplicateHandle(GetCurrentProcess(), startup_gate, GetCurrentProcess(), &inherited_gate, EVENT_MODIFY_STATE, TRUE,
+            0) != FALSE, "startup gate inheritance");
         args += L" " + std::to_wstring(reinterpret_cast<std::uintptr_t>(inherited_gate));
     }
     NativeHandle gate_handle(inherited_gate);
-    HANDLE inherited[]{output, inherited_gate};
+    HANDLE inherited_broker = nullptr;
+    if (broker_created) {
+        check(DuplicateHandle(GetCurrentProcess(), broker_created, GetCurrentProcess(), &inherited_broker,
+            SYNCHRONIZE, TRUE, 0) != FALSE, "broker notification inheritance");
+        args += L" " + std::to_wstring(reinterpret_cast<std::uintptr_t>(inherited_broker));
+    }
+    NativeHandle broker_handle(inherited_broker);
+    std::vector<HANDLE> inherited{output};
+    if (startup_gate) inherited.push_back(inherited_gate);
+    if (broker_created) inherited.push_back(inherited_broker);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError = output;
     SIZE_T size = 0; std::vector<unsigned char> attributes;
@@ -60,19 +127,120 @@ NativeHandle launch(const std::filesystem::path& exe, std::wstring args, PSID co
         InitializeProcThreadAttributeList(nullptr, container ? 2 : 1, 0, &size); attributes.resize(size);
         startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
         check(InitializeProcThreadAttributeList(startup.lpAttributeList, container ? 2 : 1, 0, &size) != FALSE, "initialize attributes");
-        check(UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
-            startup_gate ? sizeof(inherited) : sizeof(output), nullptr, nullptr) != FALSE, "output attribute");
+        check(UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited.data(),
+            inherited.size() * sizeof(HANDLE), nullptr, nullptr) != FALSE, "output attribute");
         if (container) check(UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &caps, sizeof(caps), nullptr, nullptr) != FALSE, "container attribute");
     }
     PROCESS_INFORMATION child{}; auto command = L"\"" + exe.native() + L"\" " + args;
     const auto created = CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE,
         CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &child);
+    const auto error = created ? ERROR_SUCCESS : GetLastError();
     DeleteProcThreadAttributeList(startup.lpAttributeList);
-    check(created != FALSE, "launch test child"); CloseHandle(child.hThread); return NativeHandle(child.hProcess);
+    if (!created) throw std::runtime_error("launch test child: Win32 error " + std::to_string(error));
+    CloseHandle(child.hThread); return NativeHandle(child.hProcess);
 }
 DWORD wait_child(HANDLE process) {
     if (WaitForSingleObject(process, 45000) != WAIT_OBJECT_0) { TerminateProcess(process, 99); WaitForSingleObject(process, 1000); return 99; }
     DWORD code = 0; check(GetExitCodeProcess(process, &code) != FALSE, "read child exit"); return code;
+}
+NativeHandle start_early_children(const std::filesystem::path& executable, const Profile& allowed, const Profile& denied,
+    const std::filesystem::path& root, const std::filesystem::path& config, HANDLE stop, std::wstring_view scenario) {
+    StartupTrace trace(root);
+    const auto started = GetTickCount64();
+    // Reserve 30 seconds of the 120-second CTest watchdog for final cleanup.
+    const auto deadline = started + 90000;
+    NativeHandle on_gate(CreateEventW(nullptr, TRUE, FALSE, nullptr)), input_gate(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    NativeHandle broker_created(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    check(on_gate.valid() && input_gate.valid() && broker_created.valid(), "create startup notification events");
+    NativeHandle on_output(CreateFileW((root / L"startup-on.log").c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+    NativeHandle input_output(CreateFileW((root / L"startup-input.log").c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+    check(on_output.valid() && input_output.valid(), "create startup child diagnostic files");
+    NativeHandle early_on, early_input, broker;
+    const auto children = [&] { return nlohmann::json{{"on", process_state(early_on)}, {"input", process_state(early_input)}}; };
+    const char* phase = "launch_children";
+    trace.record("startup_started", {{"scenario", utf8_message(scenario)}});
+    try {
+        early_on = launch(executable, scenario == L"child-failure" ? L"--startup-early-fail" : L"--startup-early-on",
+            allowed.sid, on_gate.get(), broker_created.get(), on_output.get());
+        early_input = launch(executable, L"--startup-early-input", allowed.sid, input_gate.get(), broker_created.get(), input_output.get());
+        trace.record("children_created", {{"children", children()}});
+        phase = "choices_wait";
+        const auto choices_deadline = (std::min)(deadline, GetTickCount64() + 30000);
+        bool on_chosen = false, input_chosen = false;
+        while (!on_chosen || !input_chosen) {
+            const auto on = process_state(early_on), input = process_state(early_input);
+            check(on.at("running") && input.at("running"), "a startup child exited before broker creation");
+            on_chosen = WaitForSingleObject(on_gate.get(), 0) == WAIT_OBJECT_0;
+            input_chosen = WaitForSingleObject(input_gate.get(), 0) == WAIT_OBJECT_0;
+            if (on_chosen && input_chosen) break;
+            std::vector<HANDLE> watched{early_on.get(), early_input.get()};
+            if (!on_chosen) watched.push_back(on_gate.get());
+            if (!input_chosen) watched.push_back(input_gate.get());
+            const auto waited = WaitForMultipleObjects(static_cast<DWORD>(watched.size()), watched.data(), FALSE, remaining(choices_deadline));
+            const auto error = waited == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+            if (waited == WAIT_FAILED || waited == WAIT_TIMEOUT) {
+                trace.record("choices_wait_failed", {{"wait_result", waited}, {"win32_error", error}});
+                throw std::runtime_error("startup choices did not reach both gates");
+            }
+        }
+        trace.record("choices_completed", {{"elapsed_ms", GetTickCount64() - started}});
+        if (scenario == L"delayed-broker") {
+            Sleep(6000); // Regression: exceed the former pre-broker 5-second wait.
+            const auto states = children();
+            trace.record("deliberate_delay_completed", {{"delay_ms", 6000}, {"children", states}});
+            check(states.at("on").at("running") && states.at("input").at("running"), "startup children exited during the deliberate broker delay");
+        }
+        phase = "broker_start";
+        trace.record("broker_start_requested");
+        const auto broker_path = scenario == L"broker-failure" ? root / L"missing-broker.exe" : container_broker_path();
+        const auto& package = scenario == L"readiness-timeout" ? denied.name : allowed.name;
+        broker = launch(broker_path, L"--config \"" + config.native() + L"\" --test-package " + package);
+        trace.record("broker_process_created", {{"broker", process_state(broker)}});
+        check(SetEvent(broker_created.get()) != FALSE, "notify broker process creation");
+        // This notification means process creation succeeded, not IPC readiness.
+        trace.record("broker_creation_notified");
+        phase = "children_wait";
+        const auto children_deadline = (std::min)(deadline, GetTickCount64() + startup_control_ms);
+        bool on_done = false, input_done = false;
+        while (!on_done || !input_done) {
+            std::vector<HANDLE> watched;
+            if (!on_done) watched.push_back(early_on.get());
+            if (!input_done) watched.push_back(early_input.get());
+            const auto waited = WaitForMultipleObjects(static_cast<DWORD>(watched.size()), watched.data(), FALSE, remaining(children_deadline));
+            const auto error = waited == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+            if (waited == WAIT_FAILED || waited == WAIT_TIMEOUT) {
+                trace.record("children_wait_failed", {{"wait_result", waited}, {"win32_error", error}});
+                throw std::runtime_error("startup children did not finish within their shared deadline");
+            }
+            const auto on = process_state(early_on), input = process_state(early_input);
+            if (!on_done && !on.at("running")) { on_done = true; trace.record("child_exited", {{"child", "on"}, {"state", on}}); }
+            if (!input_done && !input.at("running")) { input_done = true; trace.record("child_exited", {{"child", "input"}, {"state", input}}); }
+        }
+        const auto on = process_state(early_on), input = process_state(early_input);
+        check(on.at("exit_error") == 0 && input.at("exit_error") == 0 &&
+            on.at("exit_code") == 0 && input.at("exit_code") == 0, "early startup child failed; inspect its diagnostic log");
+        trace.record("startup_passed", {{"elapsed_ms", GetTickCount64() - started}, {"children", children()}});
+        return broker;
+    } catch (const std::exception& error) {
+        trace.record("failure", {{"at_phase", phase}, {"error", error.what()}, {"children", children()}, {"broker", process_state(broker)}});
+        for (const auto* child : {&early_on, &early_input}) {
+            try { stop_owned_child(*child); }
+            catch (const std::exception& cleanup) { trace.record("cleanup_failed", {{"error", cleanup.what()}}); }
+        }
+        if (broker.valid()) {
+            const auto signalled = SetEvent(stop);
+            const auto stop_error = signalled ? ERROR_SUCCESS : GetLastError();
+            trace.record("broker_stop_requested", {{"signalled", signalled != FALSE}, {"win32_error", stop_error}});
+            const auto waited = WaitForSingleObject(broker.get(), (std::min)(DWORD{35000}, remaining(deadline)));
+            trace.record("broker_shutdown", {{"wait_result", waited}, {"win32_error", waited == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS}});
+            try { stop_owned_child(broker); }
+            catch (const std::exception& cleanup) { trace.record("cleanup_failed", {{"error", cleanup.what()}}); }
+        }
+        trace.record("cleanup_completed", {{"elapsed_ms", GetTickCount64() - started}, {"children", children()}, {"broker", process_state(broker)}});
+        throw;
+    }
 }
 struct Session {
     ComPtr<ITfTextInputProcessorEx> service; ComPtr<ITfKeyEventSink> keys;
@@ -81,7 +249,7 @@ struct Session {
         host.Attach(new test_host::Manager); context.Attach(new test_host::Context);
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))), "create service"); service.As(&keys);
         check(SUCCEEDED(service->ActivateEx(host.Get(), 1, TF_TMF_IMMERSIVEMODE)), "container activation");
-        wait_for_dictionary(runtime_dictionary_ready);
+        wait_for_dictionary(runtime_dictionary_ready, dictionary_ready_ms);
         check(container_configuration() != nullptr, "container bootstrap");
     }
     ~Session() { service->Deactivate(); context->pump(); }
@@ -89,8 +257,14 @@ struct Session {
         BYTE state[256]{}; if (shift) state[VK_SHIFT] = state[VK_LSHIFT] = 0x80; SetKeyboardState(state);
         const auto scan = static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code), MAPVK_VK_TO_VSC)) << 16;
         BOOL eaten = FALSE; keys->OnTestKeyDown(context.Get(), code, scan, &eaten); check(eaten, "key preflight");
-        const auto started = GetTickCount64(); keys->OnKeyDown(context.Get(), code, scan, &eaten);
-        check(eaten && GetTickCount64() - started < 150, "blocked container key"); keys->OnKeyUp(context.Get(), code, scan, &eaten);
+        const auto started = GetTickCount64();
+        const auto result = keys->OnKeyDown(context.Get(), code, scan, &eaten);
+        const auto elapsed = GetTickCount64() - started;
+        if (!eaten || elapsed >= 150) child_trace("key_dispatch_failed",
+            {{"accepted", eaten != FALSE}, {"elapsed_ms", elapsed}, {"hresult", result}});
+        check(eaten, "container key was not consumed");
+        check(elapsed < 150, "container key exceeded latency bound");
+        keys->OnKeyUp(context.Get(), code, scan, &eaten);
     }
     void type(std::string_view text) { for (char ch : text) { const auto vk = VkKeyScanExW(ch, GetKeyboardLayout(0)); key(LOBYTE(vk), (HIBYTE(vk) & 1) != 0); } }
     void wait(DWORD ms = 400) { const auto end = GetTickCount64() + ms; do { messages(); context->pump(); Sleep(5); } while (GetTickCount64() < end); }
@@ -100,7 +274,9 @@ struct Session {
         check(!context->queued.empty(), "missing container inference result"); context->pump();
     }
 };
-int startup_mode_test(HANDLE gate = nullptr, bool early_input = false) {
+int startup_mode_test(HANDLE gate = nullptr, HANDLE broker_created = nullptr, bool early_input = false, bool fail_choice = false) {
+    const auto started = GetTickCount64();
+    child_trace("child_started", {{"action", early_input ? "early_input" : "manual_on"}});
     check(in_app_container(), "startup child is not AppContainer");
     check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "startup COM initialization");
     ComPtr<test_host::ModeManager> host; host.Attach(new test_host::ModeManager);
@@ -119,14 +295,40 @@ int startup_mode_test(HANDLE gate = nullptr, bool early_input = false) {
         check(eaten && host->open->value == 1 && context->doc->text.empty(), "early startup preflight changed mode/text");
         keys->OnKeyDown(context.Get(), code, 0, &eaten);
         check(eaten && host->open->value == 1, "early startup input failed");
+        if (fail_choice) { child_trace("injected_choice_failure"); throw std::runtime_error("injected startup child failure"); }
         check(SetEvent(gate) != FALSE, "signal startup gate");
+        child_trace("choice_completed", {{"elapsed_ms", GetTickCount64() - started}});
+        check(broker_created != nullptr, "missing broker notification handle");
+        const auto waited = WaitForSingleObject(broker_created, startup_control_ms);
+        const auto error = waited == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+        child_trace("broker_notification", {{"wait_result", waited}, {"win32_error", error},
+            {"elapsed_ms", GetTickCount64() - started}});
+        check(waited == WAIT_OBJECT_0, "broker creation was not notified");
     }
-    wait_for_dictionary(runtime_dictionary_ready);
+    const auto waiting = GetTickCount64();
+    child_trace("dictionary_wait_started", {{"timeout_ms", dictionary_ready_ms}});
+    try { wait_for_dictionary(runtime_dictionary_ready, dictionary_ready_ms); }
+    catch (const std::exception& error) {
+        child_trace("dictionary_wait_failed", {{"error", error.what()}, {"elapsed_ms", GetTickCount64() - waiting},
+            {"ready", runtime_dictionary_ready()}});
+        // A bounded, separately labelled probe exposes a transport failure even
+        // when the background loader retries it internally. Never log payloads.
+        NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        try {
+            (void)container_exchange("INI3", GetTickCount64() + 1500, cancel.get());
+            child_trace("bootstrap_probe", {{"result", "responded"}});
+        } catch (const ContainerFailure& probe) {
+            child_trace("bootstrap_probe", {{"error", probe.what()}, {"reason", reason_name(probe.reason)}, {"win32_error", probe.error}});
+        } catch (const std::exception& probe) { child_trace("bootstrap_probe", {{"error", probe.what()}}); }
+        throw;
+    }
+    child_trace("dictionary_ready", {{"elapsed_ms", GetTickCount64() - waiting}});
     check(container_configuration()->configuration.settings.startup_ime_off, "broker startup setting missing");
     if (gate) {
         keys->OnSetFocus(TRUE);
         check(host->open->value == 1 && context->doc->text == (early_input ? L"k" : L""),
             "late startup settings overwrote manual mode/input");
+        child_trace("state_preserved");
         service->Deactivate(); context->pump(); return 0;
     }
     const auto before = host->open->value;
@@ -142,7 +344,7 @@ int startup_mode_test(HANDLE gate = nullptr, bool early_input = false) {
     check(host->open->value == 1, "broker focus reapplied startup OFF");
     service->Deactivate();
     check(SUCCEEDED(service->ActivateEx(host.Get(), 1, TF_TMF_IMMERSIVEMODE)), "startup reactivate");
-    wait_for_dictionary(runtime_dictionary_ready); keys->OnSetFocus(TRUE);
+    wait_for_dictionary(runtime_dictionary_ready, dictionary_ready_ms); keys->OnSetFocus(TRUE);
     check(host->open->value == 1, "broker reactivation reapplied startup OFF");
     service->Deactivate(); context->pump();
     return 0;
@@ -267,14 +469,17 @@ int container_test(bool denied, bool real_model) {
 }
 }
 int wmain(int argc, wchar_t** argv) {
+    std::filesystem::path fixture;
     try {
         if (argc == 2 && std::wstring_view(argv[1]) == L"--startup") return startup_mode_test();
-        if (argc == 3 && (std::wstring_view(argv[1]) == L"--startup-early-on" || std::wstring_view(argv[1]) == L"--startup-early-input"))
+        if (argc == 4 && (std::wstring_view(argv[1]) == L"--startup-early-on" || std::wstring_view(argv[1]) == L"--startup-early-input" ||
+            std::wstring_view(argv[1]) == L"--startup-early-fail"))
             return startup_mode_test(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(argv[2]))),
-                std::wstring_view(argv[1]) == L"--startup-early-input");
+                reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(argv[3]))),
+                std::wstring_view(argv[1]) == L"--startup-early-input", std::wstring_view(argv[1]) == L"--startup-early-fail");
         if (argc == 2 && std::wstring_view(argv[1]) == L"--updated") {
             const auto dictionary = container_runtime_dictionary();
-            wait_for_dictionary([&] { return dictionary->ready(); });
+            wait_for_dictionary([&] { return dictionary->ready(); }, dictionary_ready_ms);
             const auto words = dictionary->lookup({U"かんじ", 0});
             check(!words.empty() && words.front().text == U"新字", "broker retained same-size/time dictionary");
             const auto config = container_configuration();
@@ -283,7 +488,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (argc == 2 && std::wstring_view(argv[1]) == L"--degraded") {
             const auto dictionary = container_runtime_dictionary();
-            wait_for_dictionary([&] { return dictionary->ready(); });
+            wait_for_dictionary([&] { return dictionary->ready(); }, dictionary_ready_ms);
             check(!dictionary->lookup({U"かんじ", 0}).empty(), "degraded broker lost valid dictionary");
             check(!dictionary->registration_allowed(), "degraded broker enabled learning");
             const auto config = container_configuration();
@@ -301,7 +506,7 @@ int wmain(int argc, wchar_t** argv) {
         if (argc == 2 && std::wstring_view(argv[1]) == L"--desktop") {
             check(!in_app_container(), "desktop client unexpectedly restricted");
             auto dictionary = container_runtime_dictionary();
-            wait_for_dictionary([&] { return dictionary->ready(); });
+            wait_for_dictionary([&] { return dictionary->ready(); }, dictionary_ready_ms);
             const auto config = container_configuration();
             check(config && config->configuration.settings.candidates.show_after == 3 &&
                 config->configuration.settings.candidates.keys == CandidateKeys::Asdfjkl, "desktop broker settings");
@@ -310,7 +515,7 @@ int wmain(int argc, wchar_t** argv) {
             // A released snapshot is reused until its settings change.
             const auto reactivate = [&] {
                 dictionary.reset(); dictionary = container_runtime_dictionary();
-                wait_for_dictionary([&] { return dictionary->ready(); });
+                wait_for_dictionary([&] { return dictionary->ready(); }, dictionary_ready_ms);
                 return container_configuration();
             };
             check(reactivate() == config, "desktop broker reactivation copied the dictionary again");
@@ -322,13 +527,18 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (argc == 2) return container_test(std::wstring_view(argv[1]) == L"--denied", std::wstring_view(argv[1]) == L"--real-client");
         const bool real_model = argc == 3 && std::wstring_view(argv[1]) == L"--model";
-        check(argc == 1 || real_model, "invalid test arguments");
+        const bool startup_only = argc == 3 && std::wstring_view(argv[1]) == L"--startup-scenario";
+        const std::wstring_view scenario = startup_only ? argv[2] : L"";
+        check(argc == 1 || real_model || startup_only, "invalid test arguments");
+        check(!startup_only || scenario == L"delayed-broker" || scenario == L"child-failure" ||
+            scenario == L"broker-failure" || scenario == L"readiness-timeout", "invalid startup scenario");
         if (real_model && !std::filesystem::exists(argv[2])) return 77;
         wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
         const auto id = learning_client_id(); const std::wstring token(id.begin(), id.end());
         Profile allowed(L"nskkzime-test-" + token), denied(L"nskkzime-denied-" + token);
         FileGrant allow_binary(executable, allowed.sid), deny_binary(executable, denied.sid);
         const auto root = std::filesystem::path(executable).parent_path() / ("container-test-" + id); std::filesystem::create_directory(root);
+        fixture = root;
         const auto config = root / L"settings.ini", dict = root / L"fixture.skk", user = root / L"user-dictionary.nskkdb";
         { std::ofstream out(dict, std::ios::binary); out << "# /#1/#3/#2/\nかんじ /漢字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
         DictionarySettings settings{{dict}, true}; settings.candidates = {3, CandidateKeys::Asdfjkl};
@@ -349,7 +559,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto inference_token = current_inference_config()->token;
         std::atomic<bool> private_seen = false;
         std::future<int> inference;
-        if (!real_model) inference = std::async(std::launch::async, [&] { return serve_inference(inference_token, [&](const InferenceRequest& request, const auto& cancelled) {
+        if (!real_model && !startup_only) inference = std::async(std::launch::async, [&] { return serve_inference(inference_token, [&](const InferenceRequest& request, const auto& cancelled) {
             if (request.reading == U"ひみつ") private_seen = true;
             // Scores are waited for before display and must still fit the per-key bound; generation stays asynchronous.
             const auto end = GetTickCount64() + (request.operation == InferenceOperation::Score ? 5 : 160);
@@ -367,15 +577,18 @@ int wmain(int argc, wchar_t** argv) {
         // This makes late-settings protection independent of bootstrap timing.
         auto early_settings = settings; early_settings.startup_ime_off = true;
         save_dictionary_settings(config, early_settings);
-        NativeHandle on_gate(CreateEventW(nullptr, TRUE, FALSE, nullptr)), input_gate(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-        auto early_on = launch(executable, L"--startup-early-on", allowed.sid, on_gate.get());
-        auto early_input = launch(executable, L"--startup-early-input", allowed.sid, input_gate.get());
-        check(WaitForSingleObject(on_gate.get(), 5000) == WAIT_OBJECT_0 &&
-            WaitForSingleObject(input_gate.get(), 5000) == WAIT_OBJECT_0, "startup choices did not reach gates");
-        const auto broker = launch(container_broker_path(), L"--config \"" + config.native() + L"\" --test-package " + allowed.name);
+        const auto broker = start_early_children(executable, allowed, denied, root, config, stop.get(), scenario);
+        if (startup_only) {
+            SetEvent(stop.get());
+            const auto stopped = WaitForSingleObject(broker.get(), 35000);
+            if (stopped != WAIT_OBJECT_0) stop_owned_child(broker);
+            check(stopped == WAIT_OBJECT_0, "startup-only broker did not stop");
+            std::filesystem::remove_all(root);
+            std::cout << "Delayed broker startup preserved both manual choices\n";
+            return 0;
+        }
         int result = 1;
         try {
-            check(wait_child(early_on.get()) == 0 && wait_child(early_input.get()) == 0, "late startup settings changed active mode/input");
             save_dictionary_settings(config, settings);
             auto desktop = launch(executable, L"--desktop"); check(wait_child(desktop.get()) == 0, "desktop client failed");
             save_dictionary_settings(config, settings);
@@ -398,7 +611,10 @@ int wmain(int argc, wchar_t** argv) {
             check(logged, "broker input log missing");
             auto startup_settings = settings; startup_settings.startup_ime_off = true;
             save_dictionary_settings(config, startup_settings);
-            auto startup_client = launch(executable, L"--startup", allowed.sid);
+            NativeHandle startup_output(CreateFileW((root / L"startup-later.log").c_str(), GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+            check(startup_output.valid(), "create later startup diagnostic file");
+            auto startup_client = launch(executable, L"--startup", allowed.sid, nullptr, nullptr, startup_output.get());
             check(wait_child(startup_client.get()) == 0, "AppContainer startup mode failed");
             save_dictionary_settings(config, settings);
             auto degraded = settings;
@@ -475,5 +691,16 @@ int wmain(int argc, wchar_t** argv) {
         std::filesystem::remove_all(root);
         std::cout << "AppContainer broker, TSF, learning, inference, cancellation and peer checks passed\n";
         return result;
-    } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        if (!fixture.empty()) {
+            std::cerr << "AppContainer diagnostics: " << utf8_message(fixture.native()) << '\n';
+            for (const auto* name : {L"startup.jsonl", L"startup-on.log", L"startup-input.log", L"startup-later.log"}) {
+                std::ifstream log(fixture / name, std::ios::binary);
+                std::string line; std::size_t bytes = 0;
+                while (bytes < 32768 && std::getline(log, line)) { std::cerr << line << '\n'; bytes += line.size() + 1; }
+            }
+        }
+        return 1;
+    }
 }
