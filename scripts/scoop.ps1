@@ -31,6 +31,6 @@ try { $child = Start-Process @start }
 catch { throw "nskkzime $Action could not start. Approve UAC as the same user and retry. $($_.Exception.Message)" }
 try {
     if ($child.ExitCode -ne 0) {
-        throw "nskkzime $Action failed (exit $($child.ExitCode)). Run tools/install.ps1 -Action Status from a normal Explorer-launched PowerShell 7 window; use Recover if a transaction is pending."
+        throw "nskkzime $Action failed (exit $($child.ExitCode)). Data virtualization in a packaged application or its terminal may prevent installation. Retry from a non-packaged PowerShell 7 launched directly from Explorer or the Start menu. Run tools/install.ps1 -Action Status there; use Recover if a transaction is pending."
     }
 } finally { $child.Dispose() }

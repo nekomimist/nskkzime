@@ -22,7 +22,9 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 
 ## 導入
 
-Scoopから導入する場合は、使用する本人の通常権限のPowerShellで実行する。
+Scoopから導入する場合は、使用する本人がExplorer／スタートメニューから直接起動した、
+非パッケージ版のPowerShellで実行する。通常権限でよい。アプリの内蔵端末など、データが
+仮想化される実行環境では、起動登録を別の場所へ保存しないよう導入処理が停止する。
 
 ```powershell
 scoop bucket add extras
