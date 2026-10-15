@@ -11,7 +11,7 @@ if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.In
     throw 'Run this test bundle on ARM64 Windows.'
 }
 $root = $PSScriptRoot.Replace('\', '/')
-$pwshExe = (Get-Command pwsh -CommandType Application).Source.Replace('\', '/')
+$pwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source.Replace('\', '/')
 $testFile = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'build/CTestTestfile.cmake.in'))
 $testFile = $testFile.Replace('@BUNDLE@', $root).Replace('@PWSH@', $pwshExe)
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'build/CTestTestfile.cmake'), $testFile, [Text.UTF8Encoding]::new($false))

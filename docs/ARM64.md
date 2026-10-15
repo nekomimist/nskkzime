@@ -16,7 +16,7 @@ Windows 11 ProのSurface実機を検証先とし、既存のx64版を維持し�
 
 段階1〜4の未登録プロトタイプを実装し、Surfaceで実機検証した。
 ARM64成果物とupstream移植構成は実験用であり、既存の配布経路では拒否する。
-次の実装段階はARM64Xと、アーキテクチャの異なるアプリからのロード確認である。
+ARM64Xの未登録プロトタイプも追加した。登録経由の実入力と導入・配布は引き続き別の合格条件とする。
 
 ## ツールチェーン
 
@@ -107,6 +107,42 @@ x64 serverをARM64上のエミュレーションで起動する経路は引き�
 期限切れは取消を通知して非同期採点へ戻る。callbackは要求・handle・DLL参照を保持してから終了し、
 同じclientの同期用callbackは最大1つとする。起動前後の期限・取消を再確認するが、開始済みのOS呼出し自体は中断できない。
 
+## ARM64Xとホスト別の未登録試験
+
+MSVCのARM64とARM64ECでTSFを別々にビルドし、Microsoftの2段階リンク方式で
+1本のARM64X DLLへ結合する。推論serverとbrokerは純粋なARM64の別プロセスに保つ。
+ARM64・x64・ARM64ECのテストホストをDLLと同じフォルダーに置き、x86 companionは`x86/`へ置く。
+ARM64ECをx86 companionとして扱わず、共有TSFプロファイルの登録規則とビルド範囲を分離する。
+
+```powershell
+# VS 2022 17.11以降、MSVC ARM64/ARM64EC、ClangCLが必要。Release /MD専用。
+.\scripts\build-arm64x.ps1 -Jobs 4
+.\scripts\prepare-arm64x-tests.ps1 -OutputDirectory out/tmp/arm64x-tests
+```
+
+成果物は`out/arm64x/Release/`、転送用フォルダーは指定した出力先に生成する。
+準備スクリプトは既存の出力フォルダーを上書きしない。Surfaceの専用フォルダーへ転送し、
+RDPセッションで`.\run-arm64x-tests.ps1`を実行する。
+`-Name '^arm64x_'`でホスト別の追加試験だけを実行できる。
+テストは設定・辞書を隔離してDLLを直接読み込み、`DllRegisterServer`と`DllUnregisterServer`を呼ばない。
+
+native側の`/LINKREPROFULLPATHRSP`から絶対パスのOBJ・LIB・DEFを取り込み、
+ソース、コンパイラ、SDK、CRT、C++フラグ、cacheと全入力のSHA-256を照合してからEC側へ渡す。
+SDKのARM64 import libraryに含まれるEC用メンバーは許容し、プロジェクトの静的ライブラリーはARM64に限定する。
+入力が古い場合はEC単独ビルドを拒否し、上のスクリプトでnativeから再ビルドする。
+最終DLLのリンクは`/MACHINE:ARM64X`だけを指定する。CMakeがEC用に追加する
+`/machine:ARM64EC`をDLLのリンクフラグから除かない場合、このツールチェーンではnative CRTの初期化シンボルが未解決になる。
+`-TraceLink`で実際のリンク引数とライブラリー選択を記録できる。
+
+DLL内にはnative/ECそれぞれのビルド情報を保持し、`arm64x-build.json`に両方の情報とDLLのhashを記録する。
+各ホストの`tsf_architecture_tests`は、同じDLLパスと対応するdata export、11個の関数export、
+アイコンresource、class factory生成・参照解放を確認する。x64/ARM64ECはECの実装、ARM64はnativeの実装を使う。
+PEのmachine値だけではx64とARM64ECのホストを区別できないため、ホスト自身のコンパイル時ABIも報告する。
+転送用manifestで全71個のEXE/DLLと固定モデルを照合した後、nativeの50試験とホスト別の16試験を直列実行する。
+
+この試験は登録済みの一般アプリへの入力を保証しない。
+次に登録・解除・復帰の手順を整え、EDIT/RichEditと実際のアプリで入力経路を確認する。
+
 ## Surfaceへの接続
 
 画面操作はWindows 11 ProのRDP、コマンド実行と転送はWindows標準OpenSSH Serverを使う。
@@ -156,6 +192,7 @@ RDPではSurface側のnskkzimeがキーを処理していることを確認す�
 | 構成 | 結果 | 主な検証範囲 |
 |---|---|---|
 | Surface / ARM64 / upstream + zenz patch | 50/50成功 | 96通りのtokenizer互換性、実モデルの生成・採点・取消・復帰、TSF、AppContainer、cold start、同期期限切れ後のclient破棄 |
+| Surface / ARM64X / ARM64・x64・ARM64EC・x86 hosts | 66/66成功 | nativeの50試験とホスト別の16試験。同じARM64X DLLから対応する実装をロードし、辞書・学習・native ARM64 serverとの実モデル連携を確認。x86は別DLL |
 | 既存x64 / azooKey fork | 53/53成功 | 最新の共通修正、実モデル、TSF、AppContainer、配布パッケージの検査。installationのみ除外 |
 | 既存x86 companion | 16/16成功 | TSF、CPU検査、x64 helperとの連携 |
 | 依存移植時のx64 / upstream + zenz patch | 53/53成功 | 既存forkとのtokenizer比較と実モデルの回帰 |
@@ -165,6 +202,12 @@ ARM64のpackage/installation/Scoopは未対応のため除外した。
 従来のx64専用CPU判定を分離した後、同期採点のcold start経路も修正して全50件が成功した。
 一時的なオンデマンドタスクは削除済み。IME登録と普段の設定・辞書は変更していない。
 比較構成を同時にテストした初回にはTSF/AppContainerの失敗が出た。直列では再現していないが、原因は未確定のため構成間のCTestは直列で実行する。
+
+ARM64X追加後にも既存x64の53/53、x86の16/16が成功した。
+ARM64Xのdata exportはARM64ホストから`arm64x-native`、x64/ARM64ECホストから`arm64x-ec`を返し、
+3種類のホストが同一パス・同一hashのDLLを使うことを確認した。全試験でskipはなかった。
+検証用コピーでは、古いソース、変更したcache、変更したOBJ、異なるEC側CRT設定をそれぞれ拒否した。
+変更なしの増分ビルドではnative DLLとARM64X DLLの更新時刻が変わらなかった。
 
 参考値として、4 threads・固定の短い読み「かいとう」・3候補で測定した。
 テスト実行後の暖まったファイルキャッシュで各10要求を送り、stdioの往復時間を含む。
@@ -182,12 +225,15 @@ ARM64のpackage/installation/Scoopは未対応のため除外した。
 ローカルの検証ログは`out/reports/`に置く。通常の配布用llama.cpp pinは変更していない。
 Surfaceの最終JUnit結果は`out/reports/surface-arm64-zenz-02/reports/interactive-full-02/results.xml`、
 参考測定は`out/reports/surface-arm64-timing.json`、全体の要約は`out/reports/arm64-validation.json`。
-登録経由の実入力とARM64X・導入・配布は今後の段階とする。
+ARM64XのJUnit結果は`out/reports/surface-arm64x-01/reports/interactive-full-01/results.xml`、
+ホスト別のロード情報は`out/reports/arm64x-architecture-views.json`、入力検査の結果は`out/reports/arm64x-input-guards.json`。
+登録経由の実入力と導入・配布は今後の段階とする。
 
 ## 参照
 
 - [llama.cpp v0.6.0](https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0)
 - [MSVC ARMのビルド条件](https://github.com/ggml-org/llama.cpp/blob/v0.6.0/ggml/src/ggml-cpu/CMakeLists.txt)
 - [Arm64X](https://learn.microsoft.com/en-us/windows/arm/arm64x-pe)
+- [Arm64X DLLのビルド](https://learn.microsoft.com/en-us/windows/arm/arm64x-build)
 - [OpenSSH Server](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)
 - [Windows OpenSSHの鍵認証](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)
