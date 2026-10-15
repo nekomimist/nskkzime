@@ -20,7 +20,10 @@ $null = & (Join-Path $PSScriptRoot 'prepare-arm64-tests.ps1') `
 $release = Join-Path $destination 'build/Release'
 Copy-Item -LiteralPath (Join-Path $product 'nskkzime_tsf.dll') -Destination $release
 Copy-Item -LiteralPath (Join-Path $product 'arm64x-build.json') -Destination $destination
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-arm64x-tests.ps1') -Destination $destination
+foreach ($script in @('run-arm64x-tests.ps1','run-arm64x-registration.ps1','run-arm64x-input-probes.ps1',
+        'arm64-registration-test.psm1','installation.psm1')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $destination
+}
 $template = [IO.File]::ReadAllText((Join-Path $destination 'build/CTestTestfile.cmake.in'))
 foreach ($architecture in @('arm64','arm64ec','x64','x86')) {
     $dll = '@BUNDLE@/build/Release/nskkzime_tsf.dll'
@@ -30,12 +33,12 @@ foreach ($architecture in @('arm64','arm64ec','x64','x86')) {
         New-Item -ItemType Directory -Path (Join-Path $destination $prefix) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $product 'x86/nskkzime_tsf.dll') -Destination (Join-Path $destination $prefix)
     }
-    foreach ($target in @('tsf_architecture_tests','tsf_smoke','tsf_learning','tsf_zenz','ime_probe_local')) {
+    foreach ($target in @('tsf_architecture_tests','tsf_smoke','tsf_learning','tsf_zenz','ime_probe','ime_probe_local')) {
         $filename = if ($architecture -eq 'x86') { "$target.exe" } else { "$target-$architecture.exe" }
         $relative = $prefix + '/' + $filename
         $sourceFile = if ($architecture -eq 'x86') { Join-Path $product ('x86/' + $filename) } else { Join-Path $product $filename }
         Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $destination $relative)
-        if ($target -eq 'ime_probe_local') { continue } # Available for later interactive checks.
+        if ($target -in @('ime_probe','ime_probe_local')) { continue } # Interactive/registered checks run separately.
         $name = 'arm64x_' + $architecture + '_' + $target
         $arguments = @(('@BUNDLE@/' + $relative), $dll)
         if ($target -in @('tsf_smoke','tsf_learning')) { $arguments += '@BUNDLE@/source/tests/fixtures/basic.utf8.skk' }

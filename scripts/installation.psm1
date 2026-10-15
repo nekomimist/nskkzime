@@ -14,6 +14,20 @@ function Assert-NskkzimePath([string]$Path) {
         $current = [IO.Path]::GetDirectoryName($current)
     }
 }
+function Assert-NskkzimeProtectedPath([string]$Path) {
+    Assert-NskkzimePath $Path
+    $acl = Get-Acl -LiteralPath $Path
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544')) { throw "配置先の所有者がSystem/Administratorsではありません: $Path" }
+    $readOnly = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [int][Security.AccessControl.FileSystemRights]::Synchronize
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $rule.IdentityReference.Value -notin @('S-1-5-18', 'S-1-5-32-544') -and
+            (([int]$rule.FileSystemRights -band (-bnot $readOnly)) -ne 0)) {
+            throw "一般ユーザーが変更できる配置先は使用できません: $Path"
+        }
+    }
+}
 function Get-NskkzimeBundle([string]$Directory, [string]$Verifier) {
     $result = & $Verifier -VerifyDirectory $Directory
     if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6) -or $result.Variant -cne 'zenz-cpu') {
@@ -207,6 +221,6 @@ function Get-NskkzimeInstallStatus([string]$Root, [scriptblock]$ReadRegistration
         RegisteredX86Dll = $(if ($ReadX86Registration) { & $ReadX86Registration } else { $null });
         Pending = (Read-NskkzimeJournal $Root); AvailableVersions = @($available) }
 }
-Export-ModuleMember -Function Assert-NskkzimePath, Get-NskkzimeBundle, Get-NskkzimeInstalledBundle,
+Export-ModuleMember -Function Assert-NskkzimePath, Assert-NskkzimeProtectedPath, Get-NskkzimeBundle, Get-NskkzimeInstalledBundle,
     Get-NskkzimeManagedVersion, Enter-NskkzimeInstallLock, Add-NskkzimeVersion,
     Invoke-NskkzimeTransition, Repair-NskkzimeTransition, Get-NskkzimeInstallStatus

@@ -106,7 +106,30 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
         }
         wchar_t library[32768]{};
         GetModuleFileNameW(GetModuleHandleW(L"nskkzime_tsf.dll"), library, ARRAYSIZE(library));
+#if defined(_M_ARM64EC)
+        constexpr auto host = "arm64ec";
+#elif defined(_M_ARM64)
+        constexpr auto host = "arm64";
+#elif defined(_M_IX86)
+        constexpr auto host = "x86";
+#else
+        constexpr auto host = "x64";
+#endif
+        log << "host=" << host << '\n';
+#if defined(NSKKZIME_LOCAL_PROBE)
+        log << "activation=local-manifest\n";
+#else
+        log << "activation=registered-profile\n";
+#endif
         log << "process_bits=" << sizeof(void*) * 8 << "\ndll=" << std::filesystem::path(library).generic_string() << '\n';
+        const auto restored = probe.restore();
+        TF_INPUTPROCESSORPROFILE active{};
+        const auto queried = probe.profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active);
+        if (restored != S_OK || queried != S_OK || active.dwProfileType != probe.previous.dwProfileType ||
+            active.langid != probe.previous.langid || active.clsid != probe.previous.clsid ||
+            active.guidProfile != probe.previous.guidProfile || active.hkl != probe.previous.hkl)
+            throw std::runtime_error("previous input profile was not restored");
+        log << "PASS previous process input profile restored\n";
     } catch (const std::exception& error) {
         log << "FAIL " << error.what() << '\n'; throw;
     }

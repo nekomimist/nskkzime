@@ -84,20 +84,7 @@ if ($Action -eq 'Rollback' -and $Version -cnotmatch '^[a-f0-9]{64}$') { throw 'R
 if ($Action -ne 'Rollback' -and $Version) { throw '-VersionはRollbackだけで使用できます。' }
 
 function Assert-ProtectedItem([string]$Path) {
-    Assert-NskkzimePath $Path
-    $acl = Get-Acl -LiteralPath $Path
-    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544')) { throw "配置先の所有者がSystem/Administratorsではありません: $Path" }
-    # Users may read/execute. Only SYSTEM and Administrators may write, delete,
-    # change permissions or take ownership of the files that regsvr32 executes.
-    $readOnly = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [int][Security.AccessControl.FileSystemRights]::Synchronize
-    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-            $rule.IdentityReference.Value -notin @('S-1-5-18', 'S-1-5-32-544') -and
-            (([int]$rule.FileSystemRights -band (-bnot $readOnly)) -ne 0)) {
-            throw "一般ユーザーが変更できる配置先は使用できません: $Path"
-        }
-    }
+    Assert-NskkzimeProtectedPath $Path
 }
 Assert-NskkzimePath $root
 # Refuse unmanaged registrations before creating directories or copying files.

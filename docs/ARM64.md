@@ -138,10 +138,57 @@ DLL内にはnative/ECそれぞれのビルド情報を保持し、`arm64x-build.
 各ホストの`tsf_architecture_tests`は、同じDLLパスと対応するdata export、11個の関数export、
 アイコンresource、class factory生成・参照解放を確認する。x64/ARM64ECはECの実装、ARM64はnativeの実装を使う。
 PEのmachine値だけではx64とARM64ECのホストを区別できないため、ホスト自身のコンパイル時ABIも報告する。
-転送用manifestで全71個のEXE/DLLと固定モデルを照合した後、nativeの50試験とホスト別の16試験を直列実行する。
+転送用manifestで全75個のEXE/DLLと固定モデルを照合した後、nativeの50試験とホスト別の16試験を直列実行する。
 
 この試験は登録済みの一般アプリへの入力を保証しない。
 次に登録・解除・復帰の手順を整え、EDIT/RichEditと実際のアプリで入力経路を確認する。
+
+## 一時登録と実 HWND への入力試験
+
+実験用bundleには`run-arm64x-registration.ps1`と`run-arm64x-input-probes.ps1`を含める。
+既存のnskkzime COM/TSF登録がある端末では登録を拒否し、置換や既存版へのrollbackは扱わない。
+本番のpackage形式・installer・brokerのサインイン起動とは分けた、登録と解除だけの検証である。
+
+```powershell
+# SurfaceのARM64 PowerShell 7。Planは登録を変更しない。
+.\run-arm64x-registration.ps1 -Action Plan -Name surface-01
+
+# 同じユーザーの管理者PowerShellで実行する。
+.\run-arm64x-registration.ps1 -Action Register -Name surface-01
+
+# RDPの非昇格PowerShellで実行する。検証ウィンドウが順番に表示される。
+.\run-arm64x-input-probes.ps1 -Name surface-01
+
+# 成否にかかわらず、同じユーザーの管理者PowerShellで解除する。
+.\run-arm64x-registration.ps1 -Action Unregister -Name surface-01
+# 中断・解除失敗の場合も同じ名前を指定する。
+.\run-arm64x-registration.ps1 -Action Recover -Name surface-01
+```
+
+公開バイナリー10個だけを`Program Files/nskkzime-arm64-registration-tests/<name>/`へコピーする。
+コピー前後のhashを照合し、配置先とjournalはSYSTEM/Administratorsだけが変更できるACLにする。
+設定・辞書・レポートはユーザーのbundle内に隔離する。検証DLLは解除完了まで保持する。
+同じ名前の配置先やレポートがある場合は上書きせず、新しい名前を使う。
+
+ARM64Xを一度登録し、ARM64/x64/ARM64ECのfresh processで`CoCreateInstance`した後に、
+実際のDLLパスとdata exportのビルド情報を照合する。x86は別途登録・検証する。
+`ime_probe_local`のmanifest経由ロードや、先にDLLを直接ロードする方式は登録確認に使わない。
+通常版`ime_probe --self-test`は、RichEditでは本物のHWND/documentへ`ITfKeystrokeMgr`で入力し、
+EDITでは前面・focus・物理修飾キーを確認して`SendInput`を送る。
+前面化がWindowsに拒否された場合は、RDPで検証ウィンドウをクリックして開始する。
+レポートは`input/<RunName>/`へ残し、同じ登録で再実行するときも以前の試行を上書きしない。
+各ホストで変換・確定・取消・送り仮名と、プロセス内で切り替えた元のIMEへの復帰を確認する。
+両方で物理キーボードの全経路を検証したという意味ではない。
+
+解除はx86→nativeの順で行い、x86だけの解除後も共有TSFプロファイルと64bit COM生成が保たれることを確認する。
+全解除後はfresh processのCOM生成が`REGDB_E_CLASSNOTREG`になること、対象TSF processor/category/profileが消えたことを調べる。
+機械とユーザー、32/64bit viewのTIP状態を別々に記録し、入力の既定値と普段のnskkzimeファイルのhashも前後で照合する。
+ユーザー側にTIP設定だけが残る場合は、初期状態が不在で、所有者を確認できた時点のsnapshotと完全一致する対象だけを戻す。
+他のIMEを含むCTF hive全体の復元は行わない。
+
+各変更のintentを先にjournalへ永続化する。Recoverでは実際の両COM所有者とバイナリーhashを再確認し、
+他の登録先や実行中のregistrarがある場合は停止する。診断失敗があっても所有する登録の解除を続け、結果を分けて記録する。
+模擬的な部分失敗・中断・所有者変更・解除再試行は`tests/arm64_registration_tests.ps1`で検証できる。
 
 ## Surfaceへの接続
 
@@ -209,6 +256,18 @@ ARM64Xのdata exportはARM64ホストから`arm64x-native`、x64/ARM64ECホス�
 検証用コピーでは、古いソース、変更したcache、変更したOBJ、異なるEC側CRT設定をそれぞれ拒否した。
 変更なしの増分ビルドではnative DLLとARM64X DLLの更新時刻が変わらなかった。
 
+一時登録の実機試験では、ARM64/x64/ARM64EC/x86の4種類で登録経由のCOM生成が成功した。
+x86だけの解除後にも3種類の64bitホストから生成でき、最後の全解除後は4種類とも
+fresh processで`REGDB_E_CLASSNOTREG`となった。Recoverのjournalは`complete`で、
+対象のCOM/TSF processor/category/profileは残っておらず、入力の既定値と普段のファイルのhashも一致した。
+このOSでは`IsEnabledLanguageProfile`が未登録でもtrueを返したため、その値だけでは登録の有無を判断しない。
+一時タスクはすべて削除済み。登録試験直前の66/66、共通変更後の既存x64 54/54（installation模擬試験を含む）とx86 16/16も成功した。
+
+登録された実 HWND への入力試験は、ARM64プローブが前面クリック待ちとなり、
+初回の親プロセスの90秒待機を超えて終了した。入力・変換成功とは数えず、登録を解除して元の状態へ戻した。
+再試行用runnerは試行別レポートと既定330秒の待機を用意したが、RDPでウィンドウを前面に出す操作が必要である。
+実際のEDIT/RichEdit入力と元IMEへの復帰の合格判定は、この操作後の実行まで保留する。
+
 参考値として、4 threads・固定の短い読み「かいとう」・3候補で測定した。
 テスト実行後の暖まったファイルキャッシュで各10要求を送り、stdioの往復時間を含む。
 
@@ -227,6 +286,10 @@ Surfaceの最終JUnit結果は`out/reports/surface-arm64-zenz-02/reports/interac
 参考測定は`out/reports/surface-arm64-timing.json`、全体の要約は`out/reports/arm64-validation.json`。
 ARM64XのJUnit結果は`out/reports/surface-arm64x-01/reports/interactive-full-01/results.xml`、
 ホスト別のロード情報は`out/reports/arm64x-architecture-views.json`、入力検査の結果は`out/reports/arm64x-input-guards.json`。
+一時登録・解除の実機ログは`out/reports/surface-arm64x-registration-03/`、
+要約は`out/reports/arm64-registration-validation.json`。
+再試行用の最終版でも4種類の未登録ロード確認と、一時登録・fresh COM生成・Recoverの一巡を再確認した。
+その実機ログは`out/reports/surface-arm64x-registration-04/`に残し、登録と一時タスクは解除済みである。
 登録経由の実入力と導入・配布は今後の段階とする。
 
 ## 参照
