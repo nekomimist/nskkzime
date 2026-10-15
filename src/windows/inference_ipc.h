@@ -19,7 +19,8 @@ NativeHandle claim_inference_server(std::wstring_view token);
 InferenceResponse inference_exchange(std::wstring_view token, const InferenceRequest&, ULONGLONG deadline, HANDLE cancel);
 NativeHandle launch_dummy_server(const std::filesystem::path&, std::wstring_view token, DWORD delay_ms = 150, DWORD idle_ms = 10000);
 NativeHandle launch_zenz_server(const std::filesystem::path& program, const std::filesystem::path& model,
-    std::wstring_view token, unsigned threads = 4, DWORD timeout_ms = 1000, DWORD idle_ms = 10000);
+    std::wstring_view token, unsigned threads = 4, DWORD timeout_ms = 1000, DWORD idle_ms = 10000,
+    ULONGLONG deadline = 0, HANDLE cancel = nullptr);
 int serve_dummy_inference(std::wstring_view token, DWORD delay_ms, DWORD idle_ms);
 inline constexpr DWORD inference_max_idle_ms = 86'400'000;
 using InferenceLauncher = std::function<NativeHandle(DWORD idle_ms)>;

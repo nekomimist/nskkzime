@@ -2,7 +2,6 @@
 #include "container_runtime.h"
 #include "runtime_configuration.h"
 #include "dictionary_settings.h"
-#include "cpu_requirements.h"
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -52,12 +51,13 @@ struct InferenceClient::State {
     std::deque<InputLogRecord> records;
     std::atomic<InputLogStatus> log_status{InputLogStatus::Off};
     std::atomic<unsigned> log_dropped{0};
+    std::atomic<bool> immediate_busy{false};
     // Desktop only: connect, launching the configured server while it is absent.
     InferenceResponse exchange(const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel) const {
         InferenceLauncher launch;
-        if (!config.server.empty()) launch = [config = config](DWORD idle) {
+        if (!config.server.empty()) launch = [config = config, deadline, cancel](DWORD idle) {
             return launch_zenz_server(config.server, config.model, config.token, config.threads,
-                (std::max)(config.timeout_ms, static_cast<DWORD>(config.policy.score_timeout_ms)), idle);
+                (std::max)(config.timeout_ms, static_cast<DWORD>(config.policy.score_timeout_ms)), idle, deadline, cancel);
         };
         return inference_exchange_launching(config.token, request, deadline, cancel, launch, config.idle_ms);
     }
@@ -106,6 +106,31 @@ struct InferenceClient::State {
         std::unique_ptr<Work> work(static_cast<Work*>(raw));
         FreeLibraryWhenCallbackReturns(instance, work->module); CallbackMayRunLong(instance); work->state->run();
     }
+    struct Immediate {
+        Job job;
+        NativeHandle done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+        std::optional<InferenceResponse> response;
+        std::atomic<bool> completed{false};
+    };
+    struct ImmediateWork { std::shared_ptr<State> state; std::shared_ptr<Immediate> result; HMODULE module; };
+    static void CALLBACK immediate_callback(PTP_CALLBACK_INSTANCE instance, void* raw) noexcept {
+        std::unique_ptr<ImmediateWork> work(static_cast<ImmediateWork*>(raw));
+        FreeLibraryWhenCallbackReturns(instance, work->module); CallbackMayRunLong(instance);
+        auto& result = *work->result; const auto& job = result.job; const auto& config = work->state->config;
+        try {
+            if (GetTickCount64() < job.deadline && WaitForSingleObject(job.cancel.get(), 0) != WAIT_OBJECT_0) {
+                if (config.container)
+                    result.response = decode_response(container_exchange("INF1" + config.container_generation + encode_request(job.request),
+                        job.deadline, job.cancel.get()), job.request);
+                else result.response = work->state->exchange(job.request, job.deadline, job.cancel.get());
+            }
+        } catch (...) { /* The caller falls back to its ordinary asynchronous request. */ }
+        // Never change the response after publishing it. Callback ownership keeps
+        // State, handles and this DLL alive when the caller has already timed out.
+        result.completed.store(true, std::memory_order_release);
+        work->state->immediate_busy.store(false);
+        SetEvent(result.done.get());
+    }
 };
 InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : state_(std::make_shared<State>()), callback_(std::move(callback)) {
     if (!state_->wake.valid() || config.timeout_ms == 0 || config.timeout_ms > 10000) throw std::invalid_argument("invalid inference configuration");
@@ -146,15 +171,32 @@ ULONGLONG InferenceClient::submit(InferenceRequest request, DWORD timeout_ms) {
     SetEvent(state_->wake.get()); return job->deadline;
 }
 std::optional<InferenceResponse> InferenceClient::exchange_now(const InferenceRequest& request, DWORD wait_ms) const noexcept {
+    if (!wait_ms) return std::nullopt;
+    const auto deadline = GetTickCount64() + wait_ms;
+    if (state_->immediate_busy.exchange(true)) return std::nullopt;
+    bool dispatched = false;
     try {
-        const auto& config = state_->config; // Immutable after construction; the worker only reads it.
-        const auto deadline = GetTickCount64() + wait_ms;
-        NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-        if (!cancel.valid()) return std::nullopt;
-        if (config.container) // The broker launches the server itself.
-            return decode_response(container_exchange("INF1" + config.container_generation + encode_request(request), deadline, cancel.get()), request);
-        return state_->exchange(request, deadline, cancel.get());
-    } catch (...) { return std::nullopt; }
+        auto result = std::make_shared<State::Immediate>();
+        result->job.request = request; result->job.deadline = deadline;
+        if (!result->job.cancel.valid() || !result->done.valid()) throw std::runtime_error("cannot create immediate request");
+        auto work = std::make_unique<State::ImmediateWork>(); work->state = state_; work->result = result;
+        if (GetTickCount64() >= deadline) throw std::runtime_error("immediate request expired");
+        work->module = module(true);
+        if (GetTickCount64() >= deadline) {
+            FreeLibrary(work->module); throw std::runtime_error("immediate request expired");
+        }
+        if (!TrySubmitThreadpoolCallback(State::immediate_callback, work.get(), nullptr)) {
+            FreeLibrary(work->module); throw std::runtime_error("cannot start immediate request");
+        }
+        work.release(); dispatched = true;
+        const auto now = GetTickCount64();
+        const auto remaining = static_cast<DWORD>(deadline > now ? deadline - now : 0);
+        if (WaitForSingleObject(result->done.get(), remaining) == WAIT_OBJECT_0 &&
+            result->completed.load(std::memory_order_acquire) && GetTickCount64() < deadline)
+            return std::move(result->response);
+        SetEvent(result->job.cancel.get());
+    } catch (...) { if (!dispatched) state_->immediate_busy.store(false); }
+    return std::nullopt;
 }
 void InferenceClient::cancel() noexcept {
     const std::lock_guard lock(state_->mutex);
@@ -211,7 +253,6 @@ std::optional<InferenceConfig> inference_config(const ContainerConfiguration& re
 std::optional<InferenceConfig> inference_config(const RuntimeConfiguration& runtime) {
     const auto& settings = runtime.dictionaries.settings.zenz;
     if (!settings.enabled) return {};
-    require_zenz_cpu(current_cpu_features());
     validate_zenz_settings(settings); // Do not open a model or run a process on the TSF thread.
     InferenceConfig config;
     // The server bundled with this IME build, unless a development override is saved.

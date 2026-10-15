@@ -27,6 +27,33 @@
       }
     },
     {
+      "name": "windows-x64-upstream-experimental",
+      "inherits": "windows-x64",
+      "displayName": "Experimental upstream llama.cpp v0.6.0 with zenz tokenizer patch",
+      "binaryDir": "${sourceDir}/out/build/windows-x64-upstream-experimental",
+      "cacheVariables": {
+        "NSKKZIME_LLAMA_VARIANT": "upstream-v0.6.0"
+      }
+    },
+    {
+      "name": "windows-arm64-upstream-experimental",
+      "inherits": "windows-x64-upstream-experimental",
+      "displayName": "Experimental ARM64 / MSVC product + ClangCL llama.cpp / Release only",
+      "architecture": "ARM64",
+      "binaryDir": "${sourceDir}/out/build/windows-arm64-upstream-experimental",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
+      }
+    },
+    {
+      "name": "windows-arm64-test-only",
+      "inherits": "windows-x64-test-only",
+      "displayName": "Experimental ARM64 / MSVC / no zenz / not distributable",
+      "architecture": "ARM64",
+      "binaryDir": "${sourceDir}/out/build/windows-arm64-test-only"
+    },
+    {
       "name": "windows-x86",
       "displayName": "32-bit TSF companion / x64 services",
       "generator": "Visual Studio 17 2022",
@@ -46,6 +73,10 @@
     {"name": "release-zenz", "inherits": "release"},
     {"name": "debug-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Debug"},
     {"name": "release-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Release"},
+    {"name": "release-upstream-experimental", "configurePreset": "windows-x64-upstream-experimental", "configuration": "Release"},
+    {"name": "release-arm64-upstream-experimental", "configurePreset": "windows-arm64-upstream-experimental", "configuration": "Release"},
+    {"name": "debug-arm64-test-only", "configurePreset": "windows-arm64-test-only", "configuration": "Debug"},
+    {"name": "release-arm64-test-only", "configurePreset": "windows-arm64-test-only", "configuration": "Release"},
     {"name": "debug-x86", "configurePreset": "windows-x86", "configuration": "Debug"},
     {"name": "release-x86", "configurePreset": "windows-x86", "configuration": "Release"}
   ],
@@ -56,6 +87,10 @@
     {"name": "release-zenz", "inherits": "release"},
     {"name": "debug-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Debug", "output": {"outputOnFailure": true}},
     {"name": "release-test-only", "configurePreset": "windows-x64-test-only", "configuration": "Release", "output": {"outputOnFailure": true}},
+    {"name": "release-upstream-experimental", "configurePreset": "windows-x64-upstream-experimental", "configuration": "Release", "output": {"outputOnFailure": true}, "filter": {"exclude": {"name": "^installation$"}}},
+    {"name": "release-arm64-upstream-experimental", "configurePreset": "windows-arm64-upstream-experimental", "configuration": "Release", "output": {"outputOnFailure": true}, "filter": {"exclude": {"name": "^(package|installation|scoop|scoop_windows_powershell)$"}}},
+    {"name": "debug-arm64-test-only", "configurePreset": "windows-arm64-test-only", "configuration": "Debug", "output": {"outputOnFailure": true}, "filter": {"exclude": {"name": "^(package|installation|scoop|scoop_windows_powershell)$"}}},
+    {"name": "release-arm64-test-only", "configurePreset": "windows-arm64-test-only", "configuration": "Release", "output": {"outputOnFailure": true}, "filter": {"exclude": {"name": "^(package|installation|scoop|scoop_windows_powershell)$"}}},
     {"name": "debug-x86", "configurePreset": "windows-x86", "configuration": "Debug", "output": {"outputOnFailure": true}},
     {"name": "release-x86", "configurePreset": "windows-x86", "configuration": "Release", "output": {"outputOnFailure": true}}
   ]

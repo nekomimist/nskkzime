@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$PackageScript,
     [Parameter(Mandatory)][string]$BuildDirectory,
     [Parameter(Mandatory)][string]$Configuration,
-    [switch]$TestOnly
+    [switch]$TestOnly,
+    [switch]$UpstreamExperimental
 )
 $ErrorActionPreference = 'Stop'
 $fixture = Join-Path ([IO.Path]::GetFullPath($BuildDirectory)) ('package-test 日本語 space-' + [Guid]::NewGuid().ToString('N'))
@@ -16,6 +17,12 @@ function Expect-Failure([scriptblock]$Action, [string]$Expected) {
     Assert-Package ($null -ne $message -and $message.Contains($Expected)) "Expected '$Expected', got '$message'."
 }
 try {
+    if ($UpstreamExperimental) {
+        Expect-Failure { & $PackageScript @arguments } 'upstream llama.cppの実験用ビルドは配布できません'
+        Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'An experimental build was packaged.'
+        Write-Output 'PASS experimental upstream build rejected'
+        return
+    }
     if ($Configuration -eq 'Debug' -or $TestOnly) {
         Expect-Failure { & $PackageScript @arguments } $(if ($TestOnly) { 'テスト専用ビルドは配布できません' } else { 'Releaseディレクトリー' })
         Assert-Package (-not (Test-Path -LiteralPath $arguments.Output)) 'A non-distributable build was packaged.'

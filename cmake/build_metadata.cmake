@@ -9,6 +9,9 @@ endif()
 if(NSKKZIME_WITH_ZENZ)
   set(_metadata_variant "zenz-cpu")
   list(APPEND _metadata_llama_args -LlamaDirectory "${NSKKZIME_LLAMA_DIR}" -LlamaRevision "${NSKKZIME_LLAMA_REVISION}")
+  if(NSKKZIME_LLAMA_BACKEND_BUILD)
+    list(APPEND _metadata_llama_args -LlamaBackendBuildDirectory "${NSKKZIME_LLAMA_BACKEND_BUILD}")
+  endif()
 endif()
 add_custom_target(nskkzime_build_metadata
   COMMAND "${NSKKZIME_PWSH}" -NoProfile -File "${PROJECT_SOURCE_DIR}/scripts/write-build-metadata.ps1"
@@ -17,6 +20,9 @@ add_custom_target(nskkzime_build_metadata
     -Variant "${_metadata_variant}" ${_metadata_llama_args}
   BYPRODUCTS "${_metadata_source}"
   VERBATIM)
+if(TARGET nskkzime_llama_arm64)
+  add_dependencies(nskkzime_build_metadata nskkzime_llama_arm64)
+endif()
 foreach(_target nskkzime_tsf nskkzime_settings nskkzime_dictionary_gui
     nskkzime_config nskkzime_user_dictionary ime_probe nkkz-ime-server nskkzime_broker)
   if(NOT TARGET ${_target})

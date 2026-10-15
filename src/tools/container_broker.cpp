@@ -102,7 +102,7 @@ struct Broker {
             InferenceLauncher launch;
             if (!settings->server.empty()) launch = [&](DWORD idle) {
                 return launch_zenz_server(settings->server, settings->model, settings->token, settings->threads,
-                    (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)), idle);
+                    (std::max)(settings->timeout_ms, static_cast<DWORD>(settings->policy.score_timeout_ms)), idle, deadline, cancel.get());
             };
             try { return encode_response(inference_exchange_launching(settings->token, request, deadline, cancel.get(), launch, settings->idle_ms)); }
             catch (const InferenceFailure& failure) {

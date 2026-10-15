@@ -91,6 +91,19 @@ void ipc_tests(const std::filesystem::path& server) {
         check(delivered.size()==1 && delivered[0].id==12 && delivered[0].status==InferenceStatus::Ok,"latest request did not win");
         client.submit({13,U"破棄",U"",U"",1}); client.cancel(); Sleep(300); client.poll(); check(delivered.size()==1,"cancelled callback delivered");
     }
+    phase = "immediate timeout and client destruction";
+    {
+        InferenceClient client({name,{},1500},[](auto) { throw std::runtime_error("immediate request notified UI"); });
+        const auto before = GetTickCount64();
+        check(!client.exchange_now({16,U"期限",U"",U"",1},20) && GetTickCount64()-before < 200,
+            "immediate request blocked on slow server");
+        // Destruction must not wait for or invalidate the detached callback.
+    }
+    {
+        InferenceClient client({name,{},1500},[](auto) {});
+        const auto response = client.exchange_now({17,U"復帰",U"",U"",1},1000);
+        check(response && response->id == 17,"timed-out immediate request damaged the next client");
+    }
     check(WaitForSingleObject(process.get(),5000)==WAIT_OBJECT_0,"dummy server failed to idle out");
     phase = "restart";
     DWORD exit = 1; GetExitCodeProcess(process.get(),&exit); check(exit==0,"dummy server failed");

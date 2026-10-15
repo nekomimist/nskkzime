@@ -1,5 +1,7 @@
 # 開発
 
+ARM64対応の段階と検証方法は [ARM64.md](ARM64.md) を参照。
+
 ## ビルドとテスト
 
 PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake tools）、

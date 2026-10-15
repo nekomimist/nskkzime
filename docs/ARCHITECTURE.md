@@ -141,6 +141,6 @@ brokerは通常権限で常駐し、コンテナーSIDとセッションごと�
 
 ## 主な制約
 
-- x64 Windows専用。zenzサーバーはAVX2/FMA/F16C/BMI2が必要（`nskkzime_config --check-cpu` で確認）。
+- 配布版はx64 Windows向け。zenzサーバーはAVX2/FMA/F16C/BMI2が必要（`nskkzime_config --check-cpu` で確認）。ARM64の実験構成と検証状況は[ARM64対応のロードマップ](ARM64.md)を参照。
 - 設定・辞書の変更は、利用するアプリを起動し直すと反映される（ファイルの監視はしない）。
-- 許可したAppContainer以外のUWPアプリとARM64は対象外。管理者として実行したアプリ・低整合性プロセスとの連携は未検証。
+- 許可したAppContainer以外のUWPアプリとARM64向けの配布は対象外。管理者として実行したアプリ・低整合性プロセスとの連携は未検証。

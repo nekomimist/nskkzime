@@ -24,6 +24,12 @@ void append_key(std::wstring& key, std::wstring_view value) {
     key += std::to_wstring(value.size()) + L":"; key += value;
 }
 }
+#if defined(_MSC_VER) && defined(_M_ARM64)
+#pragma warning(push)
+// MSVC's ARM64 atomic<shared_ptr> requires alignment padding in this private,
+// process-local state. Its layout is neither persisted nor shared through IPC.
+#pragma warning(disable: 4324)
+#endif
 struct RuntimeDictionary::State {
     const std::shared_ptr<const RuntimeDictionarySnapshot> failure = std::make_shared<const RuntimeDictionarySnapshot>(failed_snapshot());
     std::atomic<std::shared_ptr<const RuntimeDictionarySnapshot>> snapshot;
@@ -51,6 +57,9 @@ struct RuntimeDictionary::State {
         }
     }
 };
+#if defined(_MSC_VER) && defined(_M_ARM64)
+#pragma warning(pop)
+#endif
 RuntimeDictionary::RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader, bool retry) : state_(std::make_shared<State>()) {
     auto work = std::make_unique<State::Work>(); work->state = state_; work->loader = std::move(loader); work->retry = retry;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&module_anchor),&work->module))

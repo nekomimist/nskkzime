@@ -253,6 +253,7 @@ $source = [IO.Path]::GetFullPath($SourceDirectory)
 if ([IO.Path]::GetFileName($source) -cne 'Release') { throw 'Releaseディレクトリーを指定してください。' }
 $cacheBytes = [IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $source) 'CMakeCache.txt'))
 $cache = [Text.Encoding]::UTF8.GetString($cacheBytes)
+if ($cache -match '(?m)^NSKKZIME_LLAMA_VARIANT:STRING=upstream-v0\.6\.0\r?$') { throw 'upstream llama.cppの実験用ビルドは配布できません。' }
 if ($cache -notmatch '(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$') { throw 'x64ビルドではありません。' }
 if ($cache -notmatch '(?m)^NSKKZIME_WITH_ZENZ:BOOL=ON\r?$') { throw 'zenzを含まないテスト専用ビルドは配布できません。' }
 if ($cache -notmatch '(?m)^CMAKE_PROJECT_VERSION:STATIC=(?<version>[0-9]+\.[0-9]+\.[0-9]+)\r?$') { throw 'CMakeの版番号がありません。再構成・再ビルドしてください。' }

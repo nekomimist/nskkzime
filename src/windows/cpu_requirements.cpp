@@ -1,11 +1,12 @@
 #include "cpu_requirements.h"
 #include <windows.h>
 #include <array>
-#if defined(_M_X64) || defined(_M_IX86)
+#include <fstream>
+#if (defined(_M_X64) || defined(_M_IX86)) && !defined(_M_ARM64EC)
 #include <intrin.h>
 #endif
 #if defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__)
-#error CPU preflight must be compiled for the baseline x64 instruction set.
+#error CPU preflight must be compiled without x86 ISA extensions.
 #endif
 
 namespace nskkzime::windows {
@@ -38,11 +39,10 @@ bool avx_state(const CpuFeatures& features) noexcept {
 }
 }
 bool can_read_xcr0(const CpuFeatures& features) noexcept {
-    return features.native_x64 && (features.leaf1_ecx & (bit(26) | bit(27))) == (bit(26) | bit(27));
+    return features.native_x64 && !features.native_arm64 && (features.leaf1_ecx & (bit(26) | bit(27))) == (bit(26) | bit(27));
 }
 CpuFeatures current_cpu_features() noexcept {
     CpuFeatures features;
-#if defined(_M_X64) || defined(_M_IX86)
     // GetNativeSystemInfo can report x64 on ARM64 emulation. Ask for the host
     // architecture explicitly, and fail closed if that query is unavailable.
     using QueryArchitecture = BOOL (WINAPI*)(HANDLE, USHORT*, USHORT*);
@@ -51,9 +51,12 @@ CpuFeatures current_cpu_features() noexcept {
     const auto query = reinterpret_cast<QueryArchitecture>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2"));
 #pragma warning(pop)
     USHORT process = 0, native = 0;
-    features.native_x64 = query && query(GetCurrentProcess(), &process, &native) &&
+    if (!query || !query(GetCurrentProcess(), &process, &native)) return features;
+    features.native_arm64 = native == IMAGE_FILE_MACHINE_ARM64;
+    features.native_x64 =
         (process == IMAGE_FILE_MACHINE_UNKNOWN || process == IMAGE_FILE_MACHINE_I386) && native == IMAGE_FILE_MACHINE_AMD64;
-    if (!features.native_x64) return features; // ARM64 emulation is outside the current product contract.
+#if (defined(_M_X64) || defined(_M_IX86)) && !defined(_M_ARM64EC)
+    if (!features.native_x64) return features; // Never run x86 feature probes on an ARM64 host.
     int registers[4]{};
     __cpuidex(registers, 0, 0); const auto maximum = registers[0];
     if (maximum >= 1) { __cpuidex(registers, 1, 0); features.leaf1_ecx = static_cast<std::uint32_t>(registers[2]); }
@@ -67,36 +70,66 @@ CpuFeatures current_cpu_features() noexcept {
 #endif
     return features;
 }
-bool zenz_cpu_supported(const CpuFeatures& features) noexcept {
-    if (!features.native_x64 || !avx_state(features)) return false;
+std::string_view zenz_cpu_contract_name(ZenzCpuContract contract) noexcept {
+    return contract == ZenzCpuContract::Arm64Armv8a ? "zenz-arm64-armv8a-v1" : "zenz-msvc-avx2-v1";
+}
+ZenzCpuContract zenz_server_cpu_contract(const std::filesystem::path& program) {
+    // Read headers as data. Loading the DLL/EXE could execute ISA-specific initializers.
+    std::ifstream file(program, std::ios::binary);
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 pe{};
+    if (!file.read(reinterpret_cast<char*>(&dos), sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos.e_lfanew < static_cast<LONG>(sizeof(dos)) || dos.e_lfanew > 1024 * 1024 ||
+        !file.seekg(dos.e_lfanew) || !file.read(reinterpret_cast<char*>(&pe), sizeof(pe)) ||
+        pe.Signature != IMAGE_NT_SIGNATURE || pe.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        pe.FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64) ||
+        !(pe.FileHeader.Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) || (pe.FileHeader.Characteristics & IMAGE_FILE_DLL))
+        throw UnsupportedZenzCpu("invalid inference server PE image");
+    if (pe.FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64) return ZenzCpuContract::Arm64Armv8a;
+    if (pe.FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) return ZenzCpuContract::MsvcAvx2;
+    throw UnsupportedZenzCpu("unsupported inference server PE architecture");
+}
+bool zenz_cpu_supported(const CpuFeatures& features, ZenzCpuContract contract) noexcept {
+    if (contract == ZenzCpuContract::Arm64Armv8a) return features.native_arm64 && !features.native_x64;
+    if (!features.native_x64 || features.native_arm64 || !avx_state(features)) return false;
     for (const auto& requirement : requirements) if (!present(features, requirement)) return false;
     return true;
 }
-std::vector<std::string_view> missing_zenz_cpu_features(const CpuFeatures& features) {
+std::vector<std::string_view> missing_zenz_cpu_features(const CpuFeatures& features, ZenzCpuContract contract) {
     std::vector<std::string_view> missing;
-    if (!features.native_x64) missing.push_back("native Windows x64");
+    if (contract == ZenzCpuContract::Arm64Armv8a) {
+        if (!features.native_arm64 || features.native_x64) missing.push_back("native Windows ARM64");
+        return missing;
+    }
+    if (!features.native_x64 || features.native_arm64) missing.push_back("native Windows x64");
     for (const auto& requirement : requirements) if (!present(features, requirement)) missing.push_back(requirement.name);
     if (!avx_state(features)) missing.push_back("OS XMM/YMM state");
     return missing;
 }
-void require_zenz_cpu(const CpuFeatures& features) {
-    if (zenz_cpu_supported(features)) return;
+void require_zenz_cpu(const CpuFeatures& features, ZenzCpuContract contract) {
+    if (zenz_cpu_supported(features, contract)) return;
     std::string message = "zenz CPU/OS requirements not met: ";
-    for (const auto name : missing_zenz_cpu_features(features)) { if (message.back() != ' ') message += ", "; message += name; }
+    for (const auto name : missing_zenz_cpu_features(features, contract)) { if (message.back() != ' ') message += ", "; message += name; }
     throw UnsupportedZenzCpu(message);
 }
-std::string zenz_cpu_report(const CpuFeatures& features) {
-    std::string json = "{\"format\":\"nskkzime-cpu-check\",\"version\":1,\"contract\":\"zenz-msvc-avx2-v1\",\"supported\":";
-    json += zenz_cpu_supported(features) ? "true" : "false";
+std::string zenz_cpu_report(const CpuFeatures& features, ZenzCpuContract contract) {
+    std::string json = "{\"format\":\"nskkzime-cpu-check\",\"version\":1,\"contract\":\"";
+    json += zenz_cpu_contract_name(contract); json += "\",\"supported\":";
+    json += zenz_cpu_supported(features, contract) ? "true" : "false";
     json += ",\"native_x64\":"; json += features.native_x64 ? "true" : "false";
+    json += ",\"native_arm64\":"; json += features.native_arm64 ? "true" : "false";
     json += ",\"features\":{";
-    for (const auto& requirement : requirements) {
-        if (json.back() != '{') json += ',';
-        json += '"'; json += requirement.name; json += "\":"; json += present(features, requirement) ? "true" : "false";
+    if (contract == ZenzCpuContract::Arm64Armv8a) {
+        json += "\"Armv8-A\":"; json += zenz_cpu_supported(features, contract) ? "true" : "false";
+    } else {
+        for (const auto& requirement : requirements) {
+            if (json.back() != '{') json += ',';
+            json += '"'; json += requirement.name; json += "\":"; json += present(features, requirement) ? "true" : "false";
+        }
+        json += ",\"OS XMM/YMM state\":"; json += avx_state(features) ? "true" : "false";
     }
-    json += ",\"OS XMM/YMM state\":"; json += avx_state(features) ? "true" : "false";
     json += "},\"missing\":[";
-    for (const auto name : missing_zenz_cpu_features(features)) {
+    for (const auto name : missing_zenz_cpu_features(features, contract)) {
         if (json.back() != '[') json += ',';
         json += '"'; json += name; json += '"';
     }

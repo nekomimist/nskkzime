@@ -101,7 +101,8 @@ std::unique_ptr<Model> Model::load(const std::string& path, const ModelOptions& 
 
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = 0;
-    model_params.use_mmap = true;
+    // Keep llama.cpp's default mapped loading. Newer versions expose load_mode
+    // instead of use_mmap; both pinned variants default to mapping CPU weights.
     llama_model* model = llama_model_load_from_file(path.c_str(), model_params);
     if (model == nullptr) {
         *error = "failed to load model: " + path;
