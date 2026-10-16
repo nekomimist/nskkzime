@@ -11,6 +11,7 @@
 #include <string_view>
 #include <fstream>
 #include <stdexcept>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -26,6 +27,7 @@ struct Probe {
     TF_INPUTPROCESSORPROFILE previous{};
     bool previous_valid = false;
     bool switched = false;
+    HRESULT activation_result = E_PENDING;
     HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr, mode = nullptr;
     HWND preview_check = nullptr, preview_text = nullptr;
     HWND timing_check = nullptr, timing_text = nullptr;
@@ -211,6 +213,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             // Never change desktop/session defaults; no ENABLEPROFILE registry flag.
             const auto result = probe->previous_valid ? probe->profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR,
                 nskkzime::windows::language_id, nskkzime::windows::service_clsid, nskkzime::windows::profile_guid, nullptr, TF_IPPMF_FORPROCESS) : E_FAIL;
+            probe->activation_result = result;
             if (result == S_OK) probe->switched = true;
             probe->report(L"IME切替", result); SetFocus(probe->last_edit); return 0;
         }

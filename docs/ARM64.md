@@ -16,7 +16,8 @@ Windows 11 ProのSurface実機を検証先とし、既存のx64版を維持し�
 
 段階1〜4の未登録プロトタイプを実装し、Surfaceで実機検証した。
 ARM64成果物とupstream移植構成は実験用であり、既存の配布経路では拒否する。
-ARM64Xの未登録プロトタイプも追加した。登録経由の実入力と導入・配布は引き続き別の合格条件とする。
+段階5はARM64X DLLとx86 companionを一時登録し、4種類の検証ホストで実 HWND への入力まで確認した。
+一般アプリでの入力と段階6の導入・配布は未確認である。
 
 ## ツールチェーン
 
@@ -141,7 +142,7 @@ PEのmachine値だけではx64とARM64ECのホストを区別できないため�
 転送用manifestで全75個のEXE/DLLと固定モデルを照合した後、nativeの50試験とホスト別の16試験を直列実行する。
 
 この試験は登録済みの一般アプリへの入力を保証しない。
-次に登録・解除・復帰の手順を整え、EDIT/RichEditと実際のアプリで入力経路を確認する。
+登録・解除・復帰とEDIT/RichEditの確認は、次の一時登録試験で行う。
 
 ## 一時登録と実 HWND への入力試験
 
@@ -175,7 +176,14 @@ ARM64Xを一度登録し、ARM64/x64/ARM64ECのfresh processで`CoCreateInstance
 `ime_probe_local`のmanifest経由ロードや、先にDLLを直接ロードする方式は登録確認に使わない。
 通常版`ime_probe --self-test`は、RichEditでは本物のHWND/documentへ`ITfKeystrokeMgr`で入力し、
 EDITでは前面・focus・物理修飾キーを確認して`SendInput`を送る。
+RDPを接続したまま、ロック解除済みのデスクトップを表示して実行する。
 前面化がWindowsに拒否された場合は、RDPで検証ウィンドウをクリックして開始する。
+ARM64/x64/ARM64EC/x86のウィンドウは順番に起動するため、それぞれクリックが必要になる場合がある。
+自動試験中は別のウィンドウへ切り替えず、終了まで待つ。
+プロファイルの切り替え前後にRichEditのfocusを確認し、TSF document/contextが成立してから辞書を待つ。
+辞書の診断exportはmessage pumpで遅れてロードされる場合に備えて再取得する。
+前面待ちを含むprobe全体の期限は300秒、context・辞書・期待文字列の待機は各5秒以内とし、親は330秒で打ち切る。
+各controlの開始前に前面とfocusを再確認し、入力途中で失った場合は試行を中断して元のIMEへ戻す。
 レポートは`input/<RunName>/`へ残し、同じ登録で再実行するときも以前の試行を上書きしない。
 各ホストで変換・確定・取消・送り仮名と、プロセス内で切り替えた元のIMEへの復帰を確認する。
 両方で物理キーボードの全経路を検証したという意味ではない。
@@ -240,14 +248,15 @@ RDPではSurface側のnskkzimeがキーを処理していることを確認す�
 |---|---|---|
 | Surface / ARM64 / upstream + zenz patch | 50/50成功 | 96通りのtokenizer互換性、実モデルの生成・採点・取消・復帰、TSF、AppContainer、cold start、同期期限切れ後のclient破棄 |
 | Surface / ARM64X / ARM64・x64・ARM64EC・x86 hosts | 66/66成功 | nativeの50試験とホスト別の16試験。同じARM64X DLLから対応する実装をロードし、辞書・学習・native ARM64 serverとの実モデル連携を確認。x86は別DLL |
-| 既存x64 / azooKey fork | 53/53成功 | 最新の共通修正、実モデル、TSF、AppContainer、配布パッケージの検査。installationのみ除外 |
+| Surface / 一時登録したARM64・x64・ARM64EC・x86 hosts | 4/4成功（8入力欄） | RichEditとEDITで変換・確定・取消・送り仮名、各processの元IMEへの復帰。RichEditはTSF直接配送、EDITはSendInput |
+| 既存x64 / azooKey fork | 54/54成功 | 共通登録検証コードの変更後。実モデル、TSF、AppContainer、配布パッケージ、installation模擬試験 |
 | 既存x86 companion | 16/16成功 | TSF、CPU検査、x64 helperとの連携 |
 | 依存移植時のx64 / upstream + zenz patch | 53/53成功 | 既存forkとのtokenizer比較と実モデルの回帰 |
 
 ARM64のpackage/installation/Scoopは未対応のため除外した。
 初回のSSH session 0では画面試験4件が失敗したが、同じバイナリーをRDPで実行すると4/4成功した。
 従来のx64専用CPU判定を分離した後、同期採点のcold start経路も修正して全50件が成功した。
-一時的なオンデマンドタスクは削除済み。IME登録と普段の設定・辞書は変更していない。
+この未登録試験ではIME登録と普段の設定・辞書を変更していない。一時的なオンデマンドタスクは削除済み。
 比較構成を同時にテストした初回にはTSF/AppContainerの失敗が出た。直列では再現していないが、原因は未確定のため構成間のCTestは直列で実行する。
 
 ARM64X追加後にも既存x64の53/53、x86の16/16が成功した。
@@ -263,10 +272,14 @@ fresh processで`REGDB_E_CLASSNOTREG`となった。Recoverのjournalは`complet
 このOSでは`IsEnabledLanguageProfile`が未登録でもtrueを返したため、その値だけでは登録の有無を判断しない。
 一時タスクはすべて削除済み。登録試験直前の66/66、共通変更後の既存x64 54/54（installation模擬試験を含む）とx86 16/16も成功した。
 
-登録された実 HWND への入力試験は、ARM64プローブが前面クリック待ちとなり、
-初回の親プロセスの90秒待機を超えて終了した。入力・変換成功とは数えず、登録を解除して元の状態へ戻した。
-再試行用runnerは試行別レポートと既定330秒の待機を用意したが、RDPでウィンドウを前面に出す操作が必要である。
-実際のEDIT/RichEdit入力と元IMEへの復帰の合格判定は、この操作後の実行まで保留する。
+登録された実 HWND への入力試験では、RDPのクリックによる前面化を待ち、
+ARM64/x64/ARM64EC/x86すべてでRichEditとEDITへの変換・確定・取消・送り仮名が成功した。
+各processで元のIMEへの復帰も確認した。推論・学習を無効にした専用設定と8見出しの固定辞書を使用した。
+初回は前面待ちで中断し、その後も辞書待機とfocusの問題が出たため、
+診断exportの再取得、RichEditのTSF context待機、両経路のfocus確認を検証コードへ追加した。
+最終試行は4/4成功したが、x64の初回timeoutの原因を単独の変更に特定したわけではない。
+試行ごとのログを保存し、各回で登録を解除した。最終Recoverは`complete`で、COM/TIPは不在、
+入力の既定値と普段のファイルのhashは検証前と一致し、一時タスクも0件だった。
 
 参考値として、4 threads・固定の短い読み「かいとう」・3候補で測定した。
 テスト実行後の暖まったファイルキャッシュで各10要求を送り、stdioの往復時間を含む。
@@ -290,7 +303,9 @@ ARM64XのJUnit結果は`out/reports/surface-arm64x-01/reports/interactive-full-0
 要約は`out/reports/arm64-registration-validation.json`。
 再試行用の最終版でも4種類の未登録ロード確認と、一時登録・fresh COM生成・Recoverの一巡を再確認した。
 その実機ログは`out/reports/surface-arm64x-registration-04/`に残し、登録と一時タスクは解除済みである。
-登録経由の実入力と導入・配布は今後の段階とする。
+登録経由の入力ログは`out/reports/surface-arm64x-input-07/`、
+4ホストの要約はその下の`registration-surface-input-07/input/interactive-01/results.json`に残した。
+一般アプリでの入力、推論を有効にした実入力、導入・配布は今後の段階とする。
 
 ## 参照
 
