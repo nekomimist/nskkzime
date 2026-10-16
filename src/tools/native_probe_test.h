@@ -3,11 +3,13 @@
 // Drive the probe's real HWND text stores through its TSF keystroke manager.
 // RichEdit uses direct TSF delivery; EDIT uses balanced native key batches
 // only while the probe owns foreground and control focus.
-inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::path& output) {
+inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::path& output, bool with_zenz) {
     std::ofstream log(output);
     if (!log) throw std::runtime_error("cannot write native probe result");
     log << std::unitbuf;
+    log << "inference=" << (with_zenz ? "zenz" : "off") << '\n';
     const char* stage = "foreground activation";
+    HWND native_edit = nullptr;
     const auto started = GetTickCount64();
     const auto deadline = started + 300000;
     BYTE saved[256]{}; GetKeyboardState(saved);
@@ -57,11 +59,18 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
     const auto text = [](HWND edit) {
         wchar_t value[1024]{}; GetWindowTextW(edit, value, ARRAYSIZE(value)); return std::wstring(value);
     };
+    const auto log_text = [&](const char* name, std::wstring_view value) {
+        const auto length = static_cast<int>(value.size());
+        std::string utf8(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, value.data(), length, nullptr, 0, nullptr, nullptr)), '\0');
+        if (!utf8.empty()) WideCharToMultiByte(CP_UTF8, 0, value.data(), length, utf8.data(), static_cast<int>(utf8.size()), nullptr, nullptr);
+        log << name << '=' << utf8 << '\n';
+    };
     try {
         SetForegroundWindow(window);
         focus(probe.rich);
         SendMessageW(window, WM_COMMAND, activate_id, 0);
         if (!probe.switched) throw std::runtime_error("registered TSF profile activation failed");
+        if (with_zenz) probe.enable_preview(true);
         log << "activation_hr=" << std::hex << static_cast<unsigned long>(probe.activation_result) << std::dec << '\n';
         focus(probe.rich);
         stage = "RichEdit TSF context";
@@ -85,7 +94,6 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
 #pragma warning(pop)
             BOOL value = FALSE; return ready && SUCCEEDED(ready(&value)) && value;
         });
-        HWND native_edit = nullptr;
         const auto key = [&](WPARAM code, bool shift = false, bool control = false) {
             if (!focused(native_edit)) throw std::runtime_error("native input focus changed");
             if (GetTickCount64() >= deadline) throw std::runtime_error("native input deadline exceeded");
@@ -145,6 +153,31 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
             type("KaKu"); key(VK_SPACE); key(VK_RETURN);
             wait([&] { return text(edit) == L"漢字です描く"; });
             log << "PASS " << (edit == probe.plain ? "EDIT native conversion/commit/cancel/okuri" : "RichEdit composition/conversion/commit/cancel/okuri") << '\n';
+            if (with_zenz) {
+                // This fixture has no かいとう entry. The same reading must produce
+                // different generated candidates from the real surrounding text.
+                const auto generated = [&](const wchar_t* prefix, const wchar_t* expected, const char* label) {
+                    stage = edit == probe.rich ? "RichEdit zenz generation" : "EDIT zenz generation";
+                    log << "generation_context=" << label << '\n';
+                    SetWindowTextW(edit, prefix); drain();
+                    const auto end = static_cast<DWORD>(GetWindowTextLengthW(edit));
+                    // EM_SETSEL(-1, -1) deselects; it does not move EDIT's caret.
+                    SendMessageW(edit, EM_SETSEL, end, end); drain();
+                    DWORD selection_start = 0, selection_end = 0;
+                    SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&selection_start), reinterpret_cast<LPARAM>(&selection_end));
+                    log << "prefix_length=" << end << " selection=" << selection_start << ',' << selection_end << '\n';
+                    if (selection_start != end || selection_end != end) throw std::runtime_error("prefix caret is not at the end");
+                    key('J', false, true); type("Kaitou"); key(VK_SPACE);
+                    const auto result = std::wstring(prefix) + expected;
+                    wait([&] { return text(edit) == result; });
+                    if (probe.inference_status().find(L"推論: 生成候補を反映") == std::wstring::npos)
+                        throw std::runtime_error("generated text has no applied inference status");
+                    key(VK_RETURN); type("desu"); wait([&] { return text(edit) == result + L"です"; });
+                    log << "PASS " << (edit == probe.rich ? "RichEdit" : "EDIT") << " zenz context=" << label << " generated/commit/continued-input\n";
+                };
+                generated(L"試験問題の", L"解答", "exam");
+                generated(L"冷凍食品を電子レンジで", L"解凍", "food");
+            }
         }
         wchar_t library[32768]{};
         GetModuleFileNameW(GetModuleHandleW(L"nskkzime_tsf.dll"), library, ARRAYSIZE(library));
@@ -174,6 +207,9 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
         log << "PASS previous process input profile restored\n";
     } catch (const std::exception& error) {
         log << "FAIL " << error.what() << '\n';
+        if (native_edit) log_text("control_text", text(native_edit));
+        log_text("inference_status", probe.inference_status());
+        if (with_zenz) log_text("context_preview", probe.diagnostic_status("NskkzimeGetContextPreview"));
         DWORD foreground_pid = 0;
         const auto foreground = GetForegroundWindow(); GetWindowThreadProcessId(foreground, &foreground_pid);
         log << "stage=" << stage << " elapsed_ms=" << GetTickCount64() - started

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>nskkzime ARM64 — Edge入力試験</title>
+<style>body{font:18px system-ui;max-width:900px;margin:28px auto;padding:0 24px;color:#20252c}h1{font-size:27px}section{border:1px solid #bdc6cf;border-radius:8px;padding:18px;margin:18px 0}input,textarea,[contenteditable]{box-sizing:border-box;width:100%;font:22px system-ui;padding:10px;border:1px solid #6e7e8e;border-radius:4px;min-height:48px}input[type=checkbox]{width:auto;min-height:0}button{font:18px system-ui;padding:12px 18px}code{background:#edf1f5;padding:2px 4px}#status{white-space:pre-wrap}small{color:#435466}</style>
+<h1>nskkzime ARM64 — Edge入力試験</h1>
+<p>専用プロファイルのローカルページです。入力内容は外部へ送信しません。</p>
+<ol><li>RDP接続元は直接入力にし、Surface側のタスクバーで <strong>nskkzime</strong> を選びます。</li><li>各欄をクリックし、<kbd>Ctrl+J</kbd> でひらがな入力にします。以下はローマ字キーで入力してください。</li><li>試験後はSurface側のIMEを <strong id="original-ime">@@ORIGINAL_IME@@</strong> に戻して、結果を保存します。</li></ol>
+<section><h2>1. 設定の分離を確認</h2><p><code>Tesutobunri</code> → Space → Enter</p><input id="isolation" autocomplete="off" spellcheck="false"><small>期待値：NSKKZIME-ARM64-ISOLATED（専用辞書だけにある候補）</small><p><button id="confirm">専用辞書を確認して続行</button></p><p>この候補が出なければここで止め、元のIMEへ戻してください。ペーストは使わず、ローマ字キーで入力します。</p></section>
+<section><h2>2. 試験問題の文脈</h2><p>既存の文の末尾をクリックして <code>Kaitou</code> → Space → 生成を待つ → Enter → <code>desu</code></p><textarea id="exam" rows="2" spellcheck="false">試験問題の</textarea><small>期待値：試験問題の解答です</small></section>
+<section><h2>3. 冷凍食品の文脈</h2><p>既存の文の末尾をクリックして <code>Kaitou</code> → Space → 生成を待つ → Enter → <code>desu</code></p><textarea id="food" rows="2" spellcheck="false">冷凍食品を電子レンジで</textarea><small>期待値：冷凍食品を電子レンジで解凍です</small></section>
+<section><h2>4. contenteditable</h2><p><code>Kanji</code> → Space → Enter → <code>desu</code></p><div id="rich" contenteditable="true" role="textbox" spellcheck="false"></div><small>期待値：漢字です</small></section>
+<p><label><input id="restored" type="checkbox"> Surface側のIMEを@@ORIGINAL_IME@@に戻した</label></p>
+<button id="save">結果を確認して保存</button><pre id="status">各欄へ入力すると結果を確認できます。</pre><textarea id="report" rows="8" readonly aria-label="保存するJSON結果" placeholder="保存ボタンを押すと、未完了の項目も含めてJSON結果を表示します。"></textarea>
+<script>
+const expected={isolation:'NSKKZIME-ARM64-ISOLATED',exam:'試験問題の解答です',food:'冷凍食品を電子レンジで解凍です',rich:'漢字です'};
+const events=Object.fromEntries(Object.keys(expected).map(id=>[id,{keydown:0,compositionstart:0,compositionend:0,paste:0}]));
+let isolationConfirmed=false;
+for(const id of ['exam','food','rich']){const field=document.getElementById(id);if(id==='rich')field.contentEditable='false';else field.disabled=true;}
+document.getElementById('confirm').addEventListener('click',()=>{
+ if(document.getElementById('isolation').value!==expected.isolation||events.isolation.compositionend===0||events.isolation.paste>0){document.getElementById('status').textContent='専用辞書の候補とcompositionイベントを確認できません。ここで止め、元のIMEへ戻して状況を伝えてください。';return;}
+ isolationConfirmed=true;
+ for(const id of ['exam','food','rich']){const field=document.getElementById(id);if(id==='rich')field.contentEditable='true';else field.disabled=false;}
+ document.getElementById('status').textContent='専用辞書を確認しました。2〜4へ進んでください。';
+});
+for(const id of Object.keys(expected)){const field=document.getElementById(id);for(const event of Object.keys(events[id]))field.addEventListener(event,()=>events[id][event]++);}
+document.getElementById('save').addEventListener('click',()=>{
+ const fields=Object.entries(expected).map(([id,wanted])=>{const field=document.getElementById(id);const text=id==='rich'?field.textContent:field.value;return {id,text,expected:wanted,events:events[id],passed:text===wanted&&events[id].compositionend>0&&events[id].paste===0};});
+ const restored=document.getElementById('restored').checked;
+ const passed=isolationConfirmed&&fields.every(field=>field.passed)&&restored;
+ const originalIme=document.getElementById('original-ime').textContent;
+ const result={format:'nskkzime-browser-input-v1',utc:new Date().toISOString(),browser:navigator.userAgent,manual:true,isolation_confirmed:isolationConfirmed,original_ime:originalIme,restored_by_user:restored,fields,passed};
+ document.getElementById('status').textContent=fields.map(field=>`${field.passed?'PASS':'確認待ち'} ${field.id}: ${field.text} / compositionend=${field.events.compositionend}`).join('\n')+`\n${originalIme}へ復帰：${restored?'確認済み':'未確認'}`;
+ document.getElementById('report').value=JSON.stringify(result,null,2);
+ const url=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='browser-result.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
+</script></html>

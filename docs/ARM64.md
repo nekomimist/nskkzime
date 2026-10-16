@@ -16,8 +16,9 @@ Windows 11 ProのSurface実機を検証先とし、既存のx64版を維持し�
 
 段階1〜4の未登録プロトタイプを実装し、Surfaceで実機検証した。
 ARM64成果物とupstream移植構成は実験用であり、既存の配布経路では拒否する。
-段階5はARM64X DLLとx86 companionを一時登録し、4種類の検証ホストで実 HWND への入力まで確認した。
-一般アプリでの入力と段階6の導入・配布は未確認である。
+段階5はARM64X DLLとx86 companionを一時登録し、4種類の検証ホストで推論付きの実 HWND 入力まで確認した。
+native ARM64のEdgeでも専用プロファイルを使った手入力を確認した。
+他の一般アプリと段階6の導入・配布は未確認である。
 
 ## ツールチェーン
 
@@ -188,6 +189,22 @@ ARM64/x64/ARM64EC/x86のウィンドウは順番に起動するため、それ�
 各ホストで変換・確定・取消・送り仮名と、プロセス内で切り替えた元のIMEへの復帰を確認する。
 両方で物理キーボードの全経路を検証したという意味ではない。
 
+`-WithZenz`では、`かいとう`を含まない専用辞書と固定モデルを使う。
+RichEditとEDITそれぞれで、同じ読みから「試験問題の解答」「冷凍食品を電子レンジで解凍」を生成し、
+本文、生成を反映した診断status、確定後の追加入力を照合する。4ホストで計16件の生成を確認する。
+接頭辞の挿入後は、明示的な末尾位置へcaretを動かし、`EM_GETSEL`でも確認する。
+`EM_SETSEL(-1, -1)`は選択解除なので、末尾への移動として使わない。
+
+```powershell
+.\run-arm64x-input-probes.ps1 -Name surface-01 -WithZenz
+```
+
+サーバーとモデルのhashを確認し、native ARM64のサーバーだけを試行別ディレクトリへコピーする。
+endpointはINIの場所では分離されないため、実行ごとに異なるサーバーパスを指定する。
+学習・本文の入力ログ・候補採点はoff、生成の期限は2000 ms、サーバーのidle期限は10秒とする。
+試行内にTSF metadataの診断ディレクトリを用意し、失敗時は既知のテスト本文と推論・文脈の状態も残す。
+`server.json`には観測したPID・実行パス・hashとidle終了を記録する。未終了ならファイルを保持して試行を失敗扱いにする。
+
 解除はx86→nativeの順で行い、x86だけの解除後も共有TSFプロファイルと64bit COM生成が保たれることを確認する。
 全解除後はfresh processのCOM生成が`REGDB_E_CLASSNOTREG`になること、対象TSF processor/category/profileが消えたことを調べる。
 機械とユーザー、32/64bit viewのTIP状態を別々に記録し、入力の既定値と普段のnskkzimeファイルのhashも前後で照合する。
@@ -197,6 +214,44 @@ ARM64/x64/ARM64EC/x86のウィンドウは順番に起動するため、それ�
 各変更のintentを先にjournalへ永続化する。Recoverでは実際の両COM所有者とバイナリーhashを再確認し、
 他の登録先や実行中のregistrarがある場合は停止する。診断失敗があっても所有する登録の解除を続け、結果を分けて記録する。
 模擬的な部分失敗・中断・所有者変更・解除再試行は`tests/arm64_registration_tests.ps1`で検証できる。
+
+## 専用Edgeでの手入力試験
+
+一時登録中に、RDPの非昇格PowerShell 7から`run-arm64x-browser-input.ps1`を実行する。
+開始前に普段のIME名を確認し、`OriginalImeName`へ指定する。
+
+```powershell
+.\run-arm64x-browser-input.ps1 -Action Start -Name surface-01 `
+  -RunName browser-01 -OriginalImeName 'Microsoft IME'
+.\run-arm64x-browser-input.ps1 -Action Status -Name surface-01 -RunName browser-01
+# 別の同じユーザーのPowerShellで継続観測する場合。
+.\run-arm64x-browser-input.ps1 -Action Watch -Name surface-01 -RunName browser-01
+```
+
+native ARM64のEdgeを新しい`--user-data-dir`で起動し、プロセスの環境へ専用設定を渡す。
+`UserDataDir`や`DownloadDirectory`のEdge管理ポリシーがある場合は開始を拒否する。
+サーバー・辞書・ダウンロード先も試行別に分離し、学習と入力ログは無効にする。
+最初に専用辞書の候補`NSKKZIME-ARM64-ISOLATED`を手入力で確認してから、
+textareaの2つの文脈とcontenteditableの入力へ進む。
+RDP接続元は直接入力にし、Surface側でnskkzimeを選ぶ。
+
+各欄の本文とcompositionイベント、ペーストの有無をページで確認する。
+Surface側を元のIMEへ戻し、復帰チェックを入れて保存する。
+未完了の項目も`passed: false`を含むJSONとして保存し、ページ内にも同じJSONを表示する。
+保存後は`browser/<RunName>/browser-result.json`の存在と内容を確認する。
+ページの合否は手入力の結果であり、DLL・サーバーの観測や復旧確認と合わせて評価する。
+
+```powershell
+# 元のIMEへの復帰と結果ファイルを確認してから実行する。
+.\run-arm64x-browser-input.ps1 -Action Stop -Name surface-01 -RunName browser-01
+.\run-arm64x-registration.ps1 -Action Recover -Name surface-01
+```
+
+Status/Watchは起動したEdgeのPID・開始時刻・session・パス・専用プロファイルを照合し、
+その子プロセスと、実際にロードしたTSF DLLのパス、専用サーバーをsnapshotへ記録する。
+Stopは所有を確認したEdgeを閉じ、観測した子プロセスの終了とサーバーのidle終了を確認する。
+識別情報が変わった場合やプロセスが残った場合は失敗として記録を保持する。
+ブラウザーを終了してから登録を解除し、普段の設定・辞書と入力の既定値が変わっていないことを確認する。
 
 ## Surfaceへの接続
 
@@ -305,7 +360,40 @@ ARM64XのJUnit結果は`out/reports/surface-arm64x-01/reports/interactive-full-0
 その実機ログは`out/reports/surface-arm64x-registration-04/`に残し、登録と一時タスクは解除済みである。
 登録経由の入力ログは`out/reports/surface-arm64x-input-07/`、
 4ホストの要約はその下の`registration-surface-input-07/input/interactive-01/results.json`に残した。
-一般アプリでの入力、推論を有効にした実入力、導入・配布は今後の段階とする。
+この時点では一般アプリと推論を有効にした実入力は未確認だった。次の検証で追加した。
+
+## 2026-10-17の検証結果
+
+MSVCのARM64・x64・ARM64EC・x86のprobeを再ビルドし、一時登録した実機で推論付き入力を確認した。
+`かいとう`を含まない辞書を使い、RichEditとEDITの両方で「解答」「解凍」の文脈による生成、
+確定後の「です」の追加入力が4ホスト計16件すべて成功した。
+従来の変換・確定・取消・送り仮名と、各processの元IMEへの復帰も成功した。
+生成を反映した診断status、native ARM64サーバーの実行パス・hash、固定モデルのhashを照合した。
+サーバーはidle終了し、Recover後はCOM/TIP不在、通常状態のhash一致、一時タスク0件を確認した。
+
+EDITの初回試行では接頭辞の後へcaretが移動せず、`解答試験問題の`となった。
+検証コードの`EM_SETSEL(-1, -1)`を明示的な末尾位置へ変更し、`EM_GETSEL`でも位置を確認した。
+別の再試行は前面を失ったため中断した。各試行の記録と復旧結果を保持し、最終試行で全件成功した。
+
+native ARM64のEdge 155.0.4283.45では、専用候補・2つの文脈での生成・contenteditableの
+計4項目をユーザーが手入力し、ページの全項目PASSとCorvusSKKへの復帰を確認した。
+保護された登録先のDLLをEdgeがロードしたsnapshotが51件、専用nativeサーバーの観測が7件ある。
+本試験のJSONは保存されなかったため、この4項目はユーザーの確認と実行観測による結果として記録し、
+構造化された各欄のイベント数を取得済みとは扱わない。
+保存処理を未完了の結果も出力するよう修正し、別試行で未入力の4項目が`passed: false`として
+JSONに保存されることを確認した。この保存確認は入力成功の件数に含めない。
+
+専用Edgeと観測した子プロセスは終了し、サーバーもidle終了した。
+最後のRecoverは`complete`でvalidation errorなし、COM/TIP不在、通常状態のhash一致、一時タスク0件だった。
+ブラウザー観測時のJSON日時比較もUTC ticksで照合するよう修正し、修正後の観測とStopが成功した。
+
+推論付き入力の実機ログは`out/reports/surface-arm64x-zenz-input-11/`、
+要約は`out/reports/arm64-zenz-input-validation.json`。
+Edgeのログは`out/reports/surface-arm64x-edge-input-12/`、要約は`out/reports/arm64-browser-input-validation.json`。
+この回は4 ABIのビルドと上記の登録入力・Edgeを検証した。前日のCTest 66/66を同じソースで再実行したという意味ではない。
+実機バイナリーのソースhashと、後から追加したブラウザー用スクリプト・ページのhashは別に記録した。
+
+残る段階は他の一般アプリ、実機での継続利用・省電力・スリープ復帰、導入・更新・解除と配布、ARM CIである。
 
 ## 参照
 
@@ -313,5 +401,7 @@ ARM64XのJUnit結果は`out/reports/surface-arm64x-01/reports/interactive-full-0
 - [MSVC ARMのビルド条件](https://github.com/ggml-org/llama.cpp/blob/v0.6.0/ggml/src/ggml-cpu/CMakeLists.txt)
 - [Arm64X](https://learn.microsoft.com/en-us/windows/arm/arm64x-pe)
 - [Arm64X DLLのビルド](https://learn.microsoft.com/en-us/windows/arm/arm64x-build)
+- [EM_SETSEL](https://learn.microsoft.com/en-us/windows/win32/controls/em-setsel)
+- [Edge UserDataDirポリシー](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/userdatadir)
 - [OpenSSH Server](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)
 - [Windows OpenSSHの鍵認証](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)

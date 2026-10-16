@@ -20,7 +20,7 @@ $null = & (Join-Path $PSScriptRoot 'prepare-arm64-tests.ps1') `
 $release = Join-Path $destination 'build/Release'
 Copy-Item -LiteralPath (Join-Path $product 'nskkzime_tsf.dll') -Destination $release
 Copy-Item -LiteralPath (Join-Path $product 'arm64x-build.json') -Destination $destination
-foreach ($script in @('run-arm64x-tests.ps1','run-arm64x-registration.ps1','run-arm64x-input-probes.ps1',
+foreach ($script in @('run-arm64x-tests.ps1','run-arm64x-registration.ps1','run-arm64x-input-probes.ps1','run-arm64x-browser-input.ps1',
         'arm64-registration-test.psm1','installation.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $destination
 }
