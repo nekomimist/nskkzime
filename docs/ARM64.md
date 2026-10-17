@@ -20,7 +20,9 @@ ARM64Xの専用入口では、形式7の実験パッケージを作成・検証�
 段階5はARM64X DLLとx86 companionを一時登録し、4種類の検証ホストで推論付きの実 HWND 入力まで確認した。
 native ARM64のEdgeでも専用プロファイルを使った手入力を確認した。
 段階6は実験パッケージの実機導入・更新・復旧・解除・再導入と、実サインイン時のbroker起動まで確認した。
-他の一般アプリ、継続利用・省電力・スリープ復帰、クリーン環境への導入、一般配布とARM CIは未確認である。
+未登録brokerの実スリープ復帰と、ARM CI用bundleのSurface実行も確認した。
+ARM CI workflowは追加済みだが、GitHub runnerでの実行は未確認である。
+他の一般アプリ、継続利用・省電力、TSF入力を保持したスリープ復帰、クリーン環境への導入と一般配布は残る。
 
 ## ツールチェーン
 
@@ -142,7 +144,8 @@ DLL内にはnative/ECそれぞれのビルド情報を保持し、`arm64x-build.
 各ホストの`tsf_architecture_tests`は、同じDLLパスと対応するdata export、11個の関数export、
 アイコンresource、class factory生成・参照解放を確認する。x64/ARM64ECはECの実装、ARM64はnativeの実装を使う。
 PEのmachine値だけではx64とARM64ECのホストを区別できないため、ホスト自身のコンパイル時ABIも報告する。
-転送用manifestで全75個のEXE/DLLと固定モデルを照合した後、nativeの50試験とホスト別の16試験を直列実行する。
+Full profileの転送用manifestで全76個のEXE/DLLと固定モデルを照合した後、nativeの50試験とホスト別の16試験を直列実行する。
+手動専用の`broker_continuity_probe`は、この66件のCTestには含めない。
 
 この試験は登録済みの一般アプリへの入力を保証しない。
 登録・解除・復帰とEDIT/RichEditの確認は、次の一時登録試験で行う。
@@ -299,6 +302,62 @@ Windowsが解除後に残すユーザーTIP設定は削除せず、native COM所
 Statusの`UserTipSettingsRetained`は、所有記録と一致するユーザー設定の保持を示す。
 実際の導入・更新・解除とサインイン起動の結果は後述する。
 同梱の[実験パッケージ用README](ARM64_PACKAGE_README.md)にruntimeと操作手順を記載する。
+
+## ARM CIとモデルなしの試験bundle
+
+`.github/workflows/arm64.yml`は通常x64版のrelease workflowから独立する。
+`windows-2022`のVS2022でARM64サービスとARM64Xをクロスビルドし、
+package検査とinstallation模擬試験の後、同じrunのbundleを`windows-11-arm`へ渡す。
+ARM runnerではビルドツールの版に依存せず、生成済みのnative ARM64と4 ABIのDLLロード試験を実行する。
+ARM成果物を通常のtag releaseへ混ぜない。
+
+```powershell
+.\scripts\prepare-zenz.ps1 -UpstreamExperimental -SkipModel
+.\scripts\build-arm64x.ps1 -Jobs 4
+.\scripts\prepare-arm64x-tests.ps1 -Profile CiHeadlessNoModel -OutputDirectory out/tmp/arm64-ci
+```
+
+既存のFull profileと異なり、CI profileはモデル・対話probe・登録スクリプトを含めない。
+非UIのnative 27件と、4 ABIの直接DLLロードの計31件を名前のallowlistで固定する。
+生成されたCTest planも同じ31件であることを実行前に照合し、skipを合格扱いにしない。
+モデル・登録済みIME・AppContainer UI・実入力・サインイン・スリープの検証はこのCIに含まれない。
+
+`run-arm64-ci.ps1`はbuild jobが出力したZIPのSHA-256とソースfingerprintを要求する。
+展開先は新しいフォルダーに限定し、パス逸脱・重複entryを拒否する。
+EXE/DLLだけでなく、script・fixture・CTest plan・同梱CMake/CTestもinventoryのhashと照合する。
+`tests/arm64_ci_tests.ps1`は同じrunnerで31件を実行し、checksum・source不一致、パス逸脱、
+重複entry、script改変、余分なファイル、再hashした想定外のCTest planの7拒否条件も確認する。
+環境情報、試験名、JUnitとCTest logは実行先の`positive/reports/`へ保存する。
+GitHub側の実行結果はローカルのビルド・Surfaceでのbundle実行結果と分けて記録する。
+
+## 未登録brokerのスリープ復帰試験
+
+`broker_continuity_probe`と`run-broker-continuity.ps1`は、通常ユーザーの専用フォルダーで動作する。
+同じユーザーの非昇格PowerShellから実行し、別のPowerShellでStatus/Resumeを操作する。
+
+```powershell
+.\run-broker-continuity.ps1 -Action Run -RunDirectory C:\ime-tests\continuity-01 `
+  -BinaryDirectory C:\ime-tests\bundle\build\Release `
+  -Model C:\ime-tests\bundle\source\out\models\zenz-v3.2-small\ggml-model-Q5_K_M.gguf
+.\run-broker-continuity.ps1 -Action Status -RunDirectory C:\ime-tests\continuity-01
+# checkpoint_waitを確認し、RDPを切断して実機をスリープ・復帰させた後に実行する。
+.\run-broker-continuity.ps1 -Action Resume -RunDirectory C:\ime-tests\continuity-01
+```
+
+固定モデルのhashとnative PE形式を確認し、専用のbroker/server/設定/辞書を用意する。
+desktop endpointは設定パスで分離し、AppContainer向けも専用`--test-package`を使う。
+学習と入力ログはoff、serverのidleは10秒、要求の検証期限は5000 msとする。
+前後でbootstrap、保持した辞書、2つの文脈の生成、採点、実行中要求の取消と復帰、
+serverのidle終了と再起動を確認する。同じprobeプロセスを待機中も保持する。
+
+checkpointでは要求・pollingを止め、event待機だけにする。wake timerやスリープ抑止は設定しない。
+RDPの切断やログの時間差は実スリープの証拠にはしない。
+別途、対象時間のPower eventとSleepStudyのSleep状態を確認する。
+probe自身の`actual_sleep_verified`はfalseのままとし、OS側の証拠と照合した結果を別に記録する。
+この試験は待機状態のdesktop client→broker→native serverの確認であり、
+スリープ突入時に処理中の要求、TSF入力画面、AppContainerクライアントの実復帰、消費電力の測定とは区別する。
+終了時は専用brokerを停止し、serverのidle終了と普段のファイル・入力設定の不変を確認する。
+プログラムと診断ログは削除せず保持する。
 
 ## Surfaceへの接続
 
@@ -524,6 +583,44 @@ ARM64Xの4 ABIを再ビルドし、ARM実験形式のinstallation模擬試験と
 全66件のCTestや一般アプリの入力を、このインストーラー試行で再検証したという意味ではない。
 署名・クリーン環境・ARM CIと一般配布は引き続き別の段階である。
 
+## 2026-10-17のCI準備と実スリープ復帰検証
+
+VS2022で4 ABIを再ビルドし、モデルを含まないCI profileをSurfaceのnative ARM64 PowerShellで実行した。
+SSH session 0の非対話試験であり、GitHub runnerでの実行とは区別する。
+
+| 確認 | 結果 |
+|---|---|
+| Surface / CI bundle | native 27件と4 ABIの直接DLLロード、計31/31成功。skipなし |
+| CI bundleの拒否条件 | checksum、source、パス逸脱、重複entry、script改変、余分なファイル、想定外planの7/7成功 |
+| 既存x64の関連回帰 | 非UI 27件とpackage・installation・Scoopの計31/31成功 |
+| ARM実験package / installation模擬試験 | packageの18拒否条件とinstallation一巡が成功 |
+| Full profile互換性 | 66件のplan、76個のEXE/DLL、5件のlicense noticeを確認。今回この66件は実行していない |
+| Workflowの静的検査 | actionlint成功。GitHubでの実runは未実行 |
+
+CI bundleのZIP SHA-256は`728e1ef401bc93179ab2c78b83002005d77dfa3c7c54233ee9bbc592937d422a`、
+source fingerprintは`4f2bccc70b374a622861f9d4385eb39b1facb9e8a2df099bc4934e88076c10b4`。
+MSVC 19.44.35228.0、v143、SDK 10.0.26100.0、Clang 19.1.5、Release `/MD`で生成し、
+SurfaceのARM64/x64/x86 VC runtime v14.50.35719.00で実行した。
+JUnitと環境情報は`out/reports/surface-arm64-ci-01/validation/positive/reports/`、
+拒否条件は`out/reports/surface-arm64-ci-01/validation/validation.json`に保存した。
+
+スリープ試験は通常ユーザーの非昇格sessionで専用brokerを起動し、固定モデルと専用辞書を使用した。
+eventによる待機・再開の予行後、RDPを切断してSurface本体をスリープさせ、復帰後に同じprobeを再開した。
+SleepStudyのSleep状態とKernel-Power 507が、主区間479.366秒と別区間27.565秒で一致した。
+主区間にはhardware DRIPSが360.665秒記録され、画面消灯だけではないことを確認した。
+同じprobe PIDと保持した辞書で前後のbootstrap、文脈変換、採点、取消後の復帰、serverのidle終了・再起動が成功した。
+復帰後の4回の生成は125・78・47・141 msだった。検証期限5000 msでの参考値であり、打鍵から候補表示までの測定ではない。
+
+通常のCOM/TIP、入力設定、broker起動値と普段のファイルは開始前と一致した。
+専用broker/serverは終了し、一時タスクは0件になった。登録済みTSFの入力、処理中要求をまたぐスリープ、
+AppContainerクライアントの実復帰、バッテリー動作・消費電力は今回の対象外である。
+実機ログと試験時間帯のSleepStudy抜粋は`out/reports/surface-arm64-continuity-01/`、
+OS側の照合結果はその下の`sleep-01/sleep-evidence.json`にある。
+最初の収集scriptは日時を持たないXML要素で停止したため、直接の状態要素と日時属性を確認して抽出し直した。
+生のprobe結果の`actual_sleep_verified: false`は変更せず、OS証拠を照合した別の結果に実スリープ確認を記録した。
+スリープ試験のサービスはsource fingerprint `f3e2570a1a42fd18d63bbe0014a15d9d7d3847bdc8c388289a13135d7b384274`のビルドを使用した。
+両試験とも基準commitは`68b9b1b`、変更ありのsnapshotであり、後から作るcommitのhashへ読み替えない。
+
 ## 参照
 
 - [llama.cpp v0.6.0](https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0)
@@ -534,3 +631,6 @@ ARM64Xの4 ABIを再ビルドし、ARM実験形式のinstallation模擬試験と
 - [Edge UserDataDirポリシー](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/userdatadir)
 - [OpenSSH Server](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)
 - [Windows OpenSSHの鍵認証](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)
+- [GitHub-hosted runnerの環境と権限](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- [Windows 2022 runnerのソフトウェア](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)
+- [Modern StandbyのSleepStudy](https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/modern-standby-sleepstudy)

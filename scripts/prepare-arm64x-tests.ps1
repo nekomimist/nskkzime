@@ -1,6 +1,7 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$OutputDirectory)
+param([Parameter(Mandatory)][string]$OutputDirectory,
+    [ValidateSet('Full','CiHeadlessNoModel')][string]$Profile='Full')
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $product = Join-Path $repository 'out/arm64x/Release'
@@ -16,12 +17,13 @@ if ((Get-FileHash -LiteralPath (Join-Path $product 'nskkzime_tsf.dll') -Algorith
 }
 $destination = [IO.Path]::GetFullPath($OutputDirectory)
 $null = & (Join-Path $PSScriptRoot 'prepare-arm64-tests.ps1') `
-    -BuildDirectory (Join-Path $repository 'out/build/windows-arm64-upstream-experimental') -OutputDirectory $destination
+    -BuildDirectory (Join-Path $repository 'out/build/windows-arm64-upstream-experimental') -OutputDirectory $destination -Profile $Profile
 $release = Join-Path $destination 'build/Release'
 Copy-Item -LiteralPath (Join-Path $product 'nskkzime_tsf.dll') -Destination $release
 Copy-Item -LiteralPath (Join-Path $product 'arm64x-build.json') -Destination $destination
-foreach ($script in @('run-arm64x-tests.ps1','run-arm64x-registration.ps1','run-arm64x-input-probes.ps1','run-arm64x-browser-input.ps1',
-        'arm64-registration-test.psm1','installation.psm1')) {
+$scripts=if($Profile -eq 'Full'){@('run-arm64x-tests.ps1','run-arm64x-registration.ps1','run-arm64x-input-probes.ps1','run-arm64x-browser-input.ps1',
+        'arm64-registration-test.psm1','installation.psm1','run-broker-continuity.ps1')}else{@('run-arm64-ci.ps1','arm64-ci.psm1')}
+foreach ($script in $scripts) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $destination
 }
 $template = [IO.File]::ReadAllText((Join-Path $destination 'build/CTestTestfile.cmake.in'))
@@ -33,7 +35,8 @@ foreach ($architecture in @('arm64','arm64ec','x64','x86')) {
         New-Item -ItemType Directory -Path (Join-Path $destination $prefix) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $product 'x86/nskkzime_tsf.dll') -Destination (Join-Path $destination $prefix)
     }
-    foreach ($target in @('tsf_architecture_tests','tsf_smoke','tsf_learning','tsf_zenz','ime_probe','ime_probe_local')) {
+    $targets=if($Profile -eq 'Full'){@('tsf_architecture_tests','tsf_smoke','tsf_learning','tsf_zenz','ime_probe','ime_probe_local')}else{@('tsf_architecture_tests')}
+    foreach ($target in $targets) {
         $filename = if ($architecture -eq 'x86') { "$target.exe" } else { "$target-$architecture.exe" }
         $relative = $prefix + '/' + $filename
         $sourceFile = if ($architecture -eq 'x86') { Join-Path $product ('x86/' + $filename) } else { Join-Path $product $filename }
@@ -55,6 +58,23 @@ foreach ($architecture in @('arm64','arm64ec','x64','x86')) {
     }
 }
 [IO.File]::WriteAllText((Join-Path $destination 'build/CTestTestfile.cmake.in'), $template, [Text.UTF8Encoding]::new($false))
+if($Profile -eq 'CiHeadlessNoModel') {
+    Import-Module (Join-Path $PSScriptRoot 'arm64-ci.psm1') -Force
+    $config=Get-Content -LiteralPath (Join-Path $repository 'out/build/windows-arm64x-native/arm64x/Release/build-config.json') -Raw|ConvertFrom-Json
+    $compilers=@(Get-ChildItem -LiteralPath (Join-Path $repository 'out/build/windows-arm64-upstream-experimental/llama-arm64-clang/CMakeFiles') -Filter CMakeCXXCompiler.cmake -Recurse -File)
+    if($compilers.Count -ne 1 -or (Get-Content -LiteralPath $compilers[0].FullName -Raw) -notmatch 'set\(CMAKE_CXX_COMPILER_VERSION "([0-9.]+)"\)'){throw 'Cannot record backend compiler.'}
+    [ordered]@{msvc=$config.CMAKE_CXX_COMPILER_VERSION;toolset=$config.CMAKE_VS_PLATFORM_TOOLSET;sdk=$config.CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION;runtime=$config.CMAKE_MSVC_RUNTIME_LIBRARY;clang=$Matches[1];image=$env:ImageVersion} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'build-environment.json') -Encoding utf8
+    $files=@(Get-ChildItem -LiteralPath $destination -File -Recurse -Force | Sort-Object FullName | ForEach-Object {
+        $relative=[IO.Path]::GetRelativePath($destination,$_.FullName).Replace('\','/')
+        Assert-NskkzimeCiRelativePath $relative
+        @{path=$relative;size=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+    })
+    [ordered]@{format='nskkzime-arm64x-ci-v1';profile='ci-headless-no-model';source=$source;tests=@(Get-NskkzimeArm64CiTests);files=$files} |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $destination 'ci-manifest.json') -Encoding utf8
+    [pscustomobject]@{Path=$destination;Profile=$Profile;Tests=@(Get-NskkzimeArm64CiTests).Count;Files=$files.Count}
+    return
+}
 $images = @()
 foreach ($file in Get-ChildItem -LiteralPath $release -Recurse -File | Where-Object Extension -in @('.exe','.dll')) {
     $relative = [IO.Path]::GetRelativePath($destination, $file.FullName).Replace('\','/')

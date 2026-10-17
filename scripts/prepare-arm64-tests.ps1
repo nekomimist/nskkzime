@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$BuildDirectory = (Join-Path $PSScriptRoot '../out/build/windows-arm64-test-only'),
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot ('../out/tmp/arm64-tests-' + [Guid]::NewGuid().ToString('N')))
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot ('../out/tmp/arm64-tests-' + [Guid]::NewGuid().ToString('N'))),
+    [ValidateSet('Full','CiHeadlessNoModel')][string]$Profile='Full'
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -20,6 +21,7 @@ $destination = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $destination) { throw 'The test bundle directory already exists; choose a new directory.' }
 $images = @(Get-ChildItem -LiteralPath (Join-Path $buildRoot 'Release') -File |
     Where-Object Extension -in @('.exe', '.dll'))
+if($Profile -eq 'CiHeadlessNoModel'){$images=@($images|Where-Object BaseName -NotIn @('ime_probe','ime_probe_local','broker_continuity_probe'))}
 if (-not $images.Count) { throw 'No Release test binaries found.' }
 foreach ($image in $images) {
     $bytes = [IO.File]::ReadAllBytes($image.FullName)
@@ -31,13 +33,18 @@ foreach ($image in $images) {
 $release = Join-Path $destination 'build/Release'
 New-Item -ItemType Directory -Path $release -Force | Out-Null
 foreach ($image in $images) { Copy-Item -LiteralPath $image.FullName -Destination $release }
+foreach($relativePath in @('LICENSE','third_party/nlohmann/LICENSE.MIT','third_party/unicode/LICENSE.txt','third_party/skk-zenz/LICENSE','third_party/llama.LICENSE')) {
+    $target=Join-Path $destination ('notices/'+$relativePath)
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $target))|Out-Null
+    Copy-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Destination $target
+}
 foreach ($relativePath in @('tests/fixtures', 'tests/config_cli.cmake', 'tests/user_dictionary_cli.cmake',
         'tests/app_container_startup_tests.ps1', 'tests/zenz_cli.ps1', 'scripts/compare-ddskk.ps1', 'third_party/unicode/JIS0212.TXT')) {
     $target = Join-Path $destination ('source/' + $relativePath)
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Destination $target -Recurse
 }
-if ($withZenz) {
+if ($withZenz -and $Profile -eq 'Full') {
     if ($cache -notmatch '(?m)^NSKKZIME_ZENZ_TEST_MODEL:FILEPATH=(.+)\r?$') { throw 'Missing test model.' }
     $model = $Matches[1].Trim()
     $target = Join-Path $destination 'source/out/models/zenz-v3.2-small/ggml-model-Q5_K_M.gguf'
@@ -50,6 +57,29 @@ if ($withZenz) {
 # CTest's generated commands contain developer-machine paths. Keep the original
 # test properties and substitute only the known roots when running the bundle.
 $testFile = Get-Content -LiteralPath (Join-Path $buildRoot 'CTestTestfile.cmake') -Raw
+if($Profile -eq 'CiHeadlessNoModel') {
+    Import-Module (Join-Path $PSScriptRoot 'arm64-ci.psm1') -Force
+    $ctestExe=Join-Path (Split-Path -Parent $cmakeExe) 'ctest.exe'
+    $json=& $ctestExe --test-dir $buildRoot -C Release --show-only=json-v1
+    if($LASTEXITCODE){throw 'Cannot inspect native CTest plan.'}
+    $plan=($json -join "`n") | ConvertFrom-Json
+    $testFile=''
+    foreach($name in Get-NskkzimeArm64CiNativeTests) {
+        $selected=@($plan.tests | Where-Object name -CEQ $name)
+        if($selected.Count -ne 1 -or -not $selected[0].command){throw "Missing CI test: $name"}
+        $arguments=@($selected[0].command | ForEach-Object {
+            if($_.Contains(']=]')){throw 'Unsupported CTest argument.'}
+            '[=['+$_.Replace('\','/')+']=]'
+        }) -join ' '
+        $testFile+="add_test([=[$name]=] $arguments)`n"
+        foreach($property in $selected[0].properties) {
+            if($property.name -cnotmatch '^[A-Z_]+$'){throw 'Unsupported CTest property.'}
+            $value=if($property.value -is [bool]){$property.value.ToString()}elseif($property.value -is [array]){$property.value -join ';'}else{[Convert]::ToString($property.value,[Globalization.CultureInfo]::InvariantCulture)}
+            if($value.Contains(']=]')){throw 'Unsupported CTest property value.'}
+            $testFile+="set_tests_properties([=[$name]=] PROPERTIES $($property.name) [=[$value]=])`n"
+        }
+    }
+}
 $cmakeBin = (Split-Path -Parent $cmakeExe).Replace('\', '/')
 $testFile = $testFile.Replace($buildRoot.Replace('\', '/'), '@BUNDLE@/build')
 $testFile = $testFile.Replace($repoRoot.Replace('\', '/'), '@BUNDLE@/source')
@@ -57,6 +87,7 @@ $testFile = $testFile.Replace($cmakeBin, '@BUNDLE@/tools/bin')
 if ($cache -notmatch '(?m)^NSKKZIME_PWSH:FILEPATH=(.+)\r?$') { throw 'Missing configured PowerShell executable.' }
 $pwshExe = $Matches[1].Trim().Replace('\', '/')
 $testFile = [regex]::Replace($testFile, [regex]::Escape($pwshExe), '@PWSH@', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+if($Profile -eq 'CiHeadlessNoModel' -and $testFile -match '[a-zA-Z]:[\\/]|\\\\') {throw 'Absolute developer path remains in CI CTest plan.'}
 [IO.File]::WriteAllText((Join-Path $destination 'build/CTestTestfile.cmake.in'), $testFile, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-arm64-tests.ps1') -Destination $destination
 # A private portable copy avoids installing build tools on the test machine.
