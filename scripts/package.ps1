@@ -5,7 +5,8 @@ param(
     [Parameter(ParameterSetName = 'Create')][switch]$Zenz, # Legacy no-op; creation always includes zenz.
     [Parameter(ParameterSetName = 'Create')][string]$Output,
     [Parameter(Mandatory, ParameterSetName = 'Verify')][string]$Verify,
-    [Parameter(Mandatory, ParameterSetName = 'Directory')][string]$VerifyDirectory
+    [Parameter(Mandatory, ParameterSetName = 'Directory')][string]$VerifyDirectory,
+    [switch]$ExperimentalArm64
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -14,10 +15,12 @@ $binaries = @('nskkzime_tsf.dll', 'nskkzime_settings.exe',
     'nskkzime_dictionary_gui.exe', 'nskkzime_config.exe', 'nskkzime_user_dictionary.exe', 'ime_probe.exe')
 $baseLicenses = @('licenses/nlohmann-MIT.txt', 'licenses/Unicode-3.0.txt')
 $zenzLicenses = @('licenses/skk-zenz-MIT.txt', 'licenses/llama-MIT.txt')
+if ($ExperimentalArm64) { Import-Module (Join-Path $PSScriptRoot 'arm64-package.psm1') -Force }
 function Get-Digest([byte[]]$Bytes) {
     [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
 function Assert-PeArchitecture([byte[]]$Bytes, [string]$Name) {
+    if ($ExperimentalArm64) { $null = Get-NskkzimeArm64ImageMetadata $Bytes $Name; return }
     $x86 = $Name.StartsWith('bin/x86/')
     $label = if ($x86) { 'x86 PE32' } else { 'x64 PE32+' }
     if ($Bytes.Length -lt 64 -or [BitConverter]::ToUInt16($Bytes, 0) -ne 0x5a4d) { throw "PEではありません: $Name" }
@@ -32,6 +35,7 @@ function Assert-CompanionSource($HostMetadata, $CompanionMetadata) {
     }
 }
 function Get-BuildMetadata([byte[]]$Bytes, [string]$Name) {
+    if ($ExperimentalArm64) { return Get-NskkzimeArm64ImageMetadata $Bytes $Name }
     $companion = $Name.StartsWith('bin/x86/')
     # Parse the dedicated read-only PE data section. Never load/execute an image.
     $invalid = "ビルド情報が不正または不足しています: $Name"
@@ -87,6 +91,7 @@ function Get-BuildMetadata([byte[]]$Bytes, [string]$Name) {
     return $found
 }
 function Get-MetadataIdentity($Metadata) {
+    if ($ExperimentalArm64) { return Get-NskkzimeArm64MetadataIdentity $Metadata }
     # Compare values independently of JSON property order.
     $ordered = [ordered]@{}
     if ($Metadata -is [Collections.IDictionary]) {
@@ -106,19 +111,26 @@ function Get-PackageNames([bool]$WithZenz, [int]$Format = 6) {
     if ($Format -ge 4) { $names += @('bin/x86/nskkzime_tsf.dll', 'bin/x86/ime_probe.exe') }
     # Format 5 writes the user dictionary from the IME itself, without a helper.
     if ($Format -le 4) { $names += 'bin/nskkzime_dictionary_server.exe' }
-    if ($Format -ge 6) { $names += @('LICENSE', 'tools/scoop.ps1') }
+    if ($Format -ge 6) { $names += 'LICENSE' }
+    if ($Format -eq 6) { $names += 'tools/scoop.ps1' }
+    if ($Format -eq 7) {
+        $names = @($names | Where-Object { $_ -cne 'bin/ime_probe.exe' }) +
+            @('bin/ime_probe-arm64.exe','tools/package-arm64x.ps1','tools/arm64-package.psm1','tools/install-arm64x.ps1')
+    }
     $names | Sort-Object -CaseSensitive
 }
 function Test-PackageContents($Contents) {
     if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
     if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
     $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
-    if ($manifest.format_version -notin @(1, 2, 3, 4, 5, 6) -or $manifest.product -cne 'nskkzime' -or
-        $manifest.architecture -cne 'x64' -or $manifest.configuration -cne 'Release' -or
+    $formats = if ($ExperimentalArm64) { @(7) } else { @(1,2,3,4,5,6) }
+    if ($manifest.format_version -notin $formats -or $manifest.product -cne 'nskkzime' -or
+        $manifest.architecture -cne $(if($ExperimentalArm64){'arm64'}else{'x64'}) -or $manifest.configuration -cne 'Release' -or
         $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
         ($manifest.format_version -ge 2 -and $manifest.variant -cne 'zenz-cpu')) {
         throw '未対応のパッケージ形式です。'
     }
+    if ($ExperimentalArm64 -and ($manifest.channel -cne 'experimental' -or $manifest.installation_profile -cne 'arm64-experimental-v1')) { throw 'Invalid ARM64 experimental package policy.' }
     if ($manifest.format_version -ge 6 -and
         ($manifest.version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $manifest.first_party_license -cne 'MIT')) {
         throw '公開用パッケージの版番号またはライセンスが不正です。'
@@ -144,14 +156,24 @@ function Test-PackageContents($Contents) {
         foreach ($name in $names | Where-Object { $_.StartsWith('bin/') }) {
             Assert-PeArchitecture $Contents[$name] $name
             $embedded = Get-BuildMetadata $Contents[$name] $name
-            $arch = if ($name.StartsWith('bin/x86/')) { 'x86' } else { 'x64' }
+            $arch = if ($ExperimentalArm64) { Get-NskkzimeArm64MetadataGroup $name } elseif ($name.StartsWith('bin/x86/')) { 'x86' } else { 'x64' }
             $identity = Get-MetadataIdentity $embedded
             if ($identities.ContainsKey($arch) -and $identities[$arch] -cne $identity) { throw '異なるビルドのバイナリーが混在しています。' }
             $identities[$arch] = $identity
         }
-        if ($identities.x64 -cne (Get-MetadataIdentity $manifest.binary_build_metadata) -or
+        if ($ExperimentalArm64) {
+            $groups = @{}
+            foreach ($name in $names | Where-Object { $_.StartsWith('bin/') }) {
+                $groups[(Get-NskkzimeArm64MetadataGroup $name)] = Get-BuildMetadata $Contents[$name] $name
+            }
+            Assert-NskkzimeArm64BuildSet $groups
+            foreach ($pair in @(@('native','binary_build_metadata'),@('x86','x86_build_metadata'),@('arm64x','arm64x_build_metadata'),@('probe','probe_build_metadata'))) {
+                if ($identities[$pair[0]] -cne (Get-MetadataIdentity $manifest.($pair[1]))) { throw 'ARM64 manifest build metadata differs from the images.' }
+            }
+            if ($manifest.binary_build_revision -cne $groups.native.source_revision) { throw 'ARM64 manifest build revision differs.' }
+        } elseif ($identities.x64 -cne (Get-MetadataIdentity $manifest.binary_build_metadata) -or
             $manifest.binary_build_revision -cne $manifest.binary_build_metadata.source_revision) { throw 'マニフェストのビルド情報が一致しません。' }
-        if ($manifest.format_version -ge 4) {
+        if (-not $ExperimentalArm64 -and $manifest.format_version -ge 4) {
             if ($identities.x86 -cne (Get-MetadataIdentity $manifest.x86_build_metadata)) { throw 'マニフェストのビルド情報が一致しません。' }
             Assert-CompanionSource $manifest.binary_build_metadata $manifest.x86_build_metadata
         }
@@ -199,7 +221,9 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
         if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '再解析ポイントは検査できません。' }
     }
     # Installed folders of earlier versions remain verifiable for rollback.
-    $names = @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @(Get-PackageNames $true 6) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
+    $names = if ($ExperimentalArm64) { @(Get-PackageNames $true 7) + @('manifest.json') } else {
+        @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @(Get-PackageNames $true 6) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
+    }
     $contents = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
     $folders = [Collections.Generic.Queue[string]]::new()
     $folders.Enqueue($path)
@@ -236,7 +260,9 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
     $manifest = Test-PackageContents $contents
     [pscustomobject]@{ Path = $path; Version = $manifest.version; Variant = $manifest.variant; Files = $manifest.files.Count;
         FormatVersion = $manifest.format_version; ManifestSHA256 = (Get-Digest $contents['manifest.json']);
-        Paths = @($contents.Keys | Sort-Object -CaseSensitive); Verified = $true }
+        Paths = @($contents.Keys | Sort-Object -CaseSensitive); Architecture=$manifest.architecture;
+        Channel=$(if($ExperimentalArm64){'experimental'}else{'release'});
+        InstallationProfile=$(if($ExperimentalArm64){'arm64-experimental-v1'}else{'x64-release'}); Verified = $true }
     return
 }
 if ($PSCmdlet.ParameterSetName -eq 'Verify') {
@@ -247,17 +273,19 @@ if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     return
 }
 if (-not $SourceDirectory) {
-    $SourceDirectory = Join-Path $repository 'out/build/windows-x64-zenz/Release'
+    $SourceDirectory = Join-Path $repository $(if($ExperimentalArm64){'out/arm64x/Release'}else{'out/build/windows-x64-zenz/Release'})
 }
 $source = [IO.Path]::GetFullPath($SourceDirectory)
 if ([IO.Path]::GetFileName($source) -cne 'Release') { throw 'Releaseディレクトリーを指定してください。' }
-$cacheBytes = [IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $source) 'CMakeCache.txt'))
+$cachePath = if ($ExperimentalArm64) { Join-Path $repository 'out/build/windows-arm64-upstream-experimental/CMakeCache.txt' } else { Join-Path (Split-Path -Parent $source) 'CMakeCache.txt' }
+$cacheBytes = [IO.File]::ReadAllBytes($cachePath)
 $cache = [Text.Encoding]::UTF8.GetString($cacheBytes)
-if ($cache -notmatch '(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$') { throw 'x64ビルドではありません。' }
+if (-not $ExperimentalArm64 -and $cache -match '(?m)^NSKKZIME_LLAMA_VARIANT:STRING=upstream-v0\.6\.0\r?$') { throw 'upstream llama.cppの実験用ビルドは配布できません。' }
+if ($cache -notmatch $(if($ExperimentalArm64){'(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=ARM64\r?$'}else{'(?m)^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64\r?$'})) { throw 'Unexpected build architecture.' }
 if ($cache -notmatch '(?m)^NSKKZIME_WITH_ZENZ:BOOL=ON\r?$') { throw 'zenzを含まないテスト専用ビルドは配布できません。' }
 if ($cache -notmatch '(?m)^CMAKE_PROJECT_VERSION:STATIC=(?<version>[0-9]+\.[0-9]+\.[0-9]+)\r?$') { throw 'CMakeの版番号がありません。再構成・再ビルドしてください。' }
 $packageVersion = $Matches.version
-if (-not $Output) { $Output = Join-Path $repository "out/packages/nskkzime-v$packageVersion-windows-x64.zip" }
+if (-not $Output) { $Output = Join-Path $repository $(if($ExperimentalArm64){"out/packages/nskkzime-v$packageVersion-windows-arm64-experimental.zip"}else{"out/packages/nskkzime-v$packageVersion-windows-x64.zip"}) }
 $destination = [IO.Path]::GetFullPath($Output)
 $checksumPath = $destination + '.sha256'
 foreach ($path in @($destination, $checksumPath)) {
@@ -287,11 +315,21 @@ $sources['licenses/nlohmann-MIT.txt'] = Join-Path $repository 'third_party/nlohm
 $sources['licenses/Unicode-3.0.txt'] = Join-Path $repository 'third_party/unicode/LICENSE.txt'
 $sources['licenses/skk-zenz-MIT.txt'] = Join-Path $repository 'third_party/skk-zenz/LICENSE'
 $sources['licenses/llama-MIT.txt'] = Join-Path $repository 'third_party/llama.LICENSE'
+if ($ExperimentalArm64) {
+    $null = $sources.Remove('bin/ime_probe.exe')
+    $sources['bin/ime_probe-arm64.exe'] = Join-Path $source 'ime_probe-arm64.exe'
+    $sources['README.md'] = Join-Path $repository 'docs/ARM64_PACKAGE_README.md'
+    $sources['tools/package-arm64x.ps1'] = Join-Path $PSScriptRoot 'package-arm64x.ps1'
+    $sources['tools/arm64-package.psm1'] = Join-Path $PSScriptRoot 'arm64-package.psm1'
+    $sources['tools/install-arm64x.ps1'] = Join-Path $PSScriptRoot 'install-arm64x.ps1'
+}
 $payload = [ordered]@{}
 $files = @()
 $buildMetadata = $null
 $x86Metadata = $null
-foreach ($name in @(Get-PackageNames $true)) {
+$armGroups = @{}
+$format = if($ExperimentalArm64){7}else{6}
+foreach ($name in @(Get-PackageNames $true $format)) {
     $path = $sources[$name]
     $bytes = [IO.File]::ReadAllBytes($path)
     if ($bytes.Length -eq 0 -or $bytes.Length -gt 128MB) { throw "ファイルサイズが不正です: $name" }
@@ -312,7 +350,11 @@ foreach ($name in @(Get-PackageNames $true)) {
         $record['imports'] = $imports
         $record['authenticode_status'] = (Get-AuthenticodeSignature -LiteralPath $path).Status.ToString()
         if ((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $record.sha256) { throw "検査中にファイルが変更されました: $name" }
-        if ($name.StartsWith('bin/x86/')) {
+        if ($ExperimentalArm64) {
+            $group = Get-NskkzimeArm64MetadataGroup $name
+            if ($armGroups.ContainsKey($group) -and (Get-MetadataIdentity $armGroups[$group]) -cne (Get-MetadataIdentity $embedded)) { throw 'Mixed ARM64 build group.' }
+            $armGroups[$group]=$embedded
+        } elseif ($name.StartsWith('bin/x86/')) {
             if ($null -ne $x86Metadata -and (Get-MetadataIdentity $x86Metadata) -cne (Get-MetadataIdentity $embedded)) { throw '異なるビルドのバイナリーが混在しています。' }
             $x86Metadata = $embedded
         } else {
@@ -323,7 +365,34 @@ foreach ($name in @(Get-PackageNames $true)) {
     $payload[$name] = $bytes
     $files += [pscustomobject]$record
 }
-Assert-CompanionSource $buildMetadata $x86Metadata
+if ($ExperimentalArm64) {
+    Assert-NskkzimeArm64BuildSet $armGroups
+    $buildMetadata=$armGroups.native; $x86Metadata=$armGroups.x86
+    Import-Module (Join-Path $PSScriptRoot 'source-fingerprint.psm1') -Force
+    $current = Get-NskkzimeSourceFingerprint $repository
+    if ($current.Revision -cne $buildMetadata.source_revision -or $current.SHA256 -cne $buildMetadata.source_sha256 -or $current.Modified -ne $buildMetadata.source_modified) { throw 'Rebuild ARM64X before packaging changed source.' }
+    $build = Get-Content -LiteralPath (Join-Path $source 'arm64x-build.json') -Raw | ConvertFrom-Json -AsHashtable
+    if ($build.format -cne 'nskkzime-arm64x-build-v1' -or $build.dll_sha256 -cne (Get-Digest $payload['bin/nskkzime_tsf.dll']) -or
+        $build.source.SHA256 -cne $current.SHA256 -or $build.source.Revision -cne $current.Revision -or
+        $build.source.Modified -ne $current.Modified -or $build.metadata_views.Count -ne 2) { throw 'ARM64X build manifest differs.' }
+    $views=@{}
+    foreach ($view in $build.metadata_views) {
+        if ($view.binary -cne 'nskkzime_tsf.dll' -or $views.ContainsKey($view.variant)) { throw 'Invalid ARM64X build manifest views.' }
+        $null=$view.Remove('binary'); $views[$view.variant]=$view
+    }
+    if ((Get-MetadataIdentity $views) -cne (Get-MetadataIdentity $armGroups.arm64x)) { throw 'ARM64X build manifest views differ.' }
+    $native = Join-Path $repository 'out/build/windows-arm64x-native'
+    if ($build.native_inputs_sha256 -cne (Get-FileHash -LiteralPath (Join-Path $native 'arm64x/Release/native-inputs.json') -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'ARM64X native inputs changed.' }
+    & (Join-Path $PSScriptRoot 'prepare-arm64x-inputs.ps1') -NativeDirectory $native -EcDirectory (Join-Path $repository 'out/build/windows-arm64x-ec') -Verify | Out-Null
+    foreach ($pair in @(@($armGroups.arm64x['arm64x-native'],'windows-arm64x-native'),@($armGroups.arm64x['arm64x-ec'],'windows-arm64x-ec'),@($x86Metadata,'windows-arm64x-x86-host'))) {
+        if ($pair[0].cmake_cache_sha256 -cne (Get-FileHash -LiteralPath (Join-Path $repository ('out/build/'+$pair[1]+'/CMakeCache.txt')) -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'ARM64 build cache changed.' }
+    }
+    $backend=Join-Path $repository 'out/build/windows-arm64-upstream-experimental/llama-arm64-clang'
+    if ($buildMetadata.llama_backend.cmake_cache_sha256 -cne (Get-FileHash -LiteralPath (Join-Path $backend 'CMakeCache.txt') -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'ARM64 backend cache changed.' }
+    foreach ($library in @('llama','ggml','ggml-base','ggml-cpu')) {
+        if ($buildMetadata.llama_backend.libraries_sha256[$library] -cne (Get-FileHash -LiteralPath (Join-Path $backend "lib/Release/$library.lib") -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'ARM64 backend library changed.' }
+    }
+} else { Assert-CompanionSource $buildMetadata $x86Metadata }
 if ($buildMetadata.cmake_cache_sha256 -cne (Get-Digest $cacheBytes)) { throw 'CMakeの構成とバイナリーのビルド情報が一致しません。再ビルドしてください。' }
 $revision = & git -C $repository rev-parse --verify HEAD
 if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できません。' }
@@ -331,7 +400,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ソースのGit revisionを取得できませ�
 $dirtyCode = $LASTEXITCODE
 if ($dirtyCode -notin @(0, 1)) { throw 'ソースの状態を取得できません。' }
 $manifest = [ordered]@{
-    format_version = 6; product = 'nskkzime'; version = $packageVersion; architecture = 'x64'; configuration = 'Release'
+    format_version = $format; product = 'nskkzime'; version = $packageVersion; architecture = $(if($ExperimentalArm64){'arm64'}else{'x64'}); configuration = 'Release'
     variant = 'zenz-cpu'
     source_revision_at_packaging = $revision.Trim(); tracked_source_changes = ($dirtyCode -eq 1)
     binary_build_revision = $buildMetadata.source_revision
@@ -346,7 +415,13 @@ $manifest = [ordered]@{
     includes_model = $false; includes_dictionary = $false; includes_user_settings = $false
     files = $files
 }
-$payload['manifest.json'] = [Text.Encoding]::UTF8.GetBytes(($manifest | ConvertTo-Json -Depth 8) + "`n")
+if ($ExperimentalArm64) {
+    $manifest.channel='experimental'; $manifest.installation_profile='arm64-experimental-v1'
+    $manifest.arm64x_build_metadata=$armGroups.arm64x; $manifest.probe_build_metadata=$armGroups.probe
+    $manifest.cpu_requirement='zenz-arm64-armv8a-v1: Windows 11 ARM64; ARM64X TSF, native ARM64 services and x86 companion'
+    $manifest.runtime_requirement='Microsoft Visual C++ v14 Redistributable: ARM64, x64/EC and x86; x64 Redistributable includes ARM64; at least the build toolset version'
+}
+$payload['manifest.json'] = [Text.Encoding]::UTF8.GetBytes(($manifest | ConvertTo-Json -Depth 10) + "`n")
 $parent = Split-Path -Parent $destination
 [IO.Directory]::CreateDirectory($parent) | Out-Null
 $temporary = $destination + '.tmp-' + [Guid]::NewGuid().ToString('N')

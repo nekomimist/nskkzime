@@ -1,0 +1,53 @@
+# Experimental native ARM64 backend: keep MSVC for the product and use ClangCL
+# only for llama.cpp. The upstream MSVC backend requires host-native CPU probes.
+if(NOT MSVC OR NOT NSKKZIME_LLAMA_VARIANT STREQUAL "upstream-v0.6.0" OR
+    NOT CMAKE_GENERATOR STREQUAL "Visual Studio 17 2022" OR
+    NOT CMAKE_CONFIGURATION_TYPES STREQUAL "Release" OR
+    NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreadedDLL")
+  message(FATAL_ERROR "Use windows-arm64-upstream-experimental (VS2022, Release /MD only).")
+endif()
+include(ExternalProject)
+find_package(Threads REQUIRED)
+set(NSKKZIME_LLAMA_BACKEND_BUILD "${PROJECT_BINARY_DIR}/llama-arm64-clang")
+set(_llama_lib "${NSKKZIME_LLAMA_BACKEND_BUILD}/lib/Release")
+set(_llama_options)
+foreach(opt LLAMA_BUILD_COMMON LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_EXAMPLES
+    LLAMA_BUILD_SERVER LLAMA_BUILD_APP LLAMA_BUILD_UI LLAMA_OPENSSL LLAMA_LLGUIDANCE
+    GGML_OPENMP GGML_OPENMP_FETCH GGML_NATIVE GGML_CPU_KLEIDIAI GGML_BACKEND_DL
+    GGML_CPU_ALL_VARIANTS GGML_CUDA GGML_VULKAN GGML_METAL GGML_RPC GGML_LTO)
+  list(APPEND _llama_options "-D${opt}:BOOL=OFF")
+endforeach()
+ExternalProject_Add(nskkzime_llama_arm64
+  SOURCE_DIR "${NSKKZIME_LLAMA_DIR}"
+  BINARY_DIR "${NSKKZIME_LLAMA_BACKEND_BUILD}"
+  DOWNLOAD_COMMAND "" UPDATE_COMMAND "" INSTALL_COMMAND ""
+  CMAKE_GENERATOR "${CMAKE_GENERATOR}"
+  CMAKE_GENERATOR_PLATFORM ARM64
+  CMAKE_GENERATOR_TOOLSET ClangCL
+  CMAKE_GENERATOR_INSTANCE "${CMAKE_GENERATOR_INSTANCE}"
+  CMAKE_ARGS ${_llama_options}
+    -DCMAKE_CONFIGURATION_TYPES:STRING=Release
+    -DCMAKE_CXX_STANDARD:STRING=17
+    -DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=MultiThreadedDLL
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF
+    "-DCMAKE_SYSTEM_VERSION:STRING=${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}"
+    "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE:PATH=${_llama_lib}"
+    -DBUILD_SHARED_LIBS:BOOL=OFF -DGGML_CPU:BOOL=ON -DGGML_CPU_ARM_ARCH:STRING=armv8-a
+    -DLLAMA_BUILD_NUMBER:STRING=0 -DLLAMA_BUILD_IS_DEV:BOOL=OFF
+    "-DLLAMA_BUILD_COMMIT:STRING=${NSKKZIME_LLAMA_REVISION}"
+    -DGIT_EXE:FILEPATH=
+  BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --config $<CONFIG> --target llama --parallel 4
+  BUILD_ALWAYS TRUE
+  BUILD_BYPRODUCTS "${_llama_lib}/llama.lib" "${_llama_lib}/ggml.lib"
+    "${_llama_lib}/ggml-base.lib" "${_llama_lib}/ggml-cpu.lib")
+foreach(_lib llama ggml ggml-base ggml-cpu)
+  add_library(${_lib} STATIC IMPORTED GLOBAL)
+  set_target_properties(${_lib} PROPERTIES IMPORTED_CONFIGURATIONS Release
+    IMPORTED_LOCATION_RELEASE "${_llama_lib}/${_lib}.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${NSKKZIME_LLAMA_DIR}/include;${NSKKZIME_LLAMA_DIR}/ggml/include")
+  add_dependencies(${_lib} nskkzime_llama_arm64)
+endforeach()
+set_target_properties(llama PROPERTIES INTERFACE_LINK_LIBRARIES ggml)
+set_target_properties(ggml PROPERTIES INTERFACE_LINK_LIBRARIES "ggml-cpu;ggml-base")
+set_target_properties(ggml-cpu PROPERTIES INTERFACE_LINK_LIBRARIES ggml-base)
+set_target_properties(ggml-base PROPERTIES INTERFACE_LINK_LIBRARIES Threads::Threads)

@@ -1,0 +1,4 @@
+;; Original test data for registered HWND inference tests.
+;; Deliberately omit かいとう: 解答/解凍 must come from the model.
+かんじ /漢字;文字/感じ;感覚/
+かk /書/描/[く/書/描/]/[け/描/書/]/

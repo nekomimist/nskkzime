@@ -16,7 +16,7 @@ void help() {
     std::cout << "Usage: nskkzime_config [--config ABSOLUTE_PATH] ACTION\n"
         "  --show                    Show stored paths and environment overrides\n"
         "  --check                   Load effective dictionaries and report diagnostics\n"
-        "  --check-cpu               Check zenz CPU/OS requirements without loading a model\n"
+        "  --check-cpu               Check bundled zenz CPU/OS requirements without loading a model\n"
         "  --set-dictionaries PATH... Validate and save absolute paths, highest priority first\n"
         "  --disable-dictionaries    Save an empty list (kana input only)\n"
         "  --set-learning on|off     Enable or disable persistent candidate learning\n"

@@ -11,6 +11,7 @@
 #include <string_view>
 #include <fstream>
 #include <stdexcept>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -26,6 +27,7 @@ struct Probe {
     TF_INPUTPROCESSORPROFILE previous{};
     bool previous_valid = false;
     bool switched = false;
+    HRESULT activation_result = E_PENDING;
     HWND plain = nullptr, rich = nullptr, status = nullptr, last_edit = nullptr, mode = nullptr;
     HWND preview_check = nullptr, preview_text = nullptr;
     HWND timing_check = nullptr, timing_text = nullptr;
@@ -139,6 +141,19 @@ struct Probe {
         if (result == S_OK) switched = false;
         return result;
     }
+    std::wstring diagnostic_status(const char* export_name) {
+        using GetStatus = HRESULT (WINAPI*)(BSTR*);
+        const auto module = GetModuleHandleW(L"nskkzime_tsf.dll");
+#pragma warning(push)
+#pragma warning(disable: 4191)
+        const auto get = module ? reinterpret_cast<GetStatus>(GetProcAddress(module, export_name)) : nullptr;
+#pragma warning(pop)
+        BSTR value = nullptr;
+        const auto hr = get ? get(&value) : E_NOINTERFACE;
+        const auto text = SUCCEEDED(hr) && value ? std::wstring(value, SysStringLen(value)) : std::wstring{};
+        SysFreeString(value); return text;
+    }
+    std::wstring inference_status() { return diagnostic_status("NskkzimeGetInferenceStatus"); }
 };
 #include "native_probe_test.h"
 HWND control(HWND parent, const wchar_t* kind, const wchar_t* text, DWORD style, int x, int y, int width, int height, int id, HFONT font) {
@@ -211,6 +226,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             // Never change desktop/session defaults; no ENABLEPROFILE registry flag.
             const auto result = probe->previous_valid ? probe->profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR,
                 nskkzime::windows::language_id, nskkzime::windows::service_clsid, nskkzime::windows::profile_guid, nullptr, TF_IPPMF_FORPROCESS) : E_FAIL;
+            probe->activation_result = result;
             if (result == S_OK) probe->switched = true;
             probe->report(L"IME切替", result); SetFocus(probe->last_edit); return 0;
         }
@@ -248,15 +264,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     int argument_count = 0;
     auto** arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
     std::filesystem::path native_output;
-    if (arguments && argument_count > 1 && std::wstring_view(arguments[1]) == L"--self-test") {
-        if (argument_count != 4) { LocalFree(arguments); return 2; }
-        const auto dictionary = std::filesystem::path(arguments[2]); native_output = arguments[3];
-        if (!dictionary.is_absolute() || !native_output.is_absolute()) { LocalFree(arguments); return 2; }
-        // Isolated settings beside the output: only this dictionary, no learning or inference.
+    const bool with_zenz = arguments && argument_count > 1 && std::wstring_view(arguments[1]) == L"--self-test-zenz";
+    if (arguments && argument_count > 1 && (with_zenz || std::wstring_view(arguments[1]) == L"--self-test")) {
+        if (argument_count != (with_zenz ? 6 : 4)) { LocalFree(arguments); return 2; }
+        const auto dictionary = std::filesystem::path(arguments[2]); native_output = arguments[with_zenz ? 5 : 3];
+        const auto valid_path = [](const std::filesystem::path& path) {
+            return path.is_absolute() && path.native().find_first_of(L"\r\n") == std::wstring::npos;
+        };
+        if (!valid_path(dictionary) || !valid_path(native_output)) { LocalFree(arguments); return 2; }
+        const auto server = with_zenz ? std::filesystem::path(arguments[3]) : std::filesystem::path{};
+        const auto model = with_zenz ? std::filesystem::path(arguments[4]) : std::filesystem::path{};
+        if (with_zenz && (!valid_path(server) || !valid_path(model))) { LocalFree(arguments); return 2; }
+        // Only this process inherits these isolated settings. Learning/logging stay off.
         const auto config = native_output.parent_path() / L"nskkzime-native-probe-settings.ini";
-        const auto path = dictionary.u8string();
-        std::ofstream(config, std::ios::binary) << "version=1\nlearning=off\ndictionary=" << std::string(path.begin(), path.end()) << "\n";
-        SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
+        const auto utf8 = [](const std::filesystem::path& path) { const auto text = path.u8string(); return std::string(text.begin(), text.end()); };
+        std::ofstream settings(config, std::ios::binary);
+        settings << "version=1\nlearning=off\ndictionary=" << utf8(dictionary) << "\n";
+        if (with_zenz) settings << "inference=zenz\nzenz-server=" << utf8(server) << "\nzenz-model=" << utf8(model)
+            << "\ninference-threads=4\ninference-timeout-ms=2000\nzenz-idle-seconds=10\nzenz-rerank=off\nzenz-learn-fallback=off\ninput-log=off\n"
+            << "tsf-log=on\ntsf-log-directory=" << utf8(native_output.parent_path() / L"tsf") << "\n";
+        settings.close();
+        if (!settings || !SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str())) { LocalFree(arguments); return 2; }
     }
     if (arguments) LocalFree(arguments);
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -282,7 +310,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                     ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);
                     ComPtr<ITfKeystrokeMgr> keys; probe.manager.As(&keys);
                     if (!native_output.empty()) {
-                        try { native_probe_test(probe, window, native_output); result = 0; }
+                        try { native_probe_test(probe, window, native_output, with_zenz); result = 0; }
                         catch (...) { result = 1; }
                         DestroyWindow(window);
                     } else {

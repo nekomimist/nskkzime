@@ -1,0 +1,101 @@
+name: ARM64 experimental validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      archive-sha256: ${{ steps.bundle.outputs.archive-sha256 }}
+      source-sha256: ${{ steps.bundle.outputs.source-sha256 }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Prepare pinned experimental inference source without model
+        run: .\scripts\prepare-zenz.ps1 -UpstreamExperimental -SkipModel
+      - name: Build ARM64 services, ARM64X DLL and four ABI hosts
+        run: .\scripts\build-arm64x.ps1 -Jobs 4
+      - name: Validate experimental packaging and installation fixtures
+        run: |
+          pwsh -NoProfile -File .\tests\arm64_package_tests.ps1
+          if ($LASTEXITCODE) { throw 'ARM64 package validation failed.' }
+          pwsh -NoProfile -File .\tests\installation_tests.ps1 -BuildDirectory out/arm64x -Configuration Release -ExperimentalArm64
+          if ($LASTEXITCODE) { throw 'ARM64 installation fixtures failed.' }
+      - name: Prepare model-free runtime bundle
+        id: bundle
+        run: |
+          $bundle = .\scripts\prepare-arm64x-tests.ps1 -Profile CiHeadlessNoModel -OutputDirectory out/arm64-ci/bundle
+          $manifest = Get-Content (Join-Path $bundle.Path 'ci-manifest.json') -Raw | ConvertFrom-Json
+          $archive = Join-Path $PWD 'out/arm64-ci/runtime.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($bundle.Path, $archive)
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "archive-sha256=$hash" >> $env:GITHUB_OUTPUT
+          "source-sha256=$($manifest.source.SHA256)" >> $env:GITHUB_OUTPUT
+      - name: Preserve cross-build logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: arm64-cross-build-diagnostics
+          path: |
+            out/build/**/CMakeFiles/CMakeConfigureLog.yaml
+            out/build/**/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload experimental runtime input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: arm64-experimental-runtime
+          path: out/arm64-ci/runtime.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  native-tests:
+    needs: cross-build
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out matching source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Download this run's runtime input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: arm64-experimental-runtime
+          path: out/arm64-ci/download
+      - name: Verify all files and run the exact non-UI test set
+        env:
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.cross-build.outputs.archive-sha256 }}
+          EXPECTED_SOURCE_SHA256: ${{ needs.cross-build.outputs.source-sha256 }}
+        run: |
+          .\tests\arm64_ci_tests.ps1 -Archive out/arm64-ci/download/runtime.zip `
+            -ExpectedSHA256 $env:EXPECTED_ARCHIVE_SHA256 -ExpectedSourceSHA256 $env:EXPECTED_SOURCE_SHA256 `
+            -OutputDirectory out/arm64-ci/run
+      - name: Preserve native test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: arm64-native-test-results
+          path: |
+            out/arm64-ci/run/positive/reports
+            out/arm64-ci/run/validation.json
+          if-no-files-found: warn
+          retention-days: 7

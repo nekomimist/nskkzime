@@ -38,8 +38,9 @@ public:
     InferenceClient(const InferenceClient&) = delete;
     InferenceClient& operator=(const InferenceClient&) = delete;
     ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0); // Zero uses the generation timeout.
-    // Blocks the input thread for at most wait_ms, launching an absent server
-    // within that time. A slow server yields nullopt; the caller then uses submit().
+    // Same owning UI thread as submit()/destruction. Waits at most the remaining
+    // wait_ms budget; startup and I/O run on a separate, lifetime-pinned callback.
+    // Timeout cancels that request and yields nullopt; the caller can use submit().
     std::optional<InferenceResponse> exchange_now(const InferenceRequest&, DWORD wait_ms) const noexcept;
     void cancel() noexcept;
     void poll();

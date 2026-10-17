@@ -1,0 +1,1976 @@
+{
+  "bos": 2,
+  "cases": [
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [],
+      "text": "",
+      "tokens": []
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [],
+      "text": "",
+      "tokens": []
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [],
+      "text": "",
+      "tokens": []
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [],
+      "text": "",
+      "tokens": []
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "e9ab98",
+        "e6a0a1",
+        "e381ae",
+        "e69599",
+        "e5b8ab"
+      ],
+      "text": "高校の教師",
+      "tokens": [
+        493,
+        748,
+        240,
+        676,
+        984
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "e9ab98",
+        "e6a0a1",
+        "e381ae",
+        "e69599",
+        "e5b8ab"
+      ],
+      "text": "高校の教師",
+      "tokens": [
+        493,
+        748,
+        240,
+        676,
+        984
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "e9ab98",
+        "e6a0a1",
+        "e381ae",
+        "e69599",
+        "e5b8ab"
+      ],
+      "text": "高校の教師",
+      "tokens": [
+        493,
+        748,
+        240,
+        676,
+        984
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "e9ab98",
+        "e6a0a1",
+        "e381ae",
+        "e69599",
+        "e5b8ab"
+      ],
+      "text": "高校の教師",
+      "tokens": [
+        493,
+        748,
+        240,
+        676,
+        984
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "e3818b",
+        "e381aa",
+        "e6bca2",
+        "e5ad97",
+        "e382ab",
+        "e3838a",
+        "41",
+        "42",
+        "43",
+        "31",
+        "32",
+        "33"
+      ],
+      "text": "かな漢字カナABC123",
+      "tokens": [
+        260,
+        252,
+        1922,
+        1112,
+        350,
+        434,
+        36,
+        37,
+        38,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "e3818b",
+        "e381aa",
+        "e6bca2",
+        "e5ad97",
+        "e382ab",
+        "e3838a",
+        "41",
+        "42",
+        "43",
+        "31",
+        "32",
+        "33"
+      ],
+      "text": "かな漢字カナABC123",
+      "tokens": [
+        260,
+        252,
+        1922,
+        1112,
+        350,
+        434,
+        36,
+        37,
+        38,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "e3818b",
+        "e381aa",
+        "e6bca2",
+        "e5ad97",
+        "e382ab",
+        "e3838a",
+        "41",
+        "42",
+        "43",
+        "31",
+        "32",
+        "33"
+      ],
+      "text": "かな漢字カナABC123",
+      "tokens": [
+        260,
+        252,
+        1922,
+        1112,
+        350,
+        434,
+        36,
+        37,
+        38,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "e3818b",
+        "e381aa",
+        "e6bca2",
+        "e5ad97",
+        "e382ab",
+        "e3838a",
+        "41",
+        "42",
+        "43",
+        "31",
+        "32",
+        "33"
+      ],
+      "text": "かな漢字カナABC123",
+      "tokens": [
+        260,
+        252,
+        1922,
+        1112,
+        350,
+        434,
+        36,
+        37,
+        38,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "efbca1",
+        "efbca2",
+        "efbca3",
+        "efbc91",
+        "efbc92",
+        "efbc93"
+      ],
+      "text": "ＡＢＣ１２３",
+      "tokens": [
+        1774,
+        2103,
+        1904,
+        678,
+        768,
+        958
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "efbca1",
+        "efbca2",
+        "efbca3",
+        "efbc91",
+        "efbc92",
+        "efbc93"
+      ],
+      "text": "ＡＢＣ１２３",
+      "tokens": [
+        1774,
+        2103,
+        1904,
+        678,
+        768,
+        958
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "efbca1",
+        "efbca2",
+        "efbca3",
+        "efbc91",
+        "efbc92",
+        "efbc93"
+      ],
+      "text": "ＡＢＣ１２３",
+      "tokens": [
+        1774,
+        2103,
+        1904,
+        678,
+        768,
+        958
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "efbca1",
+        "efbca2",
+        "efbca3",
+        "efbc91",
+        "efbc92",
+        "efbc93"
+      ],
+      "text": "ＡＢＣ１２３",
+      "tokens": [
+        1774,
+        2103,
+        1904,
+        678,
+        768,
+        958
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "48",
+        "65",
+        "6c",
+        "6c",
+        "6f",
+        "2c",
+        "5b554e4b5d",
+        "77",
+        "6f",
+        "72",
+        "6c",
+        "64",
+        "21"
+      ],
+      "text": "Hello, world!",
+      "tokens": [
+        43,
+        72,
+        79,
+        79,
+        82,
+        15,
+        0,
+        90,
+        82,
+        85,
+        79,
+        71,
+        4
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "48",
+        "65",
+        "6c",
+        "6c",
+        "6f",
+        "2c",
+        "5b554e4b5d",
+        "77",
+        "6f",
+        "72",
+        "6c",
+        "64",
+        "21"
+      ],
+      "text": "Hello, world!",
+      "tokens": [
+        43,
+        72,
+        79,
+        79,
+        82,
+        15,
+        0,
+        90,
+        82,
+        85,
+        79,
+        71,
+        4
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "48",
+        "65",
+        "6c",
+        "6c",
+        "6f",
+        "2c",
+        "5b554e4b5d",
+        "77",
+        "6f",
+        "72",
+        "6c",
+        "64",
+        "21"
+      ],
+      "text": "Hello, world!",
+      "tokens": [
+        43,
+        72,
+        79,
+        79,
+        82,
+        15,
+        0,
+        90,
+        82,
+        85,
+        79,
+        71,
+        4
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "48",
+        "65",
+        "6c",
+        "6c",
+        "6f",
+        "2c",
+        "5b554e4b5d",
+        "77",
+        "6f",
+        "72",
+        "6c",
+        "64",
+        "21"
+      ],
+      "text": "Hello, world!",
+      "tokens": [
+        43,
+        72,
+        79,
+        79,
+        82,
+        15,
+        0,
+        90,
+        82,
+        85,
+        79,
+        71,
+        4
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": " ",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": " ",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": " ",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": " ",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "5b554e4b5d"
+      ],
+      "text": "  ",
+      "tokens": [
+        0,
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "5b554e4b5d"
+      ],
+      "text": "  ",
+      "tokens": [
+        0,
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "5b554e4b5d"
+      ],
+      "text": "  ",
+      "tokens": [
+        0,
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "5b554e4b5d"
+      ],
+      "text": "  ",
+      "tokens": [
+        0,
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "6c",
+        "65",
+        "61",
+        "64",
+        "69",
+        "6e",
+        "67"
+      ],
+      "text": " leading",
+      "tokens": [
+        0,
+        79,
+        72,
+        68,
+        71,
+        76,
+        81,
+        74
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "6c",
+        "65",
+        "61",
+        "64",
+        "69",
+        "6e",
+        "67"
+      ],
+      "text": " leading",
+      "tokens": [
+        0,
+        79,
+        72,
+        68,
+        71,
+        76,
+        81,
+        74
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "6c",
+        "65",
+        "61",
+        "64",
+        "69",
+        "6e",
+        "67"
+      ],
+      "text": " leading",
+      "tokens": [
+        0,
+        79,
+        72,
+        68,
+        71,
+        76,
+        81,
+        74
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d",
+        "6c",
+        "65",
+        "61",
+        "64",
+        "69",
+        "6e",
+        "67"
+      ],
+      "text": " leading",
+      "tokens": [
+        0,
+        79,
+        72,
+        68,
+        71,
+        76,
+        81,
+        74
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "74",
+        "72",
+        "61",
+        "69",
+        "6c",
+        "69",
+        "6e",
+        "67",
+        "5b554e4b5d"
+      ],
+      "text": "trailing ",
+      "tokens": [
+        87,
+        85,
+        68,
+        76,
+        79,
+        76,
+        81,
+        74,
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "74",
+        "72",
+        "61",
+        "69",
+        "6c",
+        "69",
+        "6e",
+        "67",
+        "5b554e4b5d"
+      ],
+      "text": "trailing ",
+      "tokens": [
+        87,
+        85,
+        68,
+        76,
+        79,
+        76,
+        81,
+        74,
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "74",
+        "72",
+        "61",
+        "69",
+        "6c",
+        "69",
+        "6e",
+        "67",
+        "5b554e4b5d"
+      ],
+      "text": "trailing ",
+      "tokens": [
+        87,
+        85,
+        68,
+        76,
+        79,
+        76,
+        81,
+        74,
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "74",
+        "72",
+        "61",
+        "69",
+        "6c",
+        "69",
+        "6e",
+        "67",
+        "5b554e4b5d"
+      ],
+      "text": "trailing ",
+      "tokens": [
+        87,
+        85,
+        68,
+        76,
+        79,
+        76,
+        81,
+        74,
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a  b",
+      "tokens": [
+        68,
+        0,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a  b",
+      "tokens": [
+        68,
+        0,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a  b",
+      "tokens": [
+        68,
+        0,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a  b",
+      "tokens": [
+        68,
+        0,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": "\n",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": "\n",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": "\n",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": "\n",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\r\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\r\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\r\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "5b554e4b5d",
+        "62"
+      ],
+      "text": "a\r\nb",
+      "tokens": [
+        68,
+        0,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "09"
+      ],
+      "text": "\t",
+      "tokens": [
+        185
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "09"
+      ],
+      "text": "\t",
+      "tokens": [
+        185
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "09"
+      ],
+      "text": "\t",
+      "tokens": [
+        185
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "09"
+      ],
+      "text": "\t",
+      "tokens": [
+        185
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "09",
+        "62"
+      ],
+      "text": "a\tb",
+      "tokens": [
+        68,
+        185,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "09",
+        "62"
+      ],
+      "text": "a\tb",
+      "tokens": [
+        68,
+        185,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "61",
+        "09",
+        "62"
+      ],
+      "text": "a\tb",
+      "tokens": [
+        68,
+        185,
+        69
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "61",
+        "09",
+        "62"
+      ],
+      "text": "a\tb",
+      "tokens": [
+        68,
+        185,
+        69
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "f09f9880",
+        "f09f90",
+        "88"
+      ],
+      "text": "😀🐈",
+      "tokens": [
+        5247,
+        3857,
+        210
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "f09f9880",
+        "f09f90",
+        "88"
+      ],
+      "text": "😀🐈",
+      "tokens": [
+        5247,
+        3857,
+        210
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "f09f9880",
+        "f09f90",
+        "88"
+      ],
+      "text": "😀🐈",
+      "tokens": [
+        5247,
+        3857,
+        210
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "f09f9880",
+        "f09f90",
+        "88"
+      ],
+      "text": "😀🐈",
+      "tokens": [
+        5247,
+        3857,
+        210
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "e3818b",
+        "e38299"
+      ],
+      "text": "が",
+      "tokens": [
+        260,
+        2079
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "e3818b",
+        "e38299"
+      ],
+      "text": "が",
+      "tokens": [
+        260,
+        2079
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "e3818b",
+        "e38299"
+      ],
+      "text": "が",
+      "tokens": [
+        260,
+        2079
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "e3818b",
+        "e38299"
+      ],
+      "text": "が",
+      "tokens": [
+        260,
+        2079
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "80",
+        "e382a2",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "ア",
+      "tokens": [
+        172,
+        120,
+        202,
+        298,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "80",
+        "e382a2",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "ア",
+      "tokens": [
+        172,
+        120,
+        202,
+        298,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "80",
+        "e382a2",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "ア",
+      "tokens": [
+        172,
+        120,
+        202,
+        298,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "80",
+        "e382a2",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "ア",
+      "tokens": [
+        172,
+        120,
+        202,
+        298,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "55",
+        "4e",
+        "4b",
+        "5d"
+      ],
+      "text": "[UNK]",
+      "tokens": [
+        62,
+        56,
+        49,
+        46,
+        64
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": "[UNK]",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "55",
+        "4e",
+        "4b",
+        "5d"
+      ],
+      "text": "[UNK]",
+      "tokens": [
+        62,
+        56,
+        49,
+        46,
+        64
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b554e4b5d"
+      ],
+      "text": "[UNK]",
+      "tokens": [
+        0
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "50",
+        "41",
+        "44",
+        "5d"
+      ],
+      "text": "[PAD]",
+      "tokens": [
+        62,
+        51,
+        36,
+        39,
+        64
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b5041445d"
+      ],
+      "text": "[PAD]",
+      "tokens": [
+        1
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "50",
+        "41",
+        "44",
+        "5d"
+      ],
+      "text": "[PAD]",
+      "tokens": [
+        62,
+        51,
+        36,
+        39,
+        64
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b5041445d"
+      ],
+      "text": "[PAD]",
+      "tokens": [
+        1
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "42",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[BOS]",
+      "tokens": [
+        62,
+        37,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b",
+        "42",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[BOS]",
+      "tokens": [
+        62,
+        37,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "42",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[BOS]",
+      "tokens": [
+        62,
+        37,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b",
+        "42",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[BOS]",
+      "tokens": [
+        62,
+        37,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "45",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[EOS]",
+      "tokens": [
+        62,
+        40,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b",
+        "45",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[EOS]",
+      "tokens": [
+        62,
+        40,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "5b",
+        "45",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[EOS]",
+      "tokens": [
+        62,
+        40,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "5b",
+        "45",
+        "4f",
+        "53",
+        "5d"
+      ],
+      "text": "[EOS]",
+      "tokens": [
+        62,
+        40,
+        50,
+        54,
+        64
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e8a9a6",
+        "e9a893",
+        "e5958f",
+        "e9a18c",
+        "e381ae",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e382a4",
+        "e38388",
+        "e382a6",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "試験問題のカイトウ",
+      "tokens": [
+        172,
+        120,
+        204,
+        803,
+        724,
+        632,
+        707,
+        240,
+        172,
+        120,
+        202,
+        350,
+        280,
+        274,
+        400,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e8a9a6",
+        "e9a893",
+        "e5958f",
+        "e9a18c",
+        "e381ae",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e382a4",
+        "e38388",
+        "e382a6",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "試験問題のカイトウ",
+      "tokens": [
+        172,
+        120,
+        204,
+        803,
+        724,
+        632,
+        707,
+        240,
+        172,
+        120,
+        202,
+        350,
+        280,
+        274,
+        400,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e8a9a6",
+        "e9a893",
+        "e5958f",
+        "e9a18c",
+        "e381ae",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e382a4",
+        "e38388",
+        "e382a6",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "試験問題のカイトウ",
+      "tokens": [
+        172,
+        120,
+        204,
+        803,
+        724,
+        632,
+        707,
+        240,
+        172,
+        120,
+        202,
+        350,
+        280,
+        274,
+        400,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e8a9a6",
+        "e9a893",
+        "e5958f",
+        "e9a18c",
+        "e381ae",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e382a4",
+        "e38388",
+        "e382a6",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "試験問題のカイトウ",
+      "tokens": [
+        172,
+        120,
+        204,
+        803,
+        724,
+        632,
+        707,
+        240,
+        172,
+        120,
+        202,
+        350,
+        280,
+        274,
+        400,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": false,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e5898d",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "87",
+        "e5be8c",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e3838a",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "前の文章後の文章カナ",
+      "tokens": [
+        172,
+        120,
+        204,
+        480,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        209,
+        462,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        202,
+        350,
+        434,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": false,
+      "parse_special": true,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e5898d",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "87",
+        "e5be8c",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e3838a",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "前の文章後の文章カナ",
+      "tokens": [
+        172,
+        120,
+        204,
+        480,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        209,
+        462,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        202,
+        350,
+        434,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": false,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e5898d",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "87",
+        "e5be8c",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e3838a",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "前の文章後の文章カナ",
+      "tokens": [
+        172,
+        120,
+        204,
+        480,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        209,
+        462,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        202,
+        350,
+        434,
+        172,
+        120,
+        203
+      ]
+    },
+    {
+      "add_special": true,
+      "parse_special": true,
+      "pieces_hex": [
+        "ee",
+        "b8",
+        "82",
+        "e5898d",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "87",
+        "e5be8c",
+        "e381ae",
+        "e69687",
+        "e7aba0",
+        "ee",
+        "b8",
+        "80",
+        "e382ab",
+        "e3838a",
+        "ee",
+        "b8",
+        "81"
+      ],
+      "text": "前の文章後の文章カナ",
+      "tokens": [
+        172,
+        120,
+        204,
+        480,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        209,
+        462,
+        240,
+        679,
+        1513,
+        172,
+        120,
+        202,
+        350,
+        434,
+        172,
+        120,
+        203
+      ]
+    }
+  ],
+  "eos": 3,
+  "pad": 1,
+  "pre": "gpt2-small-japanese-char"
+}

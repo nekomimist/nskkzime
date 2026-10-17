@@ -3,51 +3,101 @@
 // Drive the probe's real HWND text stores through its TSF keystroke manager.
 // RichEdit uses direct TSF delivery; EDIT uses balanced native key batches
 // only while the probe owns foreground and control focus.
-inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::path& output) {
+inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::path& output, bool with_zenz) {
     std::ofstream log(output);
     if (!log) throw std::runtime_error("cannot write native probe result");
+    log << std::unitbuf;
+    log << "inference=" << (with_zenz ? "zenz" : "off") << '\n';
+    const char* stage = "foreground activation";
+    HWND native_edit = nullptr;
+    const auto started = GetTickCount64();
+    const auto deadline = started + 300000;
     BYTE saved[256]{}; GetKeyboardState(saved);
     struct Restore { BYTE* state; ~Restore() { SetKeyboardState(state); } } restore{saved};
     ComPtr<ITfMessagePump> pump; probe.manager.As(&pump);
     const auto drain = [&] {
         MSG message{}; BOOL available = FALSE;
-        while (pump && SUCCEEDED(pump->PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE, &available)) && available) {
+        while (true) {
+            if (!IsWindow(window)) throw std::runtime_error("probe window closed");
+            if (!pump || FAILED(pump->PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE, &available)))
+                throw std::runtime_error("TSF message pump failed");
+            if (!available) break;
+            if (message.message == WM_QUIT) throw std::runtime_error("probe window closed");
             TranslateMessage(&message); DispatchMessageW(&message);
         }
     };
     const auto wait = [&](auto predicate) {
-        const auto deadline = GetTickCount64() + 5000;
+        const auto limit = (std::min)(deadline, GetTickCount64() + 5000);
         while (!predicate()) {
-            if (GetTickCount64() >= deadline) throw std::runtime_error("native input timed out");
+            if (GetTickCount64() >= limit) throw std::runtime_error(std::string(stage) + " timed out");
             drain(); Sleep(5);
         }
+    };
+    const auto focused = [&](HWND edit) {
+        return GetForegroundWindow() == window && GetActiveWindow() == window && GetFocus() == edit;
+    };
+    const auto focus = [&](HWND edit) {
+        stage = "foreground activation";
+        SetWindowTextW(window, L"nskkzime 入力検証 — 自動試験を始めるにはここをクリック");
+        while (true) {
+            drain();
+            if (GetTickCount64() >= deadline) throw std::runtime_error("click the probe to start native input test");
+            // Change control focus only after this window owns foreground.
+            if (GetForegroundWindow() == window) {
+                SetActiveWindow(window); SetFocus(edit); drain();
+                if (focused(edit)) break;
+            }
+            Sleep(20);
+        }
+        SetWindowTextW(window, L"nskkzime 入力検証 — 自動試験中");
+    };
+    const auto context_ready = [&] {
+        ComPtr<ITfDocumentMgr> document; ComPtr<ITfContext> context;
+        return focused(probe.rich) && probe.manager->GetFocus(&document) == S_OK && document &&
+            document->GetTop(&context) == S_OK && context;
     };
     const auto text = [](HWND edit) {
         wchar_t value[1024]{}; GetWindowTextW(edit, value, ARRAYSIZE(value)); return std::wstring(value);
     };
+    const auto log_text = [&](const char* name, std::wstring_view value) {
+        const auto length = static_cast<int>(value.size());
+        std::string utf8(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, value.data(), length, nullptr, 0, nullptr, nullptr)), '\0');
+        if (!utf8.empty()) WideCharToMultiByte(CP_UTF8, 0, value.data(), length, utf8.data(), static_cast<int>(utf8.size()), nullptr, nullptr);
+        log << name << '=' << utf8 << '\n';
+    };
     try {
-        SetWindowTextW(window, L"nskkzime 入力検証 — 自動試験を始めるにはここをクリック");
         SetForegroundWindow(window);
-        const auto activation_deadline = GetTickCount64() + 300000;
-        while (GetForegroundWindow() != window) {
-            if (GetTickCount64() >= activation_deadline) throw std::runtime_error("click the probe to start native input test");
-            drain(); Sleep(20);
-        }
-        SetWindowTextW(window, L"nskkzime 入力検証 — 自動試験中");
+        focus(probe.rich);
         SendMessageW(window, WM_COMMAND, activate_id, 0);
         if (!probe.switched) throw std::runtime_error("registered TSF profile activation failed");
+        if (with_zenz) probe.enable_preview(true);
+        log << "activation_hr=" << std::hex << static_cast<unsigned long>(probe.activation_result) << std::dec << '\n';
+        focus(probe.rich);
+        stage = "RichEdit TSF context";
+        wait([&] {
+            TF_INPUTPROCESSORPROFILE active{};
+            return probe.profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active) == S_OK &&
+                active.clsid == nskkzime::windows::service_clsid && active.guidProfile == nskkzime::windows::profile_guid && context_ready();
+        });
         ComPtr<ITfKeystrokeMgr> keys; probe.manager.As(&keys);
         if (!keys) throw std::runtime_error("no TSF keystroke manager");
         using Ready = HRESULT (WINAPI*)(BOOL*);
+        stage = "dictionary readiness";
+        log << "stage=" << stage << '\n';
+        // Activation can load the registered DLL while the message pump runs.
+        // Resolve again until it exists; a null export is not a lasting state.
+        wait([&] {
 #pragma warning(push)
 #pragma warning(disable: 4191)
-        const auto ready = reinterpret_cast<Ready>(GetProcAddress(GetModuleHandleW(L"nskkzime_tsf.dll"), "NskkzimeIsDictionaryReady"));
+            const auto module = GetModuleHandleW(L"nskkzime_tsf.dll");
+            const auto ready = module ? reinterpret_cast<Ready>(GetProcAddress(module, "NskkzimeIsDictionaryReady")) : nullptr;
 #pragma warning(pop)
-        wait([&] { BOOL value = FALSE; return ready && SUCCEEDED(ready(&value)) && value; });
-        HWND native_edit = nullptr;
+            BOOL value = FALSE; return ready && SUCCEEDED(ready(&value)) && value;
+        });
         const auto key = [&](WPARAM code, bool shift = false, bool control = false) {
+            if (!focused(native_edit)) throw std::runtime_error("native input focus changed");
+            if (GetTickCount64() >= deadline) throw std::runtime_error("native input deadline exceeded");
             if (native_edit == probe.plain) {
-                if (GetForegroundWindow() != window || GetFocus() != native_edit) throw std::runtime_error("native input focus changed");
                 for (const auto modifier : {VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN})
                     if (GetAsyncKeyState(modifier) & 0x8000) throw std::runtime_error("release physical modifiers before native input test");
                 INPUT input[6]{}; UINT count = 0;
@@ -60,8 +110,8 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
                 if (control) add(VK_CONTROL, KEYEVENTF_KEYUP);
                 if (shift) add(VK_SHIFT, KEYEVENTF_KEYUP);
                 if (SendInput(count, input, sizeof(INPUT)) != count) throw std::runtime_error("native input injection failed");
-                const auto deadline = GetTickCount64() + 80;
-                do { drain(); Sleep(5); } while (GetTickCount64() < deadline);
+                const auto delivery_limit = GetTickCount64() + 80;
+                do { drain(); Sleep(5); } while (GetTickCount64() < delivery_limit);
                 return;
             }
             BYTE state[256]{};
@@ -86,10 +136,10 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
             }
         };
         for (const auto edit : {probe.rich, probe.plain}) {
+            focus(edit);
+            if (edit == probe.rich) { stage = "RichEdit TSF context"; wait(context_ready); }
+            stage = edit == probe.rich ? "RichEdit input" : "EDIT input";
             native_edit = edit;
-            SetForegroundWindow(window); SetActiveWindow(window); SetFocus(edit);
-            const auto focus_deadline = GetTickCount64() + 500;
-            do { drain(); Sleep(5); } while (GetTickCount64() < focus_deadline);
             log << "control=" << (edit == probe.plain ? "EDIT" : "RichEdit") << " active=" << (GetActiveWindow() == window) << " foreground=" << (GetForegroundWindow() == window) << " focus=" << (GetFocus() == edit) << '\n';
             ComPtr<ITfDocumentMgr> document;
             const auto focus_hr = probe.manager->GetFocus(&document);
@@ -103,11 +153,104 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
             type("KaKu"); key(VK_SPACE); key(VK_RETURN);
             wait([&] { return text(edit) == L"漢字です描く"; });
             log << "PASS " << (edit == probe.plain ? "EDIT native conversion/commit/cancel/okuri" : "RichEdit composition/conversion/commit/cancel/okuri") << '\n';
+            if (with_zenz) {
+                // This fixture has no かいとう entry. The same reading must produce
+                // different generated candidates from the real surrounding text.
+                const auto generated = [&](const wchar_t* prefix, const wchar_t* expected, const char* label) {
+                    stage = edit == probe.rich ? "RichEdit zenz generation" : "EDIT zenz generation";
+                    log << "generation_context=" << label << '\n';
+                    SetWindowTextW(edit, prefix); drain();
+                    const auto end = static_cast<DWORD>(GetWindowTextLengthW(edit));
+                    // EM_SETSEL(-1, -1) deselects; it does not move EDIT's caret.
+                    SendMessageW(edit, EM_SETSEL, end, end); drain();
+                    DWORD selection_start = 0, selection_end = 0;
+                    SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&selection_start), reinterpret_cast<LPARAM>(&selection_end));
+                    log << "prefix_length=" << end << " selection=" << selection_start << ',' << selection_end << '\n';
+                    if (selection_start != end || selection_end != end) throw std::runtime_error("prefix caret is not at the end");
+                    key('J', false, true); type("Kaitou"); key(VK_SPACE);
+                    const auto result = std::wstring(prefix) + expected;
+                    wait([&] { return text(edit) == result; });
+                    if (probe.inference_status().find(L"推論: 生成候補を反映") == std::wstring::npos)
+                        throw std::runtime_error("generated text has no applied inference status");
+                    key(VK_RETURN); type("desu"); wait([&] { return text(edit) == result + L"です"; });
+                    log << "PASS " << (edit == probe.rich ? "RichEdit" : "EDIT") << " zenz context=" << label << " generated/commit/continued-input\n";
+                };
+                generated(L"試験問題の", L"解答", "exam");
+                generated(L"冷凍食品を電子レンジで", L"解凍", "food");
+            }
         }
         wchar_t library[32768]{};
         GetModuleFileNameW(GetModuleHandleW(L"nskkzime_tsf.dll"), library, ARRAYSIZE(library));
+#if defined(_M_ARM64EC)
+        constexpr auto host = "arm64ec";
+#elif defined(_M_ARM64)
+        constexpr auto host = "arm64";
+#elif defined(_M_IX86)
+        constexpr auto host = "x86";
+#else
+        constexpr auto host = "x64";
+#endif
+        log << "host=" << host << '\n';
+#if defined(NSKKZIME_LOCAL_PROBE)
+        log << "activation=local-manifest\n";
+#else
+        log << "activation=registered-profile\n";
+#endif
         log << "process_bits=" << sizeof(void*) * 8 << "\ndll=" << std::filesystem::path(library).generic_string() << '\n';
+        const auto restored = probe.restore();
+        TF_INPUTPROCESSORPROFILE active{};
+        const auto queried = probe.profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active);
+        if (restored != S_OK || queried != S_OK || active.dwProfileType != probe.previous.dwProfileType ||
+            active.langid != probe.previous.langid || active.clsid != probe.previous.clsid ||
+            active.guidProfile != probe.previous.guidProfile || active.hkl != probe.previous.hkl)
+            throw std::runtime_error("previous input profile was not restored");
+        log << "PASS previous process input profile restored\n";
     } catch (const std::exception& error) {
-        log << "FAIL " << error.what() << '\n'; throw;
+        log << "FAIL " << error.what() << '\n';
+        if (native_edit) log_text("control_text", text(native_edit));
+        log_text("inference_status", probe.inference_status());
+        if (with_zenz) log_text("context_preview", probe.diagnostic_status("NskkzimeGetContextPreview"));
+        DWORD foreground_pid = 0;
+        const auto foreground = GetForegroundWindow(); GetWindowThreadProcessId(foreground, &foreground_pid);
+        log << "stage=" << stage << " elapsed_ms=" << GetTickCount64() - started
+            << " foreground=" << foreground << " foreground_pid=" << foreground_pid
+            << " active=" << GetActiveWindow() << " focus=" << GetFocus() << '\n';
+        ComPtr<ITfDocumentMgr> document; ComPtr<ITfContext> context;
+        const auto document_hr = probe.manager->GetFocus(&document);
+        const auto context_hr = document ? document->GetTop(&context) : E_POINTER;
+        log << "document_hr=" << std::hex << static_cast<unsigned long>(document_hr)
+            << " context_hr=" << static_cast<unsigned long>(context_hr) << std::dec
+            << " document=" << bool(document) << " context=" << bool(context) << '\n';
+        const auto module = GetModuleHandleW(L"nskkzime_tsf.dll");
+        wchar_t path[32768]{};
+        if (module) GetModuleFileNameW(module, path, ARRAYSIZE(path));
+        log << "module_loaded=" << bool(module) << " dll=" << std::filesystem::path(path).generic_string() << '\n';
+        TF_INPUTPROCESSORPROFILE active{};
+        const auto hr = probe.profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active);
+        log << "active_profile_hr=" << std::hex << static_cast<unsigned long>(hr) << std::dec
+            << " ours=" << (hr == S_OK && active.clsid == nskkzime::windows::service_clsid && active.guidProfile == nskkzime::windows::profile_guid)
+            << " language=" << active.langid << '\n';
+        if (module) {
+            using Ready = HRESULT (WINAPI*)(BOOL*);
+            using Status = HRESULT (WINAPI*)(BSTR*);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+            const auto ready = reinterpret_cast<Ready>(GetProcAddress(module, "NskkzimeIsDictionaryReady"));
+            const auto status = reinterpret_cast<Status>(GetProcAddress(module, "NskkzimeGetDictionaryStatus"));
+#pragma warning(pop)
+            BOOL ready_value = FALSE; const auto ready_hr = ready ? ready(&ready_value) : E_NOINTERFACE;
+            log << "ready_export=" << bool(ready) << " ready_hr=" << std::hex << static_cast<unsigned long>(ready_hr)
+                << std::dec << " ready=" << ready_value << '\n';
+            BSTR value = nullptr;
+            if (status && SUCCEEDED(status(&value)) && value) {
+                const auto length = static_cast<int>(SysStringLen(value));
+                std::string utf8(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, value, length, nullptr, 0, nullptr, nullptr)), '\0');
+                if (!utf8.empty()) WideCharToMultiByte(CP_UTF8, 0, value, length, utf8.data(), static_cast<int>(utf8.size()), nullptr, nullptr);
+                log << "dictionary_status=" << utf8 << '\n';
+            }
+            SysFreeString(value);
+        }
+        log << "failure_restore_hr=" << std::hex << static_cast<unsigned long>(probe.restore()) << std::dec << '\n';
+        throw;
     }
 }

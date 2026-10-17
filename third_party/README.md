@@ -26,7 +26,7 @@ The checksum was verified against the upstream release. Builds do not download d
 - Copied: `model.cpp`, `model.h`, `prompt.cpp`, `prompt.h`, and their tests under `skk-zenz/`.
 - License: [MIT](skk-zenz/LICENSE), Copyright (c) 2026 Hiroyuki Ishikura.
 - Source archive SHA-256: `434c090f47934fecdb54304a871e17f7fed423d65a1c5138b1754b08402b0c7c`.
-- Local changes: model abort callback, cancellation checks in generation/scoring and before decode. Prompt and upstream tests are unchanged.
+- Local changes: model abort callback, cancellation checks in generation/scoring and before decode; use the default mapped CPU model loading for compatibility with both llama.cpp APIs. Prompt and upstream tests are unchanged.
 - The original protocol implementation is not copied. Our bounded protocol supports its `convert` and `score` concepts, with the differences documented in [ARCHITECTURE.md](../docs/ARCHITECTURE.md#推論).
 
 ## azooKey llama.cpp (optional CPU backend)
@@ -37,6 +37,17 @@ The checksum was verified against the upstream release. Builds do not download d
 - Archive SHA-256: `df8e483c6bb30e358389f6be382a63f14bd8648d327b4994fc2f0b1df63ff97b`.
 - `scripts/prepare-zenz.ps1` downloads and verifies the archive into ignored `out/deps/`. Builds themselves do not download anything.
 - Sources are unchanged. Parent CMake selects C++17 for llama.cpp and C++20 for our code, and disables GPU/OpenMP/native CPU detection. llama.cpp is linked only into the optional server and model tests.
+
+## upstream llama.cpp experiment
+
+The opt-in `upstream-v0.6.0` experiment uses ggml-org/llama.cpp commit
+`8345f333951c661d166b00e6f9362e553768f292` (v0.6.0), archive SHA-256
+`ea153f18923e18f47d8c52c55cde0fbc446102cccfa83356964fe7620b7c8898`.
+`patches/llama-v0.6.0-zenz.patch` ports the Japanese tokenizer changes from the
+azooKey commit above; its parent `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`
+is an upstream commit. The unrelated Metal environment switch is omitted.
+The normal distribution path rejects this experiment. An explicit ARM64X entrypoint
+can create an isolated experimental package; see [ARM64.md](../docs/ARM64.md).
 
 ## zenz model (not bundled)
 

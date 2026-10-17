@@ -1,0 +1,3 @@
+# Unified diffs use a single space to represent empty context lines.
+# Keep context lines compatible with the pinned LF-only source archives on Windows.
+*.patch text eol=lf -whitespace

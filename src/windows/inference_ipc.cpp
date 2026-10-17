@@ -61,7 +61,7 @@ InferenceResponse inference_exchange_launching(std::wstring_view token, const In
         try { return inference_exchange(token, request, deadline, cancel); }
         catch (const InferenceFailure& failure) { if (failure.status != InferenceStatus::Unavailable || !launch) throw; }
         const auto now = GetTickCount64(); need(now < deadline, InferenceStatus::Timeout);
-        if (!process) process.emplace(launch(idle_ms));
+        if (!process) { check_cancel(cancel); process.emplace(launch(idle_ms)); }
         if (WaitForSingleObject(cancel, static_cast<DWORD>((std::min)(deadline - now, ULONGLONG{10}))) == WAIT_OBJECT_0)
             throw InferenceFailure(InferenceStatus::Cancelled);
     }
@@ -82,11 +82,19 @@ int serve_dummy_inference(std::wstring_view token, DWORD delay_ms, DWORD idle_ms
     },idle_ms,delay_ms+1500);
 }
 NativeHandle launch_zenz_server(const std::filesystem::path& program, const std::filesystem::path& model,
-    std::wstring_view token, unsigned threads, DWORD timeout_ms, DWORD idle_ms) {
-    require_zenz_cpu(current_cpu_features()); // Baseline parent checks before executing the AVX2-linked child.
+    std::wstring_view token, unsigned threads, DWORD timeout_ms, DWORD idle_ms, ULONGLONG deadline, HANDLE cancel) {
+    const auto check_launch = [&] {
+        if (cancel) check_cancel(cancel);
+        if (deadline) need(GetTickCount64() < deadline, InferenceStatus::Timeout);
+    };
+    check_launch();
     inference_pipe_name(token);
     for (const auto& path : {program,model}) need(path.is_absolute() && !path.filename().empty() && path.native().find_first_of(L"\"\r\n") == std::wstring::npos);
     need(threads >= 1 && threads <= 64 && timeout_ms >= 1 && timeout_ms <= 10000 && idle_ms >= 100 && idle_ms <= inference_max_idle_ms);
+    // This worker/broker owns the resolved executable. A caller's architecture
+    // (e.g. an x86 TSF companion) does not identify the server's ISA contract.
+    require_zenz_cpu(current_cpu_features(), zenz_server_cpu_contract(program));
+    check_launch();
     return launch_hidden(program, L"\""+program.native()+L"\" --model \""+model.native()+L"\" --pipe-token "+std::wstring(token)+
         L" --threads "+std::to_wstring(threads)+L" --timeout-ms "+std::to_wstring(timeout_ms)+L" --idle-ms "+std::to_wstring(idle_ms));
 }

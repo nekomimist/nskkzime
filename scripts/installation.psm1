@@ -2,6 +2,77 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Resolve-NskkzimeBrokerConfig([string]$Path, [string]$PublicRoot, [switch]$RequireFile) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.IndexOfAny([char[]]@('"',"`r","`n",[char]0)) -ge 0 -or
+        -not [IO.Path]::IsPathFullyQualified($Path) -or $Path -notmatch '^[a-zA-Z]:[\\/]' -or $Path.EndsWith('\') -or $Path.EndsWith('/')) {
+        throw 'BrokerConfigにはローカルドライブ上の絶対ファイルパスを指定してください。'
+    }
+    $resolved=[IO.Path]::GetFullPath($Path)
+    $public=[IO.Path]::GetFullPath($PublicRoot).TrimEnd('\','/')
+    if ($resolved.Equals($public,[StringComparison]::OrdinalIgnoreCase) -or $resolved.StartsWith($public+'\',[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'BrokerConfigは公開プログラムの配置先の外に置いてください。'
+    }
+    if ($RequireFile) {
+        Assert-NskkzimePath $resolved
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw 'BrokerConfigの設定ファイルがありません。' }
+    }
+    return $resolved
+}
+function Get-NskkzimeBrokerParameters([ValidateSet('replace','stop')][string]$Action, [string]$Config) {
+    if ($Config -and ($Config.IndexOfAny([char[]]@('"',"`r","`n",[char]0)) -ge 0 -or $Config.EndsWith('\') -or $Config.EndsWith('/'))) { throw 'Invalid broker configuration argument.' }
+    '--'+$Action+$(if($Config){' --config "'+$Config+'"'}else{''})
+}
+function Get-NskkzimeBrokerCommandLine([string]$Broker, [string]$Config) {
+    if (-not [IO.Path]::IsPathFullyQualified($Broker) -or $Broker.IndexOfAny([char[]]@('"',"`r","`n",[char]0)) -ge 0) { throw 'Invalid broker executable argument.' }
+    '"'+$Broker+'" '+(Get-NskkzimeBrokerParameters replace $Config)
+}
+function Get-NskkzimeUserTipSnapshot {
+    function Read-TipTree([Microsoft.Win32.RegistryKey]$Key) {
+        if (-not $Key) { return $null }
+        try {
+            $values=[ordered]@{}; $children=[ordered]@{}
+            foreach($name in $Key.GetValueNames() | Sort-Object -CaseSensitive) {
+                $values[$name]=[ordered]@{kind=$Key.GetValueKind($name).ToString();value=$Key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}
+            }
+            foreach($name in $Key.GetSubKeyNames() | Sort-Object -CaseSensitive) { $children[$name]=Read-TipTree ($Key.OpenSubKey($name)) }
+            return [ordered]@{values=$values;children=$children}
+        } finally { $Key.Dispose() }
+    }
+    $state=[ordered]@{}; $present=$false
+    foreach($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
+        $user=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser,$view)
+        try { $state[$view.ToString()]=Read-TipTree ($user.OpenSubKey('Software\Microsoft\CTF\TIP\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}')) }
+        finally { $user.Dispose() }
+        $present=$present -or $null -ne $state[$view.ToString()]
+    }
+    if ($present) { $state | ConvertTo-Json -Depth 32 -Compress -WarningAction Stop }
+}
+# The installer validates the protected root/record and holds its operation lock
+# before writing. An absent COM owner can never establish this provenance.
+function Write-NskkzimeUserTipOwnership([string]$Root,[string]$Version,[string]$UserSid,[string]$Snapshot,[string]$Verifier,[scriptblock]$ReadRegistration) {
+    $bundle=Get-NskkzimeInstalledBundle $Root $Version $Verifier
+    Assert-NskkzimeRegistration $ReadRegistration $bundle.Dll
+    if ($Snapshot.Length -gt 256KB) { throw 'User TIP snapshot is too large.' }
+    $record=[ordered]@{format_version=1;installation_profile='arm64-experimental-v1';root=[IO.Path]::GetFullPath($Root);user_sid=$UserSid;owner_version=$Version;snapshot=$Snapshot}
+    $path=Join-Path $Root 'user-tip.json'; Assert-NskkzimePath $path
+    $temporary=Join-Path $Root ('user-tip-'+[Guid]::NewGuid().ToString('N')+'.tmp')
+    $bytes=[Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress)+"`n")
+    $stream=[IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+    try { [IO.File]::Move($temporary,$path,$true) }
+    finally { if(Test-Path -LiteralPath $temporary){[IO.File]::Delete($temporary)} }
+}
+function Test-NskkzimeUserTipOwnership([string]$Root,[string]$UserSid,[string]$Snapshot,[string]$Verifier) {
+    $path=Join-Path $Root 'user-tip.json'; Assert-NskkzimePath $path
+    if (-not(Test-Path -LiteralPath $path)) { return $false }
+    if ((Get-Item -LiteralPath $path).Length -gt 512KB) { throw 'User TIP ownership record is too large.' }
+    $record=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($record.format_version -ne 1 -or $record.installation_profile -cne 'arm64-experimental-v1' -or
+        $record.root -isnot [string] -or -not [string]::Equals($record.root,[IO.Path]::GetFullPath($Root),[StringComparison]::OrdinalIgnoreCase) -or
+        $record.user_sid -cne $UserSid -or $record.owner_version -isnot [string] -or $record.snapshot -isnot [string]) { throw 'User TIP ownership record differs from this installation.' }
+    $null=Get-NskkzimeInstalledBundle $Root $record.owner_version $Verifier
+    return [string]::Equals($record.snapshot,$Snapshot,[StringComparison]::Ordinal)
+}
 function Assert-NskkzimePath([string]$Path) {
     $current = [IO.Path]::GetFullPath($Path)
     while ($current) {
@@ -14,11 +85,27 @@ function Assert-NskkzimePath([string]$Path) {
         $current = [IO.Path]::GetDirectoryName($current)
     }
 }
+function Assert-NskkzimeProtectedPath([string]$Path) {
+    Assert-NskkzimePath $Path
+    $acl = Get-Acl -LiteralPath $Path
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544')) { throw "配置先の所有者がSystem/Administratorsではありません: $Path" }
+    $readOnly = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [int][Security.AccessControl.FileSystemRights]::Synchronize
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $rule.IdentityReference.Value -notin @('S-1-5-18', 'S-1-5-32-544') -and
+            (([int]$rule.FileSystemRights -band (-bnot $readOnly)) -ne 0)) {
+            throw "一般ユーザーが変更できる配置先は使用できません: $Path"
+        }
+    }
+}
 function Get-NskkzimeBundle([string]$Directory, [string]$Verifier) {
     $result = & $Verifier -VerifyDirectory $Directory
-    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6) -or $result.Variant -cne 'zenz-cpu') {
-        throw 'インストールには形式2～6のzenz入りパッケージが必要です。'
+    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6, 7) -or $result.Variant -cne 'zenz-cpu') {
+        throw '選択した検証入口に対応するzenz入りパッケージが必要です。'
     }
+    if ($result.FormatVersion -eq 7 -and ($result.Architecture -cne 'arm64' -or $result.Channel -cne 'experimental' -or
+        $result.InstallationProfile -cne 'arm64-experimental-v1')) { throw 'ARM64 installation policy differs.' }
     [pscustomobject]@{ Directory = $result.Path; Version = $result.ManifestSHA256;
         Dll = (Join-Path $result.Path 'bin/nskkzime_tsf.dll'); Paths = $result.Paths;
         X86Dll = $(if ($result.FormatVersion -ge 4) { Join-Path $result.Path 'bin/x86/nskkzime_tsf.dll' } else { $null });
@@ -102,7 +189,7 @@ function Assert-NskkzimeRegistration([scriptblock]$ReadRegistration, [string]$Ex
 }
 function Set-NskkzimeRegistrationTarget([string]$Root, [string]$Target, [string[]]$Allowed,
     [string]$Verifier, [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup,
-    [scriptblock]$ReadX86Registration) {
+    [scriptblock]$ReadX86Registration, [scriptblock]$ValidateUnregistered) {
     $current = & $ReadRegistration
     $companion = if ($ReadX86Registration) { & $ReadX86Registration } else { $null }
     $version = Get-NskkzimeManagedVersion $Root $current
@@ -142,10 +229,15 @@ function Set-NskkzimeRegistrationTarget([string]$Root, [string]$Target, [string[
         }
     }
     if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $(if ($next) { $next.X86Dll } else { $null }) }
+    if (-not $next -and $ValidateUnregistered) {
+        Assert-NskkzimeRegistration $ReadRegistration $null
+        & $ValidateUnregistered
+    }
     if ($SetStartup) { & $SetStartup $(if ($next) { $next.Broker } else { $null }) }
 }
 function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Verifier,
-    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration) {
+    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration,
+    [scriptblock]$ValidateUnregistered) {
     if ($null -ne (Read-NskkzimeJournal $Root)) { throw '未完了の更新記録があります。Recoverを先に実行してください。' }
     $previous = Get-NskkzimeManagedVersion $Root (& $ReadRegistration)
     if ($previous) { $null = Get-NskkzimeInstalledBundle $Root $previous $Verifier }
@@ -154,20 +246,25 @@ function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Veri
     if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $expectedX86 }
     elseif ($expectedX86 -or ($Target -and (Get-NskkzimeInstalledBundle $Root $Target $Verifier).X86Dll)) { throw '32bit登録の検査が必要です。' }
     if ([string]$previous -ceq [string]$Target) {
+        if (-not $Target -and $ValidateUnregistered) {
+            Assert-NskkzimeRegistration $ReadRegistration $null
+            if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $null }
+            & $ValidateUnregistered
+        }
         if ($SetStartup) { & $SetStartup $(if ($Target) { (Get-NskkzimeInstalledBundle $Root $Target $Verifier).Broker } else { $null }) }
         return [pscustomobject]@{ Result = 'Unchanged'; Version = $Target }
     }
     Write-NskkzimeJournal $Root $previous $Target ([bool]$ReadX86Registration)
     $allowed = @($previous, $Target) | Where-Object { $_ }
     try {
-        Set-NskkzimeRegistrationTarget $Root $Target $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration
+        Set-NskkzimeRegistrationTarget $Root $Target $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration $ValidateUnregistered
         [IO.File]::Delete((Join-Path $Root 'transaction.json'))
     } catch {
         $original = $_.Exception.Message
         $restored = $false
         $recoveryError = ''
         try {
-            Set-NskkzimeRegistrationTarget $Root $previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration
+            Set-NskkzimeRegistrationTarget $Root $previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration $ValidateUnregistered
             [IO.File]::Delete((Join-Path $Root 'transaction.json'))
             $restored = $true
         } catch { $recoveryError = $_.Exception.Message }
@@ -177,19 +274,25 @@ function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Veri
     [pscustomobject]@{ Result = 'Changed'; Version = $Target; Previous = $previous }
 }
 function Repair-NskkzimeTransition([string]$Root, [string]$Verifier,
-    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration) {
+    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration,
+    [scriptblock]$ValidateUnregistered) {
     $record = Read-NskkzimeJournal $Root
     if ($null -eq $record) {
         $current = Get-NskkzimeManagedVersion $Root (& $ReadRegistration)
         if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $(if ($current) { (Get-NskkzimeInstalledBundle $Root $current $Verifier).X86Dll } else { $null }) }
         elseif ($current -and (Get-NskkzimeInstalledBundle $Root $current $Verifier).X86Dll) { throw '32bit登録の検査が必要です。' }
+        if (-not $current -and $ValidateUnregistered) {
+            Assert-NskkzimeRegistration $ReadRegistration $null
+            if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $null }
+            & $ValidateUnregistered
+        }
         if ($SetStartup) { & $SetStartup $(if ($current) { (Get-NskkzimeInstalledBundle $Root $current $Verifier).Broker } else { $null }) }
         return [pscustomobject]@{ Result = 'NoPendingTransaction' }
     }
     if ($record.format_version -eq 2 -and -not $ReadX86Registration) { throw '32bit登録の検査が必要です。' }
     if ($record.format_version -eq 1 -and $ReadX86Registration -and (& $ReadX86Registration)) { throw '旧形式の更新記録に32bit登録が混在しています。' }
     $allowed = @($record.previous, $record.target) | Where-Object { $_ }
-    Set-NskkzimeRegistrationTarget $Root $record.previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration
+    Set-NskkzimeRegistrationTarget $Root $record.previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration $ValidateUnregistered
     [IO.File]::Delete((Join-Path $Root 'transaction.json'))
     [pscustomobject]@{ Result = 'Recovered'; Version = $record.previous }
 }
@@ -207,6 +310,8 @@ function Get-NskkzimeInstallStatus([string]$Root, [scriptblock]$ReadRegistration
         RegisteredX86Dll = $(if ($ReadX86Registration) { & $ReadX86Registration } else { $null });
         Pending = (Read-NskkzimeJournal $Root); AvailableVersions = @($available) }
 }
-Export-ModuleMember -Function Assert-NskkzimePath, Get-NskkzimeBundle, Get-NskkzimeInstalledBundle,
+Export-ModuleMember -Function Assert-NskkzimePath, Assert-NskkzimeProtectedPath, Get-NskkzimeBundle, Get-NskkzimeInstalledBundle,
     Get-NskkzimeManagedVersion, Enter-NskkzimeInstallLock, Add-NskkzimeVersion,
-    Invoke-NskkzimeTransition, Repair-NskkzimeTransition, Get-NskkzimeInstallStatus
+    Invoke-NskkzimeTransition, Repair-NskkzimeTransition, Get-NskkzimeInstallStatus,
+    Resolve-NskkzimeBrokerConfig, Get-NskkzimeBrokerParameters, Get-NskkzimeBrokerCommandLine,
+    Get-NskkzimeUserTipSnapshot, Write-NskkzimeUserTipOwnership, Test-NskkzimeUserTipOwnership

@@ -13,6 +13,7 @@ $installer = Join-Path $directory 'tools/install.ps1'
 $shellPath = Join-Path $fixture 'PowerShell 7/pwsh.exe'
 [IO.Directory]::CreateDirectory((Split-Path -Parent $shellPath)) | Out-Null
 [IO.File]::WriteAllText($installer, '# Fixture: must never execute.')
+@{format_version=6;architecture='x64';variant='zenz-cpu'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $directory 'manifest.json')
 [IO.File]::WriteAllText($shellPath, 'Fixture: must never execute.')
 $state = @{ Calls = 0; ExitCode = 0; FailStart = $false; Disposed = $false }
 function Assert-Scoop([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
@@ -55,6 +56,9 @@ try {
     $calls = $state.Calls
     Expect-Failure { & $ScoopScript -Action Install -PackageDirectory (Join-Path $fixture 'missing') -PowerShellPath $shellPath } 'Installer not found'
     Assert-Scoop ($state.Calls -eq $calls) 'Missing package attempted to elevate.'
+    @{format_version=7;architecture='arm64';variant='zenz-cpu';channel='experimental'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $directory 'manifest.json')
+    Expect-Failure { & $ScoopScript -Action Install -PackageDirectory $directory -PowerShellPath $shellPath } 'Scoop requires an x64 release package'
+    Assert-Scoop ($state.Calls -eq $calls) 'Experimental ARM64 package attempted to elevate.'
     if ($InstallScript) {
         # The real entry point rejects a different user before any OS writes.
         Expect-Failure { & $InstallScript -Action Unregister -ExpectedUserSid 'S-1-0-0' } ([char]0x6607 + [char]0x683c + [char]0x524d)

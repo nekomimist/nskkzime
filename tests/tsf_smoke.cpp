@@ -734,11 +734,12 @@ void candidate_ui_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys)
 }
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2 || argc > 3 || (argc == 3 && std::wstring_view(argv[2]) != L"--empty")) return 2;
+    if (argc < 2 || argc > 3) return 2;
     // --empty: an unreadable settings file must leave kana input working.
-    const bool empty = argc == 3;
+    const bool empty = argc == 3 && std::wstring_view(argv[2]) == L"--empty";
+    const std::filesystem::path dictionary = argc == 3 && !empty ? argv[2] : NSKKZIME_TEST_DICTIONARY;
     const auto config = use_isolated_settings(std::filesystem::current_path() / (empty ? L"tsf-smoke-empty" : L"tsf-smoke"),
-        empty ? std::string{} : "learning=off\ndictionary=" + settings_path(NSKKZIME_TEST_DICTIONARY) + "\n");
+        empty ? std::string{} : "learning=off\ndictionary=" + settings_path(dictionary) + "\n");
     if (empty) std::ofstream(config, std::ios::binary | std::ios::trunc) << "version=unsupported\n";
     const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
