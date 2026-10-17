@@ -15,10 +15,11 @@ Windows 11 ProのSurface実機を検証先とし、既存のx64版を維持し�
 | 6. 導入と配布 | 登録・更新・復帰・解除、Scoop、ランタイム、マニフェスト検査、ARM CIを整える | 実機の導入試験とアーキテクチャ別の回帰試験が通る |
 
 段階1〜4の未登録プロトタイプを実装し、Surfaceで実機検証した。
-ARM64成果物とupstream移植構成は実験用であり、既存の配布経路では拒否する。
+ARM64成果物とupstream移植構成は実験用であり、通常の配布経路では拒否する。
+ARM64Xの専用入口では、形式7の実験パッケージを作成・検証できる。
 段階5はARM64X DLLとx86 companionを一時登録し、4種類の検証ホストで推論付きの実 HWND 入力まで確認した。
 native ARM64のEdgeでも専用プロファイルを使った手入力を確認した。
-他の一般アプリと段階6の導入・配布は未確認である。
+他の一般アプリと、段階6の実機導入・配布は未確認である。
 
 ## ツールチェーン
 
@@ -253,6 +254,45 @@ Stopは所有を確認したEdgeを閉じ、観測した子プロセスの終了
 識別情報が変わった場合やプロセスが残った場合は失敗として記録を保持する。
 ブラウザーを終了してから登録を解除し、普段の設定・辞書と入力の既定値が変わっていないことを確認する。
 
+## 実験パッケージと導入の事前検査
+
+通常のx64形式1〜6を維持し、ARM64は形式7、`channel=experimental`、
+`architecture=arm64`、`installation_profile=arm64-experimental-v1`に固定する。
+ARM版の作成・検証には専用入口を使う。通常の入口は形式7を拒否し、実験入口はx64形式を拒否する。
+
+```powershell
+.\scripts\build-arm64x.ps1 -Jobs 4
+.\scripts\package-arm64x.ps1 -Output out/packages/nskkzime-arm64-experimental.zip
+.\scripts\package-arm64x.ps1 -Verify out/packages/nskkzime-arm64-experimental.zip
+.\tests\arm64_package_tests.ps1
+.\tests\installation_tests.ps1 -BuildDirectory out/arm64x -Configuration Release -ExperimentalArm64
+```
+
+ARM64X TSFのnative/EC、nativeサービス、native probe、x86 companionのビルド情報を別々に検査する。
+source・Release・MSVCの版は全群で一致させ、cacheはビルド群ごとに比較する。
+ARM64X DLLにはread-onlyの`.nskkz` section内の2種類の情報に加えて、load configurationと
+ARM64X dynamic relocation entryを要求する。AA64のmachine値だけでARM64Xとは判断しない。
+作成時は現ソースのfingerprint、native link入力、各cacheと既存のbuild manifestを再確認する。
+
+実験パッケージにはScoopの入口を含めない。Scoop側もARM実験形式を昇格前に拒否する。
+通常CIが公開するZIP/checksumの収集パターンはx64用の名前に限定する。
+署名、ARM CIと一般配布は別の段階である。
+
+Surfaceのnative ARM64 PowerShell 7で、展開したパッケージの専用入口から事前検査する。
+
+```powershell
+.\tools\package-arm64x.ps1 -VerifyDirectory .
+.\tools\install-arm64x.ps1 -Action Plan
+```
+
+Planは配置・登録・brokerの起動設定を変更しない。現在の両COM所有者、実験rootの識別情報、
+更新記録の参照先と共有するbroker起動値を確認し、予定の配置先・版ID・registrarを表示する。
+実験rootは`%ProgramFiles%/nskkzime-arm64-experimental`で、通常版や限定登録試験からの移行は扱わない。
+同じCLSID/TIPの並行導入はできない。全更新・Rollback・Recoverでも専用verifierを使う。
+Windows 11 ARM64とnative ARM64のPowerShellを必須とし、ARM64XはSystem32、x86はSysWOW64で登録する。
+実際の導入・更新・解除とサインイン時のbroker起動は実機で追加確認する。
+同梱の[実験パッケージ用README](ARM64_PACKAGE_README.md)にruntimeと操作手順を記載する。
+
 ## Surfaceへの接続
 
 画面操作はWindows 11 ProのRDP、コマンド実行と転送はWindows標準OpenSSH Serverを使う。
@@ -394,6 +434,33 @@ Edgeのログは`out/reports/surface-arm64x-edge-input-12/`、要約は`out/repo
 実機バイナリーのソースhashと、後から追加したブラウザー用スクリプト・ページのhashは別に記録した。
 
 残る段階は他の一般アプリ、実機での継続利用・省電力・スリープ復帰、導入・更新・解除と配布、ARM CIである。
+
+## 2026-10-17の実験パッケージ検証
+
+形式7の実験ZIP（22ファイル＋manifest）を生成し、ZIPと展開先の両方を検査した。
+再hashしたEC metadataの欠落・重複、ARM64X構造の欠落、x64 serverの混入、異なるsource/cache、
+backendのCPU契約・型・追加キー・重複JSONキー、channel/profileの取り違えなど、18件の拒否条件が成功した。
+通常入口からの実験版と、実験入口からの通常x64 ZIPも拒否した。
+
+共通transactionの模擬試験はx64とARM実験版の両方で成功した。
+導入・更新・Rollback・native登録失敗・x86だけの登録失敗・中断後のRecover・Unregister・Statusを確認した。
+管理外のx86登録先や、異なるchannelのprevious/targetはregistrar呼び出し前に拒否した。
+通常x64の形式5/6の検証・改変検出、ScoopのPowerShell 7とWindows PowerShell 5.1の試験も成功した。
+
+Surfaceでは最終ZIPの検査とnative ARM64 PowerShell 7からのPlanが成功した。
+その同じパッケージのDLLを4 ABIの未登録ホストからロードし、対応するmetadata、11個のexport、
+共有icon、class factory生成と解放を確認した。native configのCPU検査も成功した。
+Plan前後のCOM/TIP、入力の既定値、broker起動値、普段のファイル、実験rootの有無のsnapshot hashは一致した。
+この回は実機のInstall/更新/Unregisterやサインイン起動を実行していない。次の実機検証で確認する。
+全66件のCTestを再実行したという意味でもない。
+
+途中のPlanで非公開のjournal関数を呼んで停止したため、公開の状態取得APIへ修正した。
+その試行も登録前に停止しており、通常状態のhashは一致した。修正後の最終ZIPでPlanと4 ABIロードが成功した。
+
+最終ZIPはローカルの`out/packages/nskkzime-arm64-experimental-04.zip`、
+SHA-256は`0fd600520dd25b3530ce444619bba99cd4cb49bc8fb45f5fc81e54fb739b1020`。
+実機結果は`out/reports/surface-arm64-package-03/`、要約は`out/reports/arm64-package-validation.json`。
+バイナリーは検証時点のソースsnapshotを記録しており、後から作成するcommitのhashへ読み替えない。
 
 ## 参照
 

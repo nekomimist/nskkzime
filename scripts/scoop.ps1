@@ -14,6 +14,10 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
 $directory = [IO.Path]::GetFullPath($PackageDirectory)
 $installer = Join-Path $directory 'tools/install.ps1'
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer not found: $installer" }
+$manifest=Get-Content -LiteralPath (Join-Path $directory 'manifest.json') -Raw | ConvertFrom-Json
+if ($manifest.format_version -notin @(2,3,4,5,6) -or $manifest.architecture -cne 'x64' -or $manifest.variant -cne 'zenz-cpu') {
+    throw 'Scoop requires an x64 release package; experimental ARM64 packages are not supported.'
+}
 if (-not (Test-Path -LiteralPath $PowerShellPath -PathType Leaf)) { throw "PowerShell 7 not found: $PowerShellPath" }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)

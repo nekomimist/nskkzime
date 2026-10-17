@@ -50,8 +50,8 @@ jobs:
         with:
           name: windows-x64-package
           path: |
-            out/packages/*.zip
-            out/packages/*.zip.sha256
+            out/packages/nskkzime-v*-windows-x64.zip
+            out/packages/nskkzime-v*-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 7
 

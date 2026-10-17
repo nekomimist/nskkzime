@@ -30,9 +30,11 @@ function Assert-NskkzimeProtectedPath([string]$Path) {
 }
 function Get-NskkzimeBundle([string]$Directory, [string]$Verifier) {
     $result = & $Verifier -VerifyDirectory $Directory
-    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6) -or $result.Variant -cne 'zenz-cpu') {
-        throw 'インストールには形式2～6のzenz入りパッケージが必要です。'
+    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6, 7) -or $result.Variant -cne 'zenz-cpu') {
+        throw '選択した検証入口に対応するzenz入りパッケージが必要です。'
     }
+    if ($result.FormatVersion -eq 7 -and ($result.Architecture -cne 'arm64' -or $result.Channel -cne 'experimental' -or
+        $result.InstallationProfile -cne 'arm64-experimental-v1')) { throw 'ARM64 installation policy differs.' }
     [pscustomobject]@{ Directory = $result.Path; Version = $result.ManifestSHA256;
         Dll = (Join-Path $result.Path 'bin/nskkzime_tsf.dll'); Paths = $result.Paths;
         X86Dll = $(if ($result.FormatVersion -ge 4) { Join-Path $result.Path 'bin/x86/nskkzime_tsf.dll' } else { $null });

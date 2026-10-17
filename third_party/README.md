@@ -46,7 +46,8 @@ The opt-in `upstream-v0.6.0` experiment uses ggml-org/llama.cpp commit
 `patches/llama-v0.6.0-zenz.patch` ports the Japanese tokenizer changes from the
 azooKey commit above; its parent `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`
 is an upstream commit. The unrelated Metal environment switch is omitted.
-The experiment is not accepted for distribution; see [ARM64.md](../docs/ARM64.md).
+The normal distribution path rejects this experiment. An explicit ARM64X entrypoint
+can create an isolated experimental package; see [ARM64.md](../docs/ARM64.md).
 
 ## zenz model (not bundled)
 
