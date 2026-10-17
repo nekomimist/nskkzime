@@ -21,7 +21,7 @@ ARM64Xの専用入口では、形式7の実験パッケージを作成・検証�
 native ARM64のEdgeでも専用プロファイルを使った手入力を確認した。
 段階6は実験パッケージの実機導入・更新・復旧・解除・再導入と、実サインイン時のbroker起動まで確認した。
 未登録brokerの実スリープ復帰と、ARM CI用bundleのSurface実行も確認した。
-ARM CI workflowは追加済みだが、GitHub runnerでの実行は未確認である。
+ARM CI workflowを追加し、GitHub runnerの結果は[PR #2のchecks](https://github.com/nekomimist/nskkzime/pull/2/checks)で確認する。
 他の一般アプリ、継続利用・省電力、TSF入力を保持したスリープ復帰、クリーン環境への導入と一般配布は残る。
 
 ## ツールチェーン
@@ -329,6 +329,7 @@ EXE/DLLだけでなく、script・fixture・CTest plan・同梱CMake/CTestもinv
 重複entry、script改変、余分なファイル、再hashした想定外のCTest planの7拒否条件も確認する。
 環境情報、試験名、JUnitとCTest logは実行先の`positive/reports/`へ保存する。
 GitHub側の実行結果はローカルのビルド・Surfaceでのbundle実行結果と分けて記録する。
+Windowsの`core.autocrlf=true`でも固定ZIPへ適用できるよう、`third_party/patches/`のpatchはLFでcheckoutする。
 
 ## 未登録brokerのスリープ復帰試験
 
@@ -595,7 +596,7 @@ SSH session 0の非対話試験であり、GitHub runnerでの実行とは区別
 | 既存x64の関連回帰 | 非UI 27件とpackage・installation・Scoopの計31/31成功 |
 | ARM実験package / installation模擬試験 | packageの18拒否条件とinstallation一巡が成功 |
 | Full profile互換性 | 66件のplan、76個のEXE/DLL、5件のlicense noticeを確認。今回この66件は実行していない |
-| Workflowの静的検査 | actionlint成功。GitHubでの実runは未実行 |
+| Workflowの静的検査 | actionlint成功。GitHubでの実runは[PR #2のchecks](https://github.com/nekomimist/nskkzime/pull/2/checks)を参照 |
 
 CI bundleのZIP SHA-256は`728e1ef401bc93179ab2c78b83002005d77dfa3c7c54233ee9bbc592937d422a`、
 source fingerprintは`4f2bccc70b374a622861f9d4385eb39b1facb9e8a2df099bc4934e88076c10b4`。
@@ -620,6 +621,11 @@ OS側の照合結果はその下の`sleep-01/sleep-evidence.json`にある。
 生のprobe結果の`actual_sleep_verified: false`は変更せず、OS証拠を照合した別の結果に実スリープ確認を記録した。
 スリープ試験のサービスはsource fingerprint `f3e2570a1a42fd18d63bbe0014a15d9d7d3847bdc8c388289a13135d7b384274`のビルドを使用した。
 両試験とも基準commitは`68b9b1b`、変更ありのsnapshotであり、後から作るcommitのhashへ読み替えない。
+
+GitHubでの最初のARM runは、checkoutによるパッチのCRLF化で依存準備が失敗した。
+`core.autocrlf=true`のクリーンcheckoutで同じエラーを再現し、patchの属性を`text eol=lf`へ変更した。
+新しい属性をindexへ反映した新規checkoutでは適用と2回目の準備が成功し、
+変更された2つの依存ソースのhashがSurface検証時と一致した。GitHubでの再実行結果は上記checksへ記録する。
 
 ## 参照
 
