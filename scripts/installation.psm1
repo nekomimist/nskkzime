@@ -189,7 +189,7 @@ function Assert-NskkzimeRegistration([scriptblock]$ReadRegistration, [string]$Ex
 }
 function Set-NskkzimeRegistrationTarget([string]$Root, [string]$Target, [string[]]$Allowed,
     [string]$Verifier, [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup,
-    [scriptblock]$ReadX86Registration) {
+    [scriptblock]$ReadX86Registration, [scriptblock]$ValidateUnregistered) {
     $current = & $ReadRegistration
     $companion = if ($ReadX86Registration) { & $ReadX86Registration } else { $null }
     $version = Get-NskkzimeManagedVersion $Root $current
@@ -229,10 +229,15 @@ function Set-NskkzimeRegistrationTarget([string]$Root, [string]$Target, [string[
         }
     }
     if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $(if ($next) { $next.X86Dll } else { $null }) }
+    if (-not $next -and $ValidateUnregistered) {
+        Assert-NskkzimeRegistration $ReadRegistration $null
+        & $ValidateUnregistered
+    }
     if ($SetStartup) { & $SetStartup $(if ($next) { $next.Broker } else { $null }) }
 }
 function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Verifier,
-    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration) {
+    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration,
+    [scriptblock]$ValidateUnregistered) {
     if ($null -ne (Read-NskkzimeJournal $Root)) { throw '未完了の更新記録があります。Recoverを先に実行してください。' }
     $previous = Get-NskkzimeManagedVersion $Root (& $ReadRegistration)
     if ($previous) { $null = Get-NskkzimeInstalledBundle $Root $previous $Verifier }
@@ -241,20 +246,25 @@ function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Veri
     if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $expectedX86 }
     elseif ($expectedX86 -or ($Target -and (Get-NskkzimeInstalledBundle $Root $Target $Verifier).X86Dll)) { throw '32bit登録の検査が必要です。' }
     if ([string]$previous -ceq [string]$Target) {
+        if (-not $Target -and $ValidateUnregistered) {
+            Assert-NskkzimeRegistration $ReadRegistration $null
+            if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $null }
+            & $ValidateUnregistered
+        }
         if ($SetStartup) { & $SetStartup $(if ($Target) { (Get-NskkzimeInstalledBundle $Root $Target $Verifier).Broker } else { $null }) }
         return [pscustomobject]@{ Result = 'Unchanged'; Version = $Target }
     }
     Write-NskkzimeJournal $Root $previous $Target ([bool]$ReadX86Registration)
     $allowed = @($previous, $Target) | Where-Object { $_ }
     try {
-        Set-NskkzimeRegistrationTarget $Root $Target $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration
+        Set-NskkzimeRegistrationTarget $Root $Target $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration $ValidateUnregistered
         [IO.File]::Delete((Join-Path $Root 'transaction.json'))
     } catch {
         $original = $_.Exception.Message
         $restored = $false
         $recoveryError = ''
         try {
-            Set-NskkzimeRegistrationTarget $Root $previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration
+            Set-NskkzimeRegistrationTarget $Root $previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration $ValidateUnregistered
             [IO.File]::Delete((Join-Path $Root 'transaction.json'))
             $restored = $true
         } catch { $recoveryError = $_.Exception.Message }
@@ -264,19 +274,25 @@ function Invoke-NskkzimeTransition([string]$Root, [string]$Target, [string]$Veri
     [pscustomobject]@{ Result = 'Changed'; Version = $Target; Previous = $previous }
 }
 function Repair-NskkzimeTransition([string]$Root, [string]$Verifier,
-    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration) {
+    [scriptblock]$ReadRegistration, [scriptblock]$Registrar, [scriptblock]$SetStartup, [scriptblock]$ReadX86Registration,
+    [scriptblock]$ValidateUnregistered) {
     $record = Read-NskkzimeJournal $Root
     if ($null -eq $record) {
         $current = Get-NskkzimeManagedVersion $Root (& $ReadRegistration)
         if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $(if ($current) { (Get-NskkzimeInstalledBundle $Root $current $Verifier).X86Dll } else { $null }) }
         elseif ($current -and (Get-NskkzimeInstalledBundle $Root $current $Verifier).X86Dll) { throw '32bit登録の検査が必要です。' }
+        if (-not $current -and $ValidateUnregistered) {
+            Assert-NskkzimeRegistration $ReadRegistration $null
+            if ($ReadX86Registration) { Assert-NskkzimeRegistration $ReadX86Registration $null }
+            & $ValidateUnregistered
+        }
         if ($SetStartup) { & $SetStartup $(if ($current) { (Get-NskkzimeInstalledBundle $Root $current $Verifier).Broker } else { $null }) }
         return [pscustomobject]@{ Result = 'NoPendingTransaction' }
     }
     if ($record.format_version -eq 2 -and -not $ReadX86Registration) { throw '32bit登録の検査が必要です。' }
     if ($record.format_version -eq 1 -and $ReadX86Registration -and (& $ReadX86Registration)) { throw '旧形式の更新記録に32bit登録が混在しています。' }
     $allowed = @($record.previous, $record.target) | Where-Object { $_ }
-    Set-NskkzimeRegistrationTarget $Root $record.previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration
+    Set-NskkzimeRegistrationTarget $Root $record.previous $allowed $Verifier $ReadRegistration $Registrar $SetStartup $ReadX86Registration $ValidateUnregistered
     [IO.File]::Delete((Join-Path $Root 'transaction.json'))
     [pscustomobject]@{ Result = 'Recovered'; Version = $record.previous }
 }

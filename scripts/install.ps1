@@ -298,14 +298,17 @@ try {
         }
         finally { if (-not $child.HasExited) { $child.WaitForExit() }; $child.Dispose() }
     }
+    # COM cleanup alone cannot prove that a partially failed TSF registration
+    # left no unowned state. Validate before startup changes or journal removal.
+    $validateUnregistered = if ($ExperimentalArm64) { { $null=Get-RetainedUserTip -RequireOwned } } else { $null }
     switch ($Action) {
         Install {
             $bundle = Add-NskkzimeVersion $root $PackageDirectory $verifier
-            Invoke-NskkzimeTransition $root $bundle.Version $verifier $readRegistration $registrar $setStartup $readX86Registration
+            Invoke-NskkzimeTransition $root $bundle.Version $verifier $readRegistration $registrar $setStartup $readX86Registration $validateUnregistered
         }
-        Rollback { Invoke-NskkzimeTransition $root $Version $verifier $readRegistration $registrar $setStartup $readX86Registration }
-        Unregister { Invoke-NskkzimeTransition $root $null $verifier $readRegistration $registrar $setStartup $readX86Registration }
-        Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup $readX86Registration }
+        Rollback { Invoke-NskkzimeTransition $root $Version $verifier $readRegistration $registrar $setStartup $readX86Registration $validateUnregistered }
+        Unregister { Invoke-NskkzimeTransition $root $null $verifier $readRegistration $registrar $setStartup $readX86Registration $validateUnregistered }
+        Recover { Repair-NskkzimeTransition $root $verifier $readRegistration $registrar $setStartup $readX86Registration $validateUnregistered }
     }
     # Registration + startup are transactional. Live process replacement is best
     # effort; startup also repairs it on the next sign-in. Never run the broker

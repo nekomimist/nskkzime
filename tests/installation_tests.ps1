@@ -1,5 +1,6 @@
 #Requires -Version 7.0
-param([Parameter(Mandatory)][string]$BuildDirectory, [Parameter(Mandatory)][string]$Configuration, [switch]$ExperimentalArm64)
+param([Parameter(Mandatory)][string]$BuildDirectory, [Parameter(Mandatory)][string]$Configuration,
+    [switch]$ExperimentalArm64, [string]$PackageArchive)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($Configuration -ne 'Release') { Write-Output 'SKIP installation fixtures require Release'; exit 77 }
@@ -75,7 +76,10 @@ public static class NskkzimeInstallCommandTest {
     $failed=$false; try { Resolve-NskkzimeBrokerConfig $private $root -RequireFile | Out-Null } catch { $failed=$true }
     Assert-Install $failed 'Missing configuration was accepted for a new launch.'
     Assert-Install ((Get-NskkzimeBrokerParameters stop $private) -ceq ('--stop --config "'+$private+'"')) 'Stop does not use the saved configuration.'
-    $zip = & $verifier -SourceDirectory (Join-Path $BuildDirectory 'Release') -Output (Join-Path $fixture 'package.zip')
+    $zip = if ($PackageArchive) { & $verifier -Verify $PackageArchive } else {
+        & $verifier -SourceDirectory (Join-Path $BuildDirectory 'Release') -Output (Join-Path $fixture 'package.zip')
+    }
+    Assert-Install $zip.Verified 'Installation fixture package was not verified.'
     [IO.Directory]::CreateDirectory($root) | Out-Null
     $a = Expand-Version 'first' 'Fixture first version.'
     $sid='S-1-5-21-1-2-3-1001'
@@ -123,6 +127,52 @@ public static class NskkzimeInstallCommandTest {
     Assert-Install (-not $state.Dll -and -not $state.X86Dll -and -not $state.Startup -and (Test-Path -LiteralPath $a.Dll)) 'Unregister failed or removed files.'
     $status = Get-NskkzimeInstallStatus $root $readRegistration
     Assert-Install (-not $status.ManagedVersion -and $status.AvailableVersions.Count -eq 2 -and -not $status.Pending) 'Status is inconsistent.'
+    # A native registrar can partially write TSF, clean its own COM entry, and
+    # still report failure. COM absence alone must not erase recovery evidence.
+    $partialRoot=Join-Path $fixture 'partial'
+    [IO.Directory]::CreateDirectory($partialRoot) | Out-Null
+    $partialBundle=Add-NskkzimeVersion $partialRoot $a.Directory $verifier
+    $partial=@{Dll=$null;X86Dll=$null;UserTip=$null;StartupCalls=0}
+    $partialRead={return $partial.Dll}.GetNewClosure()
+    $partialReadX86={return $partial.X86Dll}.GetNewClosure()
+    $partialRegistrar={param($Dll,$Unregister)
+        if(-not $Unregister){$partial.UserTip='unrecorded partial TSF state';$partial.Dll=$null;return 5}
+        if([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($Dll)) -eq 'x86'){$partial.X86Dll=$null}else{$partial.Dll=$null}
+        return 0
+    }.GetNewClosure()
+    $partialStartup={param($Broker) ++$partial.StartupCalls}.GetNewClosure()
+    $validateUnregistered={
+        if($partial.UserTip -and -not(Test-NskkzimeUserTipOwnership $partialRoot $sid $partial.UserTip $verifier)){
+            throw 'Unrecorded user TIP remains; recovery is incomplete.'
+        }
+    }.GetNewClosure()
+    $failed=$false
+    try{Invoke-NskkzimeTransition $partialRoot $partialBundle.Version $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null}catch{$failed=$true}
+    $journal=Join-Path $partialRoot 'transaction.json'
+    Assert-Install ($failed -and (Test-Path -LiteralPath $journal) -and $partial.StartupCalls -eq 0) 'Partial TSF failure was reported restored or changed startup.'
+    $journalHash=(Get-FileHash -LiteralPath $journal).Hash
+    $failed=$false
+    try{Repair-NskkzimeTransition $partialRoot $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null}catch{$failed=$true}
+    Assert-Install ($failed -and (Get-FileHash -LiteralPath $journal).Hash -ceq $journalHash -and $partial.StartupCalls -eq 0) 'Unresolved recovery lost its journal or changed startup.'
+    $partial.UserTip=$null # Simulate the unresolved residue being handled externally.
+    Repair-NskkzimeTransition $partialRoot $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null
+    Assert-Install (-not(Test-Path -LiteralPath $journal) -and $partial.StartupCalls -eq 1) 'Recovery did not finish after the residue was resolved.'
+    $partial.UserTip='unrecorded user TIP'
+    $failed=$false
+    try{Repair-NskkzimeTransition $partialRoot $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null}catch{$failed=$true}
+    Assert-Install ($failed -and -not(Test-Path -LiteralPath $journal) -and $partial.StartupCalls -eq 1) 'No-journal recovery skipped TSF validation.'
+    $failed=$false
+    try{Invoke-NskkzimeTransition $partialRoot $null $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null}catch{$failed=$true}
+    Assert-Install ($failed -and -not(Test-Path -LiteralPath $journal) -and $partial.StartupCalls -eq 1) 'Unchanged unregistered transition skipped TSF validation.'
+    $partial.Dll=$partialBundle.Dll;$partial.X86Dll=$partialBundle.X86Dll;$partial.UserTip=$snapshot
+    Write-NskkzimeUserTipOwnership $partialRoot $partialBundle.Version $sid $snapshot $verifier $partialRead
+    Invoke-NskkzimeTransition $partialRoot $null $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null
+    Assert-Install (-not $partial.Dll -and -not $partial.X86Dll -and -not(Test-Path -LiteralPath $journal) -and $partial.StartupCalls -eq 2) 'Owned retained TIP blocked normal unregister.'
+    $partial.Dll=$partialBundle.Dll;$partial.X86Dll=$partialBundle.X86Dll;$partial.UserTip='changed while still registered'
+    Repair-NskkzimeTransition $partialRoot $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null
+    Invoke-NskkzimeTransition $partialRoot $partialBundle.Version $verifier $partialRead $partialRegistrar $partialStartup $partialReadX86 $validateUnregistered|Out-Null
+    Assert-Install ($partial.Dll -ceq $partialBundle.Dll -and $partial.StartupCalls -eq 4) 'Registered no-op incorrectly required an unregistered TIP snapshot.'
+    Write-Output 'PASS partial TSF failure retains recovery evidence, validates no-op paths, and accepts owned retained TIP'
     Write-Output 'PASS broker configuration quoting/validation and install, update, rollback, native/x86 failure recovery, interrupted recovery, unregister and status'
 } finally {
     $absolute = [IO.Path]::GetFullPath($fixture)

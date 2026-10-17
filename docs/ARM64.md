@@ -627,6 +627,19 @@ GitHubでの最初のARM runは、checkoutによるパッチのCRLF化で依存�
 新しい属性をindexへ反映した新規checkoutでは適用と2回目の準備が成功し、
 変更された2つの依存ソースのhashがSurface検証時と一致した。GitHubでの再実行結果は上記checksへ記録する。
 
+## 2026-10-18のPRレビューと復旧後条件
+
+初回のnative登録がTSF設定だけを部分作成し、COMを自己cleanupして失敗する模擬ケースを追加した。
+修正前はユーザーTIPが残っていても「変更前の登録へ復帰しました」と報告し、journalを削除していた。
+ARM入口から解除後の検証callbackを渡し、両COMが不在であることと、保持TSF設定が保護された所有記録に一致することを、
+起動値の変更・journal削除より先に確認するよう修正した。未記録の残留は採用・削除せず、復旧未完了としてjournalを保持する。
+登録済みの版へ戻す経路と通常x64入口の動作は維持する。
+
+記録を保持した再Recover、残留の外部解消後のRecover、journal不在・登録不在のno-op、所有済みTIPを保持した正常解除を確認した。
+x64とARM実験版の既存検証済みZIPを用いたinstallation模擬試験が成功した。
+このケースは実際のTSF APIの部分失敗やSurface上の新しい導入を検証したものではない。
+ログは`out/reports/pr2-review/`へ保存し、最終コミットのhosted CIは[PR #2のchecks](https://github.com/nekomimist/nskkzime/pull/2/checks)で確認する。
+
 ## 参照
 
 - [llama.cpp v0.6.0](https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0)
