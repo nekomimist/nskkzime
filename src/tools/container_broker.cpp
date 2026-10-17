@@ -141,13 +141,18 @@ int wmain(int argc, wchar_t** argv) {
             } else if (arg == L"--test-package" && i + 1 < argc && explicit_config) { packages = {argv[++i]}; (void)container_sid(packages.front()); }
             else throw std::runtime_error("usage: nskkzime_broker [--replace|--stop] [--config PATH [--test-package NAME]]");
         }
-        try { diagnostics = std::make_unique<BrokerDiagnostics>(dictionary_settings_path().parent_path() / L"diagnostics"); }
-        catch (...) { /* Diagnostics cannot prevent startup. */ }
-        record(ContainerEvent::Start);
         if (in_app_container()) throw std::runtime_error("broker requires a desktop process");
         if (!explicit_config && redirected_data_context()) throw std::runtime_error("broker requires an unvirtualized desktop process");
         const auto stop = container_stop_event(instance);
-        if (stop_only) { record(ContainerEvent::Stop); SetEvent(stop.get()); record(ContainerEvent::Exit); return 0; }
+        // Installers may signal this from an elevated process. Never open private
+        // configuration or diagnostics files merely to stop an existing broker.
+        if (stop_only) {
+            if (!SetEvent(stop.get())) throw std::runtime_error("cannot signal broker stop");
+            return 0;
+        }
+        try { diagnostics = std::make_unique<BrokerDiagnostics>(dictionary_settings_path().parent_path() / L"diagnostics"); }
+        catch (...) { /* Diagnostics cannot prevent startup. */ }
+        record(ContainerEvent::Start);
         const auto mutex = container_instance_mutex(instance);
         auto acquired = WaitForSingleObject(mutex.get(), 0);
         if (acquired == WAIT_TIMEOUT && !replace) { record(ContainerEvent::Existing); record(ContainerEvent::Exit); return 0; }

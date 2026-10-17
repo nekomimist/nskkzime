@@ -37,15 +37,32 @@ hashと埋め込み情報は整合性検査であり、発行者の署名やロ�
 .\tools\install-arm64x.ps1 -Action Unregister
 ```
 
+初回から専用設定のbrokerを使う場合は、上のInstallを次のコマンドに置き換える。
+設定ファイルは先に用意し、既存rootへの設定パスの追加・変更は行わない。
+
+```powershell
+.\tools\install-arm64x.ps1 -Action Plan -BrokerConfig 'C:\Users\user\ime-test\settings.ini'
+.\tools\install-arm64x.ps1 -Action Install -BrokerConfig 'C:\Users\user\ime-test\settings.ini'
+```
+
 配置先は`%ProgramFiles%\nskkzime-arm64-experimental\versions\<版ID>`。
 実験専用rootの識別情報と所有ユーザーを検査し、通常版との移行は扱わない。
 ARM64Xはnative System32、x86はSysWOW64のregsvr32で登録する。
 更新前後とRollback/Recoverでも実験版の固定検査を使う。
 brokerのサインイン起動も設定する。起動中のアプリは旧DLLを保持するので再起動する。
 モデル・辞書の設定は通常権限の設定GUIから行い、`bin/ime_probe-arm64.exe`で入力を確認する。
-この実験版も通常の`%LOCALAPPDATA%\nskkzime`を既定に使うため、検証では専用の`NSKKZIME_CONFIG`を指定する。
+この実験版も通常の`%LOCALAPPDATA%\nskkzime`を既定に使う。
+検証では初回の`-BrokerConfig`で専用brokerの設定を固定し、検証アプリ自身にも同じ`NSKKZIME_CONFIG`を渡す。
+`BrokerConfig`だけでは通常起動したIMEクライアントの設定は切り替わらない。
+設定パスは保護されたroot markerに保存し、更新・Rollback・Recover・Unregisterでも再利用する。
+設定の内容はユーザーが変更できるが、既存rootの設定パスの追加・変更・解除は扱わない。
+設定ファイルがなくなってもUnregisterと登録の復旧は可能で、通常設定へ切り替えてbrokerを起動しない。
 
 Unregisterは登録と本人のbroker起動登録を解除し、プログラムと設定を残す。
+Windowsが残すユーザー側のTIP有効設定も保持する。
+native COMの所有中に保護rootへ保存した記録と、SID・root・所有版・設定内容を照合し、
+一致する残留設定だけを再導入時に受け入れる。Statusの`UserTipSettingsRetained`で確認できる。
+所有記録がない設定、変更された設定、machine TIPが残る状態は管理外として拒否する。
 本体を削除するときは解除成功を確認し、別IMEへ切り替えてアプリを閉じ、サインアウト・サインイン後に
 専用rootの`install-root.json`を確認してそのrootだけを削除する。設定・辞書・モデルは別途扱う。
 

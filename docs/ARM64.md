@@ -19,7 +19,8 @@ ARM64成果物とupstream移植構成は実験用であり、通常の配布経�
 ARM64Xの専用入口では、形式7の実験パッケージを作成・検証できる。
 段階5はARM64X DLLとx86 companionを一時登録し、4種類の検証ホストで推論付きの実 HWND 入力まで確認した。
 native ARM64のEdgeでも専用プロファイルを使った手入力を確認した。
-他の一般アプリと、段階6の実機導入・配布は未確認である。
+段階6は実験パッケージの実機導入・更新・復旧・解除・再導入と、実サインイン時のbroker起動まで確認した。
+他の一般アプリ、継続利用・省電力・スリープ復帰、クリーン環境への導入、一般配布とARM CIは未確認である。
 
 ## ツールチェーン
 
@@ -290,7 +291,13 @@ Planは配置・登録・brokerの起動設定を変更しない。現在の両C
 実験rootは`%ProgramFiles%/nskkzime-arm64-experimental`で、通常版や限定登録試験からの移行は扱わない。
 同じCLSID/TIPの並行導入はできない。全更新・Rollback・Recoverでも専用verifierを使う。
 Windows 11 ARM64とnative ARM64のPowerShellを必須とし、ARM64XはSystem32、x86はSysWOW64で登録する。
-実際の導入・更新・解除とサインイン時のbroker起動は実機で追加確認する。
+初回の`-BrokerConfig`で専用brokerの設定パスを保護rootへ固定できる。
+更新・Rollback・Recover・Unregisterでも同じパスを使い、設定不在でも解除できる。
+IMEクライアント側の設定は別で、検証アプリには同じ`NSKKZIME_CONFIG`を渡す。
+Windowsが解除後に残すユーザーTIP設定は削除せず、native COM所有中に保存した保護記録との完全一致を条件に再導入を許可する。
+記録はSID・root・検証済みの所有版に結び付け、machine TIPや管理外の設定は引き続き拒否する。
+Statusの`UserTipSettingsRetained`は、所有記録と一致するユーザー設定の保持を示す。
+実際の導入・更新・解除とサインイン起動の結果は後述する。
 同梱の[実験パッケージ用README](ARM64_PACKAGE_README.md)にruntimeと操作手順を記載する。
 
 ## Surfaceへの接続
@@ -433,7 +440,8 @@ Edgeのログは`out/reports/surface-arm64x-edge-input-12/`、要約は`out/repo
 この回は4 ABIのビルドと上記の登録入力・Edgeを検証した。前日のCTest 66/66を同じソースで再実行したという意味ではない。
 実機バイナリーのソースhashと、後から追加したブラウザー用スクリプト・ページのhashは別に記録した。
 
-残る段階は他の一般アプリ、実機での継続利用・省電力・スリープ復帰、導入・更新・解除と配布、ARM CIである。
+導入・更新・解除は後述の実験パッケージで追加確認した。
+他の一般アプリ、実機での継続利用・省電力・スリープ復帰、一般配布とARM CIは残る。
 
 ## 2026-10-17の実験パッケージ検証
 
@@ -461,6 +469,60 @@ Plan前後のCOM/TIP、入力の既定値、broker起動値、普段のファイ
 SHA-256は`0fd600520dd25b3530ce444619bba99cd4cb49bc8fb45f5fc81e54fb739b1020`。
 実機結果は`out/reports/surface-arm64-package-03/`、要約は`out/reports/arm64-package-validation.json`。
 バイナリーは検証時点のソースsnapshotを記録しており、後から作成するcommitのhashへ読み替えない。
+
+## 2026-10-17の実機インストーラー検証
+
+専用の設定・辞書を用意し、実験用installerから保護されたProgram Filesの版別配置先へ導入した。
+設定パスには空白と日本語を含め、学習・推論・入力ログを無効にした。
+通常の設定や辞書を使うクライアントは起動せず、登録経由のCOM検査はfresh processで行った。
+
+| 確認 | 結果 |
+|---|---|
+| Install・Update・Rollback | native/x86の登録、起動値、専用brokerの切り替えが成功 |
+| 各版のfresh COM | ARM64・x64・ARM64EC・x86から実DLLパス・hash・ソース情報を確認 |
+| 中断後のRecover | target有効・journal未消去の状態を模擬し、previousの両登録とbrokerへ復旧 |
+| Recover再実行 | pendingなしでも成功 |
+| サインイン起動 | 実ログオフ後の新しいExplorerから、同じユーザー・非昇格・専用設定のbrokerが自動起動 |
+| 設定不在でのUnregister | 設定を一時退避した状態で登録と起動値を解除し、brokerも停止 |
+| 保持したTIP設定からの再導入 | 修正版でPlan・再Install・4 ABIのfresh COM・再Unregister・解除後のRecoverが成功 |
+| 管理外状態の拒否 | 別の設定パス、Run値の型変更、保持したTIP設定の変更を拒否 |
+
+Update用の2版はREADMEだけを変えてmanifestを更新したfixtureで、プログラムのバイナリーは同一である。
+異なるビルドの移行、旧DLLをロードしたままの一般アプリの継続動作、実際のregistrar強制終了を検証したものではない。
+サインイン起動は保存コマンドの手動再生とも区別し、ログオフ前後のsession・PID・開始時刻、
+Explorerを親とするbrokerの起動、scoped listenerの準備完了を記録した。
+ログオフ中にSSH接続も切れたが、RDP再接続後に保存記録と自動起動を確認した。
+
+最初の解除では機械のCOM/TSFと起動値は消えたが、WindowsがHKCUに保持するEnable設定を
+管理外と判定し、次のPlanが拒否された。native COM所有中のTIP設定を保護rootへ永続化し、
+完全一致するユーザー設定だけを維持して再導入できるよう修正した。
+snapshotの保存に失敗した場合は成功扱いにせず、通常のtransaction復旧へ戻る。
+昇格installerの`--stop`も、設定・診断ファイルを開く前に停止eventだけを通知するよう変更した。
+
+製品のUnregisterはユーザー設定とプログラムを保持する。
+試験後の原状確認では、初期不在かつ所有時snapshotと内容が完全一致する対象GUIDだけを試験helperで削除した。
+この後片付けを製品の解除動作とは数えない。fresh COMは4種類とも`REGDB_E_CLASSNOTREG`、
+TSF APIではprocessor/profileなし・category 0、通常の入力設定の内容と普段のファイルのhashは開始前と一致した。
+保護されたプログラム・所有記録・専用設定・検証ログは保持し、一時タスクを削除した。
+
+試験側では、JSON日時の自動型変換と辞書のキー順を文字列のまま比較して停止したため、
+日時をUTC ticks、状態をキー順に依存しない内容比較へ修正した。失敗した試行も上書きせず保持した。
+
+初回のログと実サインインの記録は`out/reports/surface-arm64-installation-01/`、
+TIP設定の修正後の一巡は`out/reports/surface-arm64-installation-02/`にある。
+修正版の試験ZIPは`out/packages/nskkzime-arm64-lifecycle-02.zip`、
+SHA-256は`4f7b07ec825681d09a984cefff81842e27d87ac1356cbeb264c09c9d09cf6b87`。
+snapshotのJSON省略を拒否する最終ガードを加えて再ビルドした
+`out/packages/nskkzime-arm64-lifecycle-03.zip`も、Install・解除・設定保持からの再Install・再解除・Recoverを確認した。
+両Installの4 ABI fresh COMと、最終的な登録不在・通常状態の一致・一時タスク0件が成功した。
+この追試はサインイン試験を再実行したものではない。ログは`out/reports/surface-arm64-installation-03/`、
+ZIPのSHA-256は`6e9305980e1d55051e7c68ba07b3212db04742121a470e116c93a9a8a1f2d8cb`。
+バイナリーは各試験時点のソースsnapshotを保持し、後から追加した記録やcommitのhashへ読み替えない。
+
+ARM64Xの4 ABIを再ビルドし、ARM実験形式のinstallation模擬試験とpackageの18拒否条件が成功した。
+既存x64のAppContainer・起動失敗・installation・package・Scoopは7/7、TIP修正後の関連4件も4/4成功した。
+全66件のCTestや一般アプリの入力を、このインストーラー試行で再検証したという意味ではない。
+署名・クリーン環境・ARM CIと一般配布は引き続き別の段階である。
 
 ## 参照
 

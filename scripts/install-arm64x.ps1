@@ -4,6 +4,7 @@ param(
     [ValidateSet('Status','Plan','Install','Rollback','Unregister','Recover')][string]$Action='Status',
     [string]$PackageDirectory=(Join-Path $PSScriptRoot '..'),
     [string]$Version,
-    [string]$ExpectedUserSid
+    [string]$ExpectedUserSid,
+    [string]$BrokerConfig
 )
 & (Join-Path $PSScriptRoot 'install.ps1') @PSBoundParameters -ExperimentalArm64

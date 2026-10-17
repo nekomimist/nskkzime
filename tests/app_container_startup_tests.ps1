@@ -5,6 +5,18 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $directory = Split-Path -Parent $executablePath
+# A stop helper can be called by an elevated installer. It must not create a
+# private configuration/diagnostics directory just to signal its named event.
+$absent = Join-Path $directory ('broker-stop-test-' + [Guid]::NewGuid().ToString('N'))
+$start = [Diagnostics.ProcessStartInfo]::new((Join-Path $directory 'nskkzime_broker.exe'))
+$start.UseShellExecute=$false; $start.CreateNoWindow=$true
+$start.ArgumentList.Add('--stop'); $start.ArgumentList.Add('--config'); $start.ArgumentList.Add((Join-Path $absent 'settings.ini'))
+$child=[Diagnostics.Process]::Start($start)
+try {
+    if (-not $child.WaitForExit(20000)) { $child.Kill(); $child.WaitForExit(); throw 'Broker stop helper timed out.' }
+    if ($child.ExitCode -ne 0 -or (Test-Path -LiteralPath $absent)) { throw 'Broker stop wrote private files or failed.' }
+} finally { $child.Dispose() }
+Write-Output 'PASS broker stop with missing configuration creates no private files'
 foreach ($scenario in @('child-failure', 'broker-failure', 'readiness-timeout')) {
     $before = @(Get-ChildItem -LiteralPath $directory -Directory -Filter 'container-test-*' | ForEach-Object FullName)
     $output = @(& $executablePath --startup-scenario $scenario 2>&1)

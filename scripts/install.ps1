@@ -5,10 +5,12 @@ param(
     [string]$PackageDirectory = (Join-Path $PSScriptRoot '..'),
     [string]$Version,
     [string]$ExpectedUserSid,
-    [switch]$ExperimentalArm64
+    [switch]$ExperimentalArm64,
+    [string]$BrokerConfig
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($PSBoundParameters.ContainsKey('BrokerConfig') -and -not $ExperimentalArm64) { throw 'BrokerConfigはARM64実験版の専用入口で使用してください。' }
 if ($Action -eq 'Plan' -and -not $ExperimentalArm64) { throw 'PlanはARM64実験版の専用入口で使用してください。' }
 if ($ExperimentalArm64) {
     if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::Arm64 -or
@@ -22,11 +24,20 @@ Import-Module (Join-Path $PSScriptRoot 'installation.psm1') -Force
 $verifier = Join-Path $PSScriptRoot $(if($ExperimentalArm64){'package-arm64x.ps1'}else{'package.ps1'})
 $root = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) $(if($ExperimentalArm64){'nskkzime-arm64-experimental'}else{'nskkzime'})
 $invokingIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$brokerPolicy=@{Requested=$PSBoundParameters.ContainsKey('BrokerConfig');Loaded=$false;Config=$null}
+if ($brokerPolicy.Requested) { $brokerPolicy.Config=Resolve-NskkzimeBrokerConfig $BrokerConfig $root }
 function Assert-RootIdentity($Record) {
     if ($ExperimentalArm64) {
-        if ($Record.format_version -ne 2 -or $Record.product -cne 'nskkzime' -or $Record.architecture -cne 'arm64' -or
+        if ($Record.format_version -notin @(2,3) -or $Record.product -cne 'nskkzime' -or $Record.architecture -cne 'arm64' -or
             $Record.channel -cne 'experimental' -or $Record.installation_profile -cne 'arm64-experimental-v1' -or
             $Record.user_sid -cne $invokingIdentity.User.Value) { throw 'ARM64実験版の配置先または所有ユーザーが一致しません。' }
+        $saved=$null
+        if ($Record.format_version -eq 3) {
+            if ($Record.PSObject.Properties.Name -notcontains 'broker_config' -or ($null -ne $Record.broker_config -and $Record.broker_config -isnot [string])) { throw 'Invalid broker configuration marker.' }
+            if ($null -ne $Record.broker_config) { $saved=Resolve-NskkzimeBrokerConfig $Record.broker_config $root }
+        }
+        if (($brokerPolicy.Requested -or $brokerPolicy.Loaded) -and -not [string]::Equals([string]$brokerPolicy.Config,[string]$saved,[StringComparison]::OrdinalIgnoreCase)) { throw '配置先に固定したBrokerConfigと指定が異なります。' }
+        $brokerPolicy.Config=$saved; $brokerPolicy.Loaded=$true
     } elseif ($Record.format_version -ne 1 -or $Record.product -cne 'nskkzime') { throw 'インストール先の識別情報が不正です。' }
 }
 $classPath = 'Software\Classes\CLSID\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}'
@@ -54,13 +65,35 @@ function Read-RegistrationView([Microsoft.Win32.RegistryView]$View) {
 }
 $readRegistration = { Read-RegistrationView ([Microsoft.Win32.RegistryView]::Registry64) }
 $readX86Registration = { Read-RegistrationView ([Microsoft.Win32.RegistryView]::Registry32) }
+function Get-RetainedUserTip([switch]$RequireOwned) {
+    foreach($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
+        $machine=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
+        try {
+            $tip=$machine.OpenSubKey('Software\Microsoft\CTF\TIP\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}')
+            if($tip){$tip.Dispose();if($RequireOwned){throw '管理外のTSF登録があります。登録元の手順で解除してください。'};return $false}
+        } finally { $machine.Dispose() }
+    }
+    $snapshot=Get-NskkzimeUserTipSnapshot
+    if(-not $snapshot){return $false}
+    $record=Join-Path $root 'user-tip.json'
+    if(Test-Path -LiteralPath $record){Assert-NskkzimeProtectedPath $record}
+    $owned=Test-NskkzimeUserTipOwnership $root $invokingIdentity.User.Value $snapshot $verifier
+    if(-not $owned -and $RequireOwned){throw '管理外または所有記録と異なるユーザーTSF設定があります。登録元の手順で確認してください。'}
+    return $owned
+}
 if ($Action -eq 'Status') {
     if ($ExperimentalArm64 -and (Test-Path -LiteralPath $root)) {
         Assert-NskkzimeProtectedPath $root
         Assert-NskkzimeProtectedPath (Join-Path $root 'install-root.json')
         Assert-RootIdentity (Get-Content -LiteralPath (Join-Path $root 'install-root.json') -Raw | ConvertFrom-Json)
     }
-    Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration; return
+    $status=Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration
+    if($ExperimentalArm64){
+        $status | Add-Member -NotePropertyName BrokerConfig -NotePropertyValue $brokerPolicy.Config
+        $retained=if(-not $status.RegisteredDll -and -not $status.RegisteredX86Dll -and -not $status.Pending){Get-RetainedUserTip}else{$false}
+        $status | Add-Member -NotePropertyName UserTipSettingsRetained -NotePropertyValue $retained
+    }
+    $status; return
 }
 if ($ExpectedUserSid -and $invokingIdentity.User.Value -cne $ExpectedUserSid) {
     throw '昇格前と実行ユーザーが異なります。使用する本人のアカウントで管理者権限を承認してください。'
@@ -116,39 +149,36 @@ if ($ExperimentalArm64) {
         Assert-ProtectedItem $root; Assert-ProtectedItem (Join-Path $root 'install-root.json')
         Assert-RootIdentity (Get-Content -LiteralPath (Join-Path $root 'install-root.json') -Raw | ConvertFrom-Json)
     }
+    if ($brokerPolicy.Config -and $Action -in @('Install','Plan')) { $null=Resolve-NskkzimeBrokerConfig $brokerPolicy.Config $root -RequireFile }
     $pending=(Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration).Pending
     if ($pending) {
         foreach ($candidate in @($pending.previous,$pending.target) | Where-Object {$_}) { $null=Get-NskkzimeInstalledBundle $root $candidate $verifier }
     } elseif (-not $nativeVersion -and -not $x86Version) {
-        # A TIP without a managed COM owner or protected recovery journal may
-        # belong to a limited registration test or another installation.
-        foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
-            foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
-                $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view)
-                try {
-                    $tip=$base.OpenSubKey('Software\Microsoft\CTF\TIP\{6EF45A57-E12E-49F1-8A4E-2569D8361A50}')
-                    if ($tip) { $tip.Dispose(); throw '管理外のTSF登録があります。登録元の手順で解除してください。' }
-                } finally { $base.Dispose() }
-            }
-        }
+        # Windows may keep per-user enable settings after TSF Unregister. Retain
+        # only a snapshot captured while this protected root owned native COM.
+        $null=Get-RetainedUserTip -RequireOwned
     }
     # The broker Run value is shared with normal installations. Never replace an
     # unmanaged value, including one from another root or the registration tests.
     $runKey=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
     try {
-        $startup=if($runKey){$runKey.GetValue('nskkzime broker',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}else{$null}
-        if ($null -ne $startup -and $runKey.GetValueKind('nskkzime broker') -ne [Microsoft.Win32.RegistryValueKind]::String) { throw '管理外のbroker起動登録があります。変更しません。' }
+        $startupExists=[bool]($runKey -and ($runKey.GetValueNames() -contains 'nskkzime broker'))
+        $startup=if($startupExists){$runKey.GetValue('nskkzime broker',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}else{$null}
+        if ($startupExists -and $runKey.GetValueKind('nskkzime broker') -ne [Microsoft.Win32.RegistryValueKind]::String) { throw '管理外のbroker起動登録があります。変更しません。' }
     }
     finally { if($runKey){$runKey.Dispose()} }
-    if ($null -ne $startup) {
-        if ($startup -isnot [string] -or $startup -cnotmatch '^"(.+)" --replace$') { throw '管理外のbroker起動登録があります。変更しません。' }
+    $startupOwner=$null
+    if ($startupExists) {
+        if ($startup -isnot [string] -or $startup -cnotmatch '^"([^"]+)" ') { throw '管理外のbroker起動登録があります。変更しません。' }
         $brokerPath=$Matches[1]
         $relative=[IO.Path]::GetRelativePath((Join-Path $root 'versions'),$brokerPath)
         if ($relative -cnotmatch '^([a-f0-9]{64})[\\/]bin[\\/]nskkzime_broker\.exe$') { throw '管理外のbroker起動登録があります。変更しません。' }
         $owned=Get-NskkzimeInstalledBundle $root $Matches[1] $verifier
         if (-not [string]::Equals($owned.Broker,$brokerPath,[StringComparison]::OrdinalIgnoreCase)) { throw 'broker起動登録が配置先と一致しません。' }
+        if ($startup -cne (Get-NskkzimeBrokerCommandLine $owned.Broker $brokerPolicy.Config)) { throw 'broker起動登録の引数が配置先の設定と一致しません。' }
+        $startupOwner=$owned
     }
-    $startupGuard=@{Expected=$startup}
+    $startupGuard=@{Expected=$startup;Exists=$startupExists}
 }
 if ($Action -eq 'Plan') {
     if (Test-Path -LiteralPath $root) {
@@ -161,7 +191,7 @@ if ($Action -eq 'Plan') {
     foreach($candidate in $candidates | Where-Object {$_} | Sort-Object -Unique){$null=Get-NskkzimeInstalledBundle $root $candidate $verifier}
     [pscustomobject]@{Action='Plan';InstallationProfile='arm64-experimental-v1';Root=$root;Version=$plannedBundle.Version;
         PackageDirectory=$plannedBundle.Directory;UserSid=$invokingIdentity.User.Value;NativeRegistrar=(Join-Path ([Environment]::SystemDirectory) 'regsvr32.exe');
-        X86Registrar=(Join-Path $env:SystemRoot 'SysWOW64/regsvr32.exe');Current=$status;MutatesInstallation=$false}
+        X86Registrar=(Join-Path $env:SystemRoot 'SysWOW64/regsvr32.exe');BrokerConfig=$brokerPolicy.Config;Current=$status;MutatesInstallation=$false}
     return
 }
 if (-not (Test-Path -LiteralPath $root)) {
@@ -173,7 +203,7 @@ if (-not (Test-Path -LiteralPath $root)) {
     [IO.FileSystemAclExtensions]::CreateDirectory($security, $root) | Out-Null
     Assert-ProtectedItem $root
     $markerStream = [IO.File]::Open((Join-Path $root 'install-root.json'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    $record = if($ExperimentalArm64){@{format_version=2;product='nskkzime';architecture='arm64';channel='experimental';installation_profile='arm64-experimental-v1';user_sid=$invokingIdentity.User.Value}}else{@{format_version=1;product='nskkzime'}}
+    $record = if($ExperimentalArm64){@{format_version=3;product='nskkzime';architecture='arm64';channel='experimental';installation_profile='arm64-experimental-v1';user_sid=$invokingIdentity.User.Value;broker_config=$brokerPolicy.Config}}else{@{format_version=1;product='nskkzime'}}
     try { $markerStream.Write([Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))); $markerStream.Flush($true) }
     finally { $markerStream.Dispose() }
 }
@@ -192,6 +222,7 @@ function Assert-TransitionBundles($Status) {
 Assert-TransitionBundles (Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration)
 $lock = Enter-NskkzimeInstallLock $root
 try {
+    Assert-RootIdentity (Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json)
     # Reject unexpected writable/reparse-point descendants before reusing them.
     $queue = [Collections.Generic.Queue[string]]::new()
     $queue.Enqueue($root)
@@ -206,6 +237,7 @@ try {
     }
     $status = Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration
     if ($status.Pending -and $Action -ne 'Recover') { throw '未完了の更新記録があります。Recoverを先に実行してください。' }
+    if($ExperimentalArm64 -and -not $status.RegisteredDll -and -not $status.RegisteredX86Dll -and -not $status.Pending){$null=Get-RetainedUserTip -RequireOwned}
     Assert-TransitionBundles $status
     # This tree contains verified public program files only. Private dictionaries,
     # settings, model files and IPC objects retain their existing access rules.
@@ -218,21 +250,40 @@ try {
     Set-Acl -LiteralPath $root -AclObject $publicAcl
     Assert-ProtectedItem $root
     $previousBroker = if ($status.ManagedVersion) { (Get-NskkzimeInstalledBundle $root $status.ManagedVersion $verifier).Broker } else { $null }
+    if ($ExperimentalArm64 -and -not $previousBroker) {
+        if ($startupOwner) { $previousBroker=$startupOwner.Broker }
+        elseif ($status.Pending) {
+            $candidate=@($status.Pending.target,$status.Pending.previous | Where-Object {$_} | Select-Object -First 1)
+            if ($candidate.Count) { $previousBroker=(Get-NskkzimeInstalledBundle $root $candidate[0] $verifier).Broker }
+        }
+    }
     $setStartup = {
         param([string]$Broker)
         if ($Broker) { Assert-ProtectedItem $Broker }
         $run = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
         try {
-            if ($ExperimentalArm64 -and -not [string]::Equals([string]$run.GetValue('nskkzime broker',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames),[string]$startupGuard.Expected,[StringComparison]::Ordinal)) { throw '処理中にbroker起動登録が変更されました。' }
-            if ($Broker) { $run.SetValue('nskkzime broker', ('"' + $Broker + '" --replace'), [Microsoft.Win32.RegistryValueKind]::String) }
+            if ($ExperimentalArm64) {
+                $exists=$run.GetValueNames() -contains 'nskkzime broker'
+                if ($exists -ne $startupGuard.Exists -or ($exists -and $run.GetValueKind('nskkzime broker') -ne [Microsoft.Win32.RegistryValueKind]::String) -or
+                    -not [string]::Equals([string]$run.GetValue('nskkzime broker',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames),[string]$startupGuard.Expected,[StringComparison]::Ordinal)) { throw '処理中にbroker起動登録が変更されました。' }
+            }
+            $command=if($Broker){Get-NskkzimeBrokerCommandLine $Broker $brokerPolicy.Config}else{$null}
+            if ($Broker) { $run.SetValue('nskkzime broker', $command, [Microsoft.Win32.RegistryValueKind]::String) }
             else { $run.DeleteValue('nskkzime broker', $false) }
-            if ($ExperimentalArm64) { $startupGuard.Expected=if($Broker){'"'+$Broker+'" --replace'}else{$null} }
+            if ($ExperimentalArm64) { $startupGuard.Expected=$command; $startupGuard.Exists=[bool]$Broker }
         } finally { $run.Dispose() }
     }
     $registrar = {
         param([string]$Dll, [bool]$Unregister)
         Assert-ProtectedItem $Dll
         $system = if ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($Dll)) -eq 'x86') { Join-Path $env:SystemRoot 'SysWOW64' } else { [Environment]::SystemDirectory }
+        $nativeTipOwner=$ExperimentalArm64 -and [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($Dll)) -ne 'x86'
+        $saveUserTip = {
+            $version=Get-NskkzimeManagedVersion $root $Dll
+            Write-NskkzimeUserTipOwnership $root $version $invokingIdentity.User.Value (Get-NskkzimeUserTipSnapshot) $verifier $readRegistration
+            Assert-ProtectedItem (Join-Path $root 'user-tip.json')
+        }
+        if($nativeTipOwner -and $Unregister){& $saveUserTip}
         $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'regsvr32.exe'))
         $start.UseShellExecute = $false
         $start.CreateNoWindow = $true
@@ -240,7 +291,11 @@ try {
         if ($Unregister) { $start.ArgumentList.Add('/u') }
         $start.ArgumentList.Add($Dll)
         $child = [Diagnostics.Process]::Start($start)
-        try { $child.WaitForExit(); return $child.ExitCode }
+        try {
+            $child.WaitForExit()
+            if($nativeTipOwner -and -not $Unregister -and $child.ExitCode -eq 0){& $saveUserTip}
+            return $child.ExitCode
+        }
         finally { if (-not $child.HasExited) { $child.WaitForExit() }; $child.Dispose() }
     }
     switch ($Action) {
@@ -259,17 +314,19 @@ try {
         if ($previousBroker) {
             $stop = [Diagnostics.ProcessStartInfo]::new($previousBroker)
             $stop.UseShellExecute = $false; $stop.CreateNoWindow = $true; $stop.ArgumentList.Add('--stop')
+            if ($brokerPolicy.Config) { $stop.ArgumentList.Add('--config'); $stop.ArgumentList.Add($brokerPolicy.Config) }
             $child = [Diagnostics.Process]::Start($stop)
             try { $child.WaitForExit(); if ($child.ExitCode) { throw '補助プロセスを停止できません。' } } finally { $child.Dispose() }
         }
         $current = Get-NskkzimeManagedVersion $root (& $readRegistration)
         $broker = if ($current) { (Get-NskkzimeInstalledBundle $root $current $verifier).Broker } else { $null }
         if ($broker) {
+            if ($brokerPolicy.Config) { $null=Resolve-NskkzimeBrokerConfig $brokerPolicy.Config $root -RequireFile }
             $shell = New-Object -ComObject Shell.Application
             $desktopHandle = 0
             $desktop = $shell.Windows().FindWindowSW(0, 0, 8, [ref]$desktopHandle, 1)
             if (-not $desktop) { throw '通常ユーザーのExplorerが見つかりません。' }
-            $desktop.Document.Application.ShellExecute($broker, '--replace', (Split-Path -Parent $broker), 'open', 0)
+            $desktop.Document.Application.ShellExecute($broker, (Get-NskkzimeBrokerParameters replace $brokerPolicy.Config), (Split-Path -Parent $broker), 'open', 0)
         }
     } catch { Write-Warning "登録は完了しましたが、補助プロセスの切り替えに失敗しました。サインアウト・サインインで反映できます。$($_.Exception.Message)" }
     Get-NskkzimeInstallStatus $root $readRegistration $readX86Registration

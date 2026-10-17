@@ -40,9 +40,61 @@ function Expand-Version([string]$Name, [string]$Marker) {
     return Add-NskkzimeVersion $root $directory $verifier
 }
 try {
+    $private=Join-Path $fixture '設定 folder/settings.ini'
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $private)) | Out-Null
+    [IO.File]::WriteAllText($private,"version=1`nlearning=off`n")
+    Assert-Install ((Resolve-NskkzimeBrokerConfig $private $root -RequireFile) -ceq $private) 'Private broker configuration path changed.'
+    if (-not ('NskkzimeInstallCommandTest' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class NskkzimeInstallCommandTest {
+    [DllImport("shell32.dll",CharSet=CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string line,out int count);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    public static string[] Parse(string line) {
+        int count; IntPtr memory=CommandLineToArgvW(line,out count);
+        if(memory==IntPtr.Zero) throw new InvalidOperationException();
+        try { var result=new string[count]; for(int i=0;i<count;i++) result[i]=Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory,i*IntPtr.Size)); return result; }
+        finally { LocalFree(memory); }
+    }
+}
+'@
+    }
+    $broker='C:\Program Files\nskkzime\nskkzime_broker.exe'
+    $command=Get-NskkzimeBrokerCommandLine $broker $private
+    $arguments=[NskkzimeInstallCommandTest]::Parse($command)
+    Assert-Install ($arguments.Count -eq 4 -and $arguments[0] -ceq $broker -and $arguments[1] -ceq '--replace' -and
+        $arguments[2] -ceq '--config' -and $arguments[3] -ceq $private) 'Startup quoting changed configuration arguments.'
+    Assert-Install ((Get-NskkzimeBrokerCommandLine $broker $null) -ceq ('"'+$broker+'" --replace')) 'Legacy broker startup changed.'
+    foreach($invalid in @('relative.ini',('C:\bad'+[char]34+'name.ini'),("C:\bad`nname.ini"),'\\server\share\settings.ini',(Join-Path $root 'settings.ini'))) {
+        $failed=$false; try { Resolve-NskkzimeBrokerConfig $invalid $root | Out-Null } catch { $failed=$true }
+        Assert-Install $failed 'Invalid/public broker configuration was accepted.'
+    }
+    Remove-Item -LiteralPath $private
+    Assert-Install ((Resolve-NskkzimeBrokerConfig $private $root) -ceq $private) 'Missing configuration blocked recovery path selection.'
+    $failed=$false; try { Resolve-NskkzimeBrokerConfig $private $root -RequireFile | Out-Null } catch { $failed=$true }
+    Assert-Install $failed 'Missing configuration was accepted for a new launch.'
+    Assert-Install ((Get-NskkzimeBrokerParameters stop $private) -ceq ('--stop --config "'+$private+'"')) 'Stop does not use the saved configuration.'
     $zip = & $verifier -SourceDirectory (Join-Path $BuildDirectory 'Release') -Output (Join-Path $fixture 'package.zip')
     [IO.Directory]::CreateDirectory($root) | Out-Null
     $a = Expand-Version 'first' 'Fixture first version.'
+    $sid='S-1-5-21-1-2-3-1001'
+    $snapshot='{"Registry64":{"Enable":{"kind":"DWord","value":1}},"Registry32":null}'
+    Assert-Install (-not(Test-NskkzimeUserTipOwnership $root $sid $snapshot $verifier)) 'Unrecorded user TIP was accepted.'
+    $state.Dll=$a.Dll
+    Write-NskkzimeUserTipOwnership $root $a.Version $sid $snapshot $verifier $readRegistration
+    $state.Dll=$null
+    Assert-Install (Test-NskkzimeUserTipOwnership $root $sid $snapshot $verifier) 'Owned retained user TIP was refused.'
+    Assert-Install (-not(Test-NskkzimeUserTipOwnership $root $sid ($snapshot.Replace('"value":1','"value":0')) $verifier)) 'Changed user TIP was accepted.'
+    $failed=$false;try{Test-NskkzimeUserTipOwnership $root 'S-1-5-21-1-2-3-1002' $snapshot $verifier | Out-Null}catch{$failed=$true}
+    Assert-Install $failed 'Another SID reused the user TIP ownership record.'
+    $recordPath=Join-Path $root 'user-tip.json';$recordHash=(Get-FileHash -LiteralPath $recordPath).Hash
+    $failed=$false;try{Write-NskkzimeUserTipOwnership $root $a.Version $sid $snapshot $verifier $readRegistration}catch{$failed=$true}
+    Assert-Install ($failed -and (Get-FileHash -LiteralPath $recordPath).Hash -ceq $recordHash) 'Absent COM owner established TIP ownership.'
+    $otherRoot=Join-Path $fixture 'other-root';[IO.Directory]::CreateDirectory($otherRoot) | Out-Null
+    [IO.File]::Copy($recordPath,(Join-Path $otherRoot 'user-tip.json'))
+    $failed=$false;try{Test-NskkzimeUserTipOwnership $otherRoot $sid $snapshot $verifier | Out-Null}catch{$failed=$true}
+    Assert-Install $failed 'Another root reused the user TIP ownership record.'
     $b = Expand-Version 'second' 'Fixture second version.'
     Transition $a.Version | Out-Null
     Assert-Install ($state.Dll -eq $a.Dll -and $state.X86Dll -eq $a.X86Dll -and $state.Startup -eq $a.Broker) 'Initial install failed.'
@@ -71,7 +123,7 @@ try {
     Assert-Install (-not $state.Dll -and -not $state.X86Dll -and -not $state.Startup -and (Test-Path -LiteralPath $a.Dll)) 'Unregister failed or removed files.'
     $status = Get-NskkzimeInstallStatus $root $readRegistration
     Assert-Install (-not $status.ManagedVersion -and $status.AvailableVersions.Count -eq 2 -and -not $status.Pending) 'Status is inconsistent.'
-    Write-Output 'PASS install, update, rollback, native/x86 failure recovery, interrupted recovery, unregister and status'
+    Write-Output 'PASS broker configuration quoting/validation and install, update, rollback, native/x86 failure recovery, interrupted recovery, unregister and status'
 } finally {
     $absolute = [IO.Path]::GetFullPath($fixture)
     $allowed = [IO.Path]::GetFullPath($BuildDirectory).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
