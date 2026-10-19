@@ -32,6 +32,14 @@ int main() {
             const auto table=RomajiRules::parse("version=1\ntkl\t東京\n");
             equal(roman("tka",table),U"あ"); equal(roman("tk!",table),U"!"); equal(roman("tkl",table),U"東京");
         }},
+        {"romaji/backspace-clears-whole-prefix-and-carry",[] {
+            const auto table=RomajiRules::parse("version=1\ntkl\t東京\njj\tっ\tj\n");
+            for(const auto prefix:{"ky","tk","n","nn","jj"}) {
+                Romaji r(table); for(const auto ch:std::string_view(prefix)) r.push(ch);
+                check(r.backspace()&&r.pending().empty(),"Backspace retained a prefix");
+                check(!r.backspace(),"empty Backspace was handled"); equal(r.push('a'),U"あ"); equal(r.flush(),U"");
+            }
+        }},
         {"engine/explicit-continuations-before-mode-commands",[] {
             const auto table=RomajiRules::parse("version=1\ndl\tでる\ndq\tどく\nd/\tど\nnl\tなる\nkk\tくく\n");
             Engine e(demo_dictionary(),false,table); std::u32string output;

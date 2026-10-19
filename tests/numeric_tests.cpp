@@ -83,6 +83,13 @@ int main() {
                     !result.learning->candidate.origin && engine.mode() == Mode::Katakana && !engine.abbrev(), "expanded identity leaked to learning");
             }
         }},
+        {"engine/backspace-keeps-original-numeric-learning-template", [] {
+            Engine engine(fixture()); convert(engine, "/99");
+            const auto result = engine.handle({KeyCode::Backspace}); equal(result.committed, U"９");
+            check(result.learning && result.learning->key == LookupKey{U"#"}, "Backspace lost numeric learning key");
+            equal(result.learning->candidate.text, U"#1");
+            check(!result.learning->candidate.origin && engine.stage() == Stage::Direct, "Backspace retained expanded identity or selection");
+        }},
         {"engine/q-reading-mixed-kana-multiple-runs-and-dot-date", [] {
             Engine engine(fixture()); convert(engine, "Dai12kai"); equal(choose(engine, 2).committed, U"第十二回");
             convert(engine, "Q99en"); equal(choose(engine, 0).committed, U"九十九円");

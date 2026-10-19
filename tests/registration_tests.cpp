@@ -128,9 +128,27 @@ int main() {
             s.type("a"); equal(s.document, U"Ab/C; Xかなア");
         }},
         {"backspace-pending-and-terminal-n", [] {
-            Session s; s.start(); s.type("kanak"); s.key({KeyCode::Backspace}); s.key({KeyCode::Backspace});
+            Session s; s.start(); s.type("kanaky"); s.key({KeyCode::Backspace}); equal(s.engine.registration_text(), U"かな"); s.key({KeyCode::Backspace});
             equal(s.engine.registration_text(), U"か"); s.type("n"); s.enter(); equal(s.document, U"かん");
             equal(s.saved[0].candidate.text, U"かん");
+        }},
+        {"backspace-confirms-inner-candidate-without-learning-it", [] {
+            Session s; s.start(); s.type("Kanji"); s.space();
+            const auto result = s.key({KeyCode::Backspace});
+            check(result.consumed && result.committed.empty() && !result.learning && s.saved.empty(), "tentative deletion escaped registration");
+            check(s.engine.registering() && s.engine.input_stage() == Stage::Direct, "Backspace ended registration");
+            equal(s.engine.registration_text(), U"漢"); s.type("a"); s.enter();
+            equal(s.document, U"漢あ"); check(s.saved.size() == 1, "wrong learning count");
+            equal(s.saved[0].key.reading, U"みち"); equal(s.saved[0].candidate.text, U"漢あ");
+        }},
+        {"backspace-okuri-registration-keeps-deletion-and-original-learning", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>(); dictionary->add({U"ころ", 'n'}, {{"word", U"転", U""}});
+            Session s{Engine(dictionary)}; s.type("KoroNde"); s.key({KeyCode::Backspace}); s.space();
+            check(s.engine.registering(), "candidate exhaustion did not register"); equal(s.engine.composition_text(), U"ころん");
+            s.enter(); equal(s.engine.preedit(), U"▼転ん");
+            s.space(); s.type("lword"); s.enter(); equal(s.document, U"wordん");
+            check(s.saved.size() == 1 && s.saved[0].key == LookupKey{U"ころ", 'n'}, "registration changed lookup identity");
+            equal(s.saved[0].okuri, U"んで");
         }},
         {"recursive-registration-and-immediate-reuse", [] {
             Session s; s.start("/outer"); s.start("/inner"); check(s.engine.registration_depth() == 2, "wrong recursive depth");

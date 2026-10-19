@@ -147,6 +147,9 @@ private:
         bool abbrev = false;
         Romaji romaji;
         std::u32string reading, okuri;
+        // Selection can delete displayed okuri without changing dictionary identity.
+        std::size_t deleted_okuri = 0;
+        std::u32string_view visible_okuri() const { return std::u32string_view(okuri).substr(0, okuri.size() - deleted_okuri); }
         char okuri_letter = 0;
         std::vector<Candidate> candidates;
         std::size_t candidate_index = 0;
@@ -161,6 +164,7 @@ private:
     std::u32string input_literal() const;
     std::u32string input_preedit() const;
     void clear_composition();
+    void restore_reading();
     void append(std::u32string text, Result& result);
     void convert(Result& result);
     void confirm(Result& result);

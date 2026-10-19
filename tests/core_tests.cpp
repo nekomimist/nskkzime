@@ -38,7 +38,29 @@ int main() {
         {"romaji/incomplete", [] { equal(roman("k"), U"k"); equal(roman("n"), U"ん"); }},
         {"romaji/failed-prefix-retries-last-key", [] { equal(roman("fka"), U"か"); equal(roman("kyka"), U"か"); equal(roman("k!"), U"!"); }},
         {"input/direct-commit", [] { Session s; s.type("kana"); equal(s.committed, U"かな"); equal(s.engine.preedit(), U""); }},
-        {"input/pending-backspace", [] { Session s; s.type("ky"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"k"); s.type("a"); equal(s.committed, U"か"); }},
+        {"input/pending-backspace", [] {
+            for (const auto mode : {Mode::Hiragana, Mode::Katakana}) {
+                Session s; s.engine.set_mode(mode); s.type("ky");
+                const auto result = s.key({KeyCode::Backspace});
+                require(result.consumed && result.committed.empty() && !result.learning, "prefix deletion committed text");
+                equal(s.engine.preedit(), U"");
+                require(!s.engine.would_handle({KeyCode::Backspace}), "empty prefix still consumes Backspace");
+                s.type("a"); equal(s.committed, mode == Mode::Hiragana ? U"あ" : U"ア");
+            }
+        }},
+        {"conversion/pending-backspace-preserves-reading", [] {
+            Session s; s.type("Kaky"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"▽か");
+            s.type("a"); equal(s.engine.preedit(), U"▽かあ");
+            s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"▽か");
+        }},
+        {"conversion/pending-backspace-removes-okuri-boundary", [] {
+            for (const auto input : {"KaKy", "KaNn"}) {
+                Session s; s.type(input); s.key({KeyCode::Backspace});
+                equal(s.engine.preedit(), std::string_view(input) == "KaKy" ? U"▽か" : U"▽かん");
+                require(s.engine.stage() == Stage::Reading, "prefix deletion retained okuri mode");
+                s.type("a"); equal(s.engine.preedit(), std::string_view(input) == "KaKy" ? U"▽かあ" : U"▽かんあ");
+            }
+        }},
         {"input/idle-special-keys-pass-through", [] {
             Session s; for (auto key : {KeyCode::Enter, KeyCode::Backspace, KeyCode::Cancel, KeyCode::Space})
                 require(!s.key({key}).consumed, "idle key must pass through");
@@ -227,7 +249,7 @@ int main() {
             Session vowel; vowel.type("AI"); equal(vowel.engine.preedit(), U"▽あ*い");
         }},
         {"conversion/shift-release-after-backspace-and-cancel", [] {
-            Session s; s.type("KY"); s.key({KeyCode::Backspace}); s.type("Anji");
+            Session s; s.type("KY"); s.key({KeyCode::Backspace}); equal(s.engine.preedit(), U"▽"); s.type("KAnji");
             equal(s.engine.preedit(), U"▽かんじ");
             s.key({KeyCode::Cancel}); s.type("KAKU"); equal(s.engine.preedit(), U"▼書く");
             s.key({KeyCode::Cancel}); equal(s.engine.preedit(), U"▽か*く");
@@ -244,6 +266,53 @@ int main() {
         {"conversion/kana-confirmation", [] { Session s; s.type("Kanjiq"); equal(s.committed, U"カンジ"); }},
         {"conversion/terminal-n-lookup", [] { Session s; s.type("Nihon"); s.key({KeyCode::Space}); equal(s.engine.preedit(), U"▼日本"); }},
         {"conversion/reset-does-not-reuse-candidates", [] { Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.engine.reset(); s.type("a"); equal(s.committed, U"あ"); require(s.engine.candidates().empty(), "candidates survived reset"); }},
+        {"conversion/backspace-confirms-selected-candidate-minus-last-character", [] {
+            Session s; s.type("Kanji"); s.key({KeyCode::Space}); s.key({KeyCode::Space});
+            const auto result = s.key({KeyCode::Backspace}); equal(result.committed, U"感");
+            require(result.consumed && result.learning.has_value(), "Backspace did not confirm the selection");
+            equal(result.learning->candidate.text, U"感じ"); equal(result.learning->candidate.annotation, U"感覚");
+            require(result.learning->candidate.id == "kanji-2" && result.learning->key == LookupKey{U"かんじ"}, "wrong candidate learned");
+            require(s.engine.stage() == Stage::Direct && s.engine.candidates().empty(), "Backspace retained conversion state");
+            equal(s.engine.preedit(), U""); require(!s.key({KeyCode::Enter}).learning, "Backspace learned twice");
+            s.type("a"); equal(s.committed, U"感あ");
+        }},
+        {"conversion/backspace-deletes-one-unicode-character-without-touching-prefix", [] {
+            for (const auto text : {U"漢", U"𠮷", U"漢𠮷", U"𠮷字"}) {
+                auto dictionary = std::make_shared<MemoryDictionary>(); dictionary->add({U"かな"}, {{"word", text, U""}});
+                Session s{Engine(dictionary)}; s.type("aKana"); s.key({KeyCode::Space});
+                const auto result = s.key({KeyCode::Backspace}); auto expected = std::u32string(text); expected.pop_back();
+                equal(result.committed, expected); equal(s.committed, U"あ" + expected);
+                require(result.learning.has_value(), "deleted single-character candidate lost learning");
+                equal(result.learning->candidate.text, text); equal(s.engine.preedit(), U"");
+                require(!s.engine.would_handle({KeyCode::Backspace}), "confirmed deletion consumes the next Backspace");
+            }
+        }},
+        {"conversion/backspace-okuri-preserves-learning-identity-and-navigation", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>();
+            dictionary->add({U"ころ", 'n'}, {{"first", U"転", U""}, {"second", U"頃", U""}});
+            for (const auto mode : {Mode::Hiragana, Mode::Katakana}) {
+                Session s{Engine(dictionary)}; s.engine.set_mode(mode); s.type("KoroNde");
+                const auto partial = s.key({KeyCode::Backspace});
+                require(partial.consumed && partial.committed.empty() && !partial.learning, "partial okuri deletion confirmed");
+                equal(s.engine.preedit(), mode == Mode::Hiragana ? U"▼転ん" : U"▼転ン");
+                equal(s.engine.scoring_text(0), U"転ん"); equal(s.engine.inference_reading(true), U"ころん");
+                require(!s.engine.can_reorder_candidates(), "deleted okuri allowed reordering");
+                s.key({KeyCode::Space}); equal(s.engine.candidate_text(1), mode == Mode::Hiragana ? U"頃ん" : U"頃ン");
+                s.type("x"); s.key({KeyCode::PageDown});
+                const auto result = s.key({KeyCode::Backspace}); equal(result.committed, U"頃");
+                require(result.learning && result.learning->key == LookupKey{U"ころ", 'n'}, "okuri deletion lost learning key");
+                equal(result.learning->candidate.text, U"頃"); equal(result.learning->okuri, U"んで");
+                equal(s.engine.preedit(), U"");
+            }
+        }},
+        {"conversion/backspace-okuri-cancel-keeps-deletion", [] {
+            auto dictionary = std::make_shared<MemoryDictionary>(); dictionary->add({U"ころ", 'n'}, {{"word", U"転", U""}});
+            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Character, 'x'}}) {
+                Session s{Engine(dictionary)}; s.type("KoroNde"); s.key({KeyCode::Backspace}); s.key(cancel);
+                equal(s.engine.preedit(), U"▽ころん"); require(s.engine.stage() == Stage::Reading, "deleted okuri kept old lookup boundary");
+                s.type("a"); equal(s.engine.preedit(), U"▽ころんあ");
+            }
+        }},
         {"conversion/probe-is-pure", [] { Session s; s.type("Kanji"); const auto revision = s.engine.revision(); for (int i = 0; i < 5; ++i) require(s.engine.would_handle({KeyCode::Space}), "expected handled key"); require(s.engine.revision() == revision, "probe changed revision"); equal(s.engine.preedit(), U"▽かんじ"); }},
         {"conversion/copy-is-independent", [] { Session s; s.type("Kanji"); auto trial = s.engine; trial.handle({KeyCode::Space}); equal(s.engine.preedit(), U"▽かんじ"); equal(trial.preedit(), U"▼漢字"); }},
         {"abbrev/entry-and-literal-spelling", [] {
@@ -268,7 +337,7 @@ int main() {
         {"abbrev/cancel-candidate-keeps-ascii-editing", [] {
             auto dictionary = std::make_shared<MemoryDictionary>();
             dictionary->add({U"q"}, {{"q", U"候補", U""}});
-            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Backspace}, Key{KeyCode::Character, 'x'}}) {
+            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Character, 'x'}}) {
                 Session s{Engine(dictionary)}; s.type("/q"); s.key({KeyCode::Space}); s.key(cancel);
                 equal(s.engine.preedit(), U"▽q"); require(s.engine.abbrev(), "candidate cancel lost abbrev");
                 s.type("l"); equal(s.engine.preedit(), U"▽ql");
@@ -345,7 +414,7 @@ int main() {
             require(result.learning->key == LookupKey{U"SKK"}, "abbrev learning case changed");
         }},
         {"learning/cancel-edit-and-reset-do-not-learn", [] {
-            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Backspace}, Key{KeyCode::Character, 'x'}}) {
+            for (const auto cancel : {Key{KeyCode::Cancel}, Key{KeyCode::Character, 'x'}}) {
                 Session s; s.type("Kanji"); s.key({KeyCode::Space});
                 require(!s.key(cancel).learning && !s.key({KeyCode::Enter}).learning, "canceled candidate was learned");
             }
@@ -364,11 +433,13 @@ int main() {
                 for (const auto policy : {LearningPolicy::Learn, LearningPolicy::DoNotLearn}) {
                     auto dictionary = std::make_shared<MemoryDictionary>();
                     dictionary->add({U"かな"}, {{"candidate", U"仮名", U"注釈", source, policy}});
-                    Session s{Engine(dictionary)}; s.type("Kana"); s.key({KeyCode::Space});
-                    const auto result = s.key({KeyCode::Enter}); equal(result.committed, U"仮名");
-                    require(result.learning.has_value() == (policy == LearningPolicy::Learn && source != CandidateSource::GeneratedLong),
-                        "learning policy or long-generation exclusion ignored");
-                    if (result.learning) require(result.learning->candidate.source == source, "candidate source changed");
+                    for (const auto confirm : {KeyCode::Enter, KeyCode::Backspace}) {
+                        Session s{Engine(dictionary)}; s.type("Kana"); s.key({KeyCode::Space});
+                        const auto result = s.key({confirm}); equal(result.committed, confirm == KeyCode::Enter ? U"仮名" : U"仮");
+                        require(result.learning.has_value() == (policy == LearningPolicy::Learn && source != CandidateSource::GeneratedLong),
+                            "learning policy or long-generation exclusion ignored");
+                        if (result.learning) require(result.learning->candidate.source == source, "candidate source changed");
+                    }
                 }
             }
         }},
@@ -392,7 +463,7 @@ int main() {
                 const bool expected = s.engine.would_handle(key);
                 const auto result = s.key(key);
                 require(result.consumed == expected, "probe disagrees with handler");
-                if (result.learning) require(result.consumed && !result.committed.empty() && result.learning->candidate.learning == LearningPolicy::Learn &&
+                if (result.learning) require(result.consumed && (!result.committed.empty() || key.code == KeyCode::Backspace) && result.learning->candidate.learning == LearningPolicy::Learn &&
                     result.learning->candidate.source != CandidateSource::GeneratedLong,
                     "invalid learning event");
                 require(result.committed.find(U'▽') == std::u32string::npos && result.committed.find(U'▼') == std::u32string::npos, "marker committed");

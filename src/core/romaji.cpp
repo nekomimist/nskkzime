@@ -175,8 +175,7 @@ std::u32string Romaji::flush() {
 }
 bool Romaji::backspace() {
     if (pending_.empty()) return false;
-    pending_.pop_back();
-    carried_n_ = false;
+    clear(); // DDSKK deletes the entire unfinished kana prefix.
     return true;
 }
 void Romaji::clear() { pending_.clear(); carried_n_ = false; }

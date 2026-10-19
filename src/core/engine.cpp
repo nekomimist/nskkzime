@@ -36,9 +36,17 @@ void Engine::clear_composition() {
     forget_.reset();
     input_.stage = Stage::Direct;
     input_.abbrev = false;
-    input_.romaji.clear(); input_.reading.clear(); input_.okuri.clear(); input_.okuri_letter = 0;
+    input_.romaji.clear(); input_.reading.clear(); input_.okuri.clear(); input_.okuri_letter = 0; input_.deleted_okuri = 0;
     input_.candidates.clear(); input_.candidate_index = 0;
     input_.candidates_touched = input_.generation_attempted = false;
+}
+void Engine::restore_reading() {
+    if (input_.deleted_okuri) {
+        input_.reading += input_.visible_okuri();
+        input_.okuri.clear(); input_.okuri_letter = 0; input_.deleted_okuri = 0;
+    }
+    input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
+    input_.candidates.clear(); input_.candidate_index = 0;
 }
 void Engine::reset() {
     if (registering()) input_.mode = registrations_.front().original.mode;
@@ -52,10 +60,10 @@ std::u32string Engine::inference_reading(bool include_okuri) const {
     const auto& input = registering() ? registrations_.front().original : input_;
     if (input.abbrev || (input.okuri_letter && !include_okuri) || !input.romaji.pending().empty() ||
         (input.stage != Stage::Reading && input.stage != Stage::Selecting)) return {};
-    return input.reading + (include_okuri ? input.okuri : U"");
+    return input.reading + (include_okuri ? std::u32string(input.visible_okuri()) : U"");
 }
 std::u32string Engine::scoring_text(std::size_t index) const {
-    return !registering() && index < input_.candidates.size() ? input_.candidates[index].text + input_.okuri : std::u32string{};
+    return !registering() && index < input_.candidates.size() ? input_.candidates[index].text + std::u32string(input_.visible_okuri()) : std::u32string{};
 }
 bool Engine::can_reorder_candidates() const {
     return !forgetting() && !registering() && input_.stage == Stage::Selecting && !input_.candidates_touched && input_.candidate_index == 0;
@@ -117,7 +125,7 @@ std::u32string Engine::literal_text() const {
     return registering() ? registrations_.front().anchor : input_literal();
 }
 std::u32string Engine::candidate_text(std::size_t index) const {
-    return index < input_.candidates.size() ? input_.candidates[index].text + display(input_.okuri) : std::u32string{};
+    return index < input_.candidates.size() ? input_.candidates[index].text + display(input_.visible_okuri()) : std::u32string{};
 }
 std::u32string Engine::input_preedit() const {
     if (input_.stage == Stage::Direct) return ascii(input_.romaji.pending());
@@ -164,6 +172,7 @@ void Engine::convert(Result& result) {
     if (input_.reading.empty()) return;
     if (!dictionary_->ready()) { result.dictionary_pending = true; return; }
     result.conversion_started = true;
+    input_.deleted_okuri = 0;
     input_.candidates_touched = input_.generation_attempted = false;
     const LookupKey lookup{input_.reading, input_.okuri_letter};
     const auto numeric = numeric_reading(lookup);
@@ -273,22 +282,21 @@ void Engine::begin_registration(Result& result) {
     if (registrations_.size() >= 8 || input_.reading.size() > 1024 || input_.okuri.size() > 1024) {
         result.registration_limit = registration_limit_ = true; return;
     }
-    auto anchor = display(input_.reading + input_.okuri);
+    auto anchor = display(input_.reading + std::u32string(input_.visible_okuri()));
     registrations_.push_back({input_, {}, std::move(anchor)});
     input_ = {}; // Registration always starts with normal hiragana input.
     input_.romaji = Romaji(rules_);
 }
 void Engine::cancel_registration() {
     input_ = std::move(registrations_.back().original); registrations_.pop_back();
-    input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
-    input_.candidates.clear(); input_.candidate_index = 0;
+    // An edited candidate resumes with its shortened okuri still displayed.
+    if (input_.stage != Stage::Selecting || !input_.deleted_okuri) restore_reading();
 }
 void Engine::abandon_registration() {
     forget_.reset();
     if (!registering()) return;
     input_ = std::move(registrations_.front().original); registrations_.clear();
-    input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
-    input_.candidates.clear(); input_.candidate_index = 0; registration_limit_ = false; ++revision_;
+    restore_reading(); registration_limit_ = false; ++revision_;
 }
 void Engine::remember_registration(const LearningEvent& event) noexcept {
     try {
@@ -318,8 +326,7 @@ Result Engine::handle_forgetting(Key key) {
     if (key.code == KeyCode::Enter) {
         if (forget_->target && forget_->answer == U"yes") {
             result.forgetting = forget_->target;
-            input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
-            input_.candidates.clear(); input_.candidate_index = 0;
+            restore_reading();
         }
         cancel_forgetting();
     } else if (key.code == KeyCode::Backspace) {
@@ -343,7 +350,7 @@ Result Engine::handle_registration(Key key) {
             {"registered:" + utf8(original.reading), word, {}}};
         result.registration = true;
         input_.mode = original.mode; clear_composition(); registrations_.pop_back();
-        const auto committed = word + display(original.okuri);
+        const auto committed = word + display(original.visible_okuri());
         if (registering()) registrations_.back().draft += committed;
         else result.committed = committed;
         return result;
@@ -388,17 +395,26 @@ Result Engine::handle_input(Key key) {
     }
     if (key.code == KeyCode::Cancel) {
         if (input_.stage == Stage::Selecting) {
-            input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
-            input_.candidates.clear(); input_.candidate_index = 0;
+            restore_reading();
         } else clear_composition();
         return result;
     }
     if (key.code == KeyCode::Enter) { confirm(result); return result; }
     if (key.code == KeyCode::Backspace) {
         if (input_.stage == Stage::Selecting) {
-            input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
-            input_.candidates.clear(); input_.candidate_index = 0;
-        } else if (!input_.romaji.backspace()) {
+            if (!input_.visible_okuri().empty()) {
+                ++input_.deleted_okuri;
+                if (input_.visible_okuri().empty()) confirm(result);
+            } else {
+                confirm(result);
+                if (!result.committed.empty()) result.committed.pop_back();
+            }
+        } else if (input_.romaji.backspace()) {
+            if (input_.stage == Stage::Okuri) {
+                input_.reading += input_.okuri; input_.okuri.clear();
+                input_.okuri_letter = 0; input_.stage = Stage::Reading;
+            }
+        } else {
             if (!input_.okuri.empty()) input_.okuri.pop_back();
             else if (input_.okuri_letter) { input_.okuri_letter = 0; input_.stage = Stage::Reading; }
             else if (!input_.reading.empty()) input_.reading.pop_back();
@@ -424,7 +440,7 @@ Result Engine::handle_input(Key key) {
     if (input_.stage == Stage::Selecting) {
         if (ch == 'x') {
             if (input_.candidate_index > 0) --input_.candidate_index;
-            else { input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading; input_.candidates.clear(); }
+            else restore_reading();
             return result;
         }
         confirm(result); // Reprocess this key after committing the selected word.

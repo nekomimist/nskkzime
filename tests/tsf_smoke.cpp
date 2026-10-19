@@ -401,6 +401,23 @@ void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
         check(context->doc->writes == first_writes + 1 && context->doc->text == L"前漢字か漢字あ後",
               "commit and additional kana skipped a necessary edit");
     }
+    {
+        auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
+        type(keys, context.Get(), "Kanji"); key(keys, context.Get(), VK_SPACE);
+        context->doc->reject_write = true;
+        check(!key(keys, context.Get(), VK_BACK) && context->doc->text == L"前漢字後", "failed candidate deletion changed text or ate Backspace");
+        context->doc->reject_write = false;
+        check(key(keys, context.Get(), VK_BACK) && context->doc->text == L"前漢後", "candidate Backspace did not delete and confirm");
+        check(context->composition->ended && !host->ui && context->doc->caret == 2, "candidate deletion retained composition, UI or wrong caret");
+        check(!key(keys, context.Get(), VK_BACK), "confirmed deletion consumed idle Backspace");
+        type(keys, context.Get(), "a"); check(context->doc->text == L"前漢あ後", "candidate deletion damaged following input");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "ky");
+        check(key(keys, context.Get(), VK_BACK) && context->doc->text.empty(), "Backspace retained an unfinished romaji prefix");
+        check(context->composition->ended && !host->ui && !key(keys, context.Get(), VK_BACK), "prefix deletion retained composition or consumed idle Backspace");
+        type(keys, context.Get(), "a"); check(context->doc->text == L"あ", "prefix deletion left a consonant");
+    }
     for (const bool reenter : {false, true}) {
         auto context = fresh(); type(keys, context.Get(), "Ka");
         const auto writes = context->doc->writes;
