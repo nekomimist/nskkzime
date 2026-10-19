@@ -48,9 +48,11 @@ int main() {
         }},
         {"engine/failed-carry-and-custom-n-before-mode-commands",[] {
             const auto table=RomajiRules::parse("version=1\njj\tっ\tj\nnn\tん\n");
-            for(const auto input:{"jjl","nnl"}) {
+            for(const auto input:{"jjl","nnl","jjL","nnL"}) {
                 Engine e(demo_dictionary(),false,table); std::u32string output; type(e,input,output);
-                equal(output,std::string_view(input)=="jjl"?U"っ":U"ん"); check(e.mode()==Mode::Latin&&e.preedit().empty(),"carry blocked Latin");
+                equal(output,std::string_view(input).starts_with("jj")?U"っ":U"ん");
+                const auto mode = std::string_view(input).back() == 'L' ? Mode::FullWidthLatin : Mode::Latin;
+                check(e.mode()==mode&&e.preedit().empty(),"carry blocked Latin");
             }
         }},
         {"romaji/copy-and-clear",[] {

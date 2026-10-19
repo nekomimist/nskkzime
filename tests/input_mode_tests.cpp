@@ -41,12 +41,13 @@ struct Session {
     ComPtr<test_host::Context> context;
     ComPtr<ITfTextInputProcessorEx> service;
     ComPtr<ITfKeyEventSink> keys;
-    Session(bool closed = false, bool reject_bar = false, bool opened = false) {
+    Session(bool closed = false, bool reject_bar = false, bool opened = false, Mode opened_mode = Mode::Katakana) {
         host.Attach(new test_host::ModeManager); context.Attach(new test_host::Context);
         if (closed) host->open->value = 0;
         else if (opened) {
             host->open->value = 1;
-            host->conversion->value = TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_KATAKANA;
+            host->conversion->value = opened_mode == Mode::FullWidthLatin ? TF_CONVERSIONMODE_FULLSHAPE :
+                TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_KATAKANA;
         }
         host->reject_bar = reject_bar;
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))), "create service"); service.As(&keys);
@@ -61,9 +62,10 @@ struct Session {
         LPARAM parameter = static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code), MAPVK_VK_TO_VSC)) << 16;
         if (repeat) parameter |= static_cast<LPARAM>(1) << 30;
         BOOL eaten = FALSE;
-        const auto text = context->doc->text; const auto mode = host->open->value;
+        const auto text = context->doc->text; const auto mode = host->open->value, conversion = host->conversion->value;
         keys->OnTestKeyDown(context.Get(), code, parameter, &eaten);
-        check(text == context->doc->text && mode == host->open->value, "key preflight changed mode/text");
+        check(text == context->doc->text && mode == host->open->value && conversion == host->conversion->value,
+            "key preflight changed mode/text");
         BOOL again = FALSE; keys->OnTestKeyDown(context.Get(), code, parameter, &again);
         check(eaten == again, "repeated preflight changed key routing");
         if (eaten) keys->OnKeyDown(context.Get(), code, parameter, &eaten);
@@ -110,14 +112,15 @@ int wmain(int argc, wchar_t** argv) {
             actions->open_tool = [&](ImeTool tool) { opened.push_back(tool); return S_OK; };
             ComPtr<ModeButton> button; button.Attach(new ModeButton(actions));
             ComPtr<Menu> menu; menu.Attach(new Menu);
-            check(button->InitMenu(menu.Get()) == S_OK && menu->items.size() == 6, "missing mode/tool menu items");
-            check(menu->items[0].flags == TF_LBMENUF_CHECKED && menu->items[3].flags == TF_LBMENUF_SEPARATOR &&
-                menu->items[4].id == settings_menu_id && menu->items[4].text == L"設定…" &&
-                menu->items[5].id == dictionary_menu_id && menu->items[5].text == L"学習辞書の管理…", "tool menu identity incorrect");
+            check(button->InitMenu(menu.Get()) == S_OK && menu->items.size() == 7, "missing mode/tool menu items");
+            check(menu->items[0].flags == TF_LBMENUF_CHECKED && menu->items[3].id == 4 && menu->items[3].text == L"全英（全角英数）" &&
+                menu->items[4].flags == TF_LBMENUF_SEPARATOR &&
+                menu->items[5].id == settings_menu_id && menu->items[5].text == L"設定…" &&
+                menu->items[6].id == dictionary_menu_id && menu->items[6].text == L"学習辞書の管理…", "tool menu identity incorrect");
             check(button->OnMenuSelect(settings_menu_id) == S_OK && button->OnMenuSelect(dictionary_menu_id) == S_OK &&
                 opened == std::vector<ImeTool>{ImeTool::Settings, ImeTool::Dictionary} && !mode_changes, "tool selection changed input mode or picked wrong GUI");
             actions->tools_available[1] = false; menu->items.clear(); button->InitMenu(menu.Get());
-            check(menu->items[5].flags == TF_LBMENUF_GRAYED && button->OnMenuSelect(dictionary_menu_id) == S_FALSE, "invalid dictionary path remained actionable");
+            check(menu->items[6].flags == TF_LBMENUF_GRAYED && button->OnMenuSelect(dictionary_menu_id) == S_FALSE, "invalid dictionary path remained actionable");
             menu->reject = true; check(button->InitMenu(menu.Get()) == E_FAIL, "host menu error ignored");
             check(button->OnMenuSelect(99) == E_INVALIDARG, "unknown menu command accepted");
             button->close(); check(button->OnMenuSelect(settings_menu_id) == S_FALSE && opened.size() == 2, "closed menu launched GUI");
@@ -136,8 +139,8 @@ int wmain(int argc, wchar_t** argv) {
             button.Attach(new ModeButton(actions, [&](HMENU menu, POINT point, const RECT* area) -> UINT {
                 ++menus; last_menu = menu;
                 check(point.x == -20 && point.y == 30 && area && area->left == -25, "menu anchor lost");
-                check(GetMenuItemCount(menu) == 6 && GetMenuItemID(menu, 4) == settings_menu_id &&
-                    GetMenuItemID(menu, 5) == dictionary_menu_id, "native menu commands missing");
+                check(GetMenuItemCount(menu) == 7 && GetMenuItemID(menu, 3) == 4 && GetMenuItemID(menu, 5) == settings_menu_id &&
+                    GetMenuItemID(menu, 6) == dictionary_menu_id, "native menu commands missing");
                 check((GetMenuState(menu, 1, MF_BYCOMMAND) & MF_CHECKED) &&
                     (GetMenuState(menu, dictionary_menu_id, MF_BYCOMMAND) & MF_GRAYED), "native menu state wrong");
                 wchar_t label[32]{}; GetMenuStringW(menu, settings_menu_id, label, ARRAYSIZE(label), MF_BYCOMMAND);
@@ -199,14 +202,77 @@ int wmain(int argc, wchar_t** argv) {
                 "retired service could open tools");
         }
         {
+            Session s;
+            s.type("LAbc123"); check(s.key(VK_SPACE), "fullwidth Space passed through");
+            s.type("qlQL/-~\"'`\\");
+            check(s.context->doc->text == L"Ａｂｃ１２３　ｑｌＱＬ／−〜”’‘＼" && s.label() == L"Ａ" &&
+                s.host->open->value == 1 && s.host->conversion->value == TF_CONVERSIONMODE_FULLSHAPE,
+                "fullwidth text or Windows mode incorrect");
+            check(!s.context->composition || s.context->composition->ended, "fullwidth text remained composing");
+            BSTR tooltip = nullptr; check(s.button()->GetTooltipString(&tooltip) == S_OK, "fullwidth tooltip unavailable");
+            const bool fullwidth_tip = std::wstring_view(tooltip) == L"nskkzime: 全英（全角英数）";
+            SysFreeString(tooltip); check(fullwidth_tip, "fullwidth tooltip incorrect");
+            HICON icon = nullptr; check(SUCCEEDED(s.button()->GetIcon(&icon)) && icon, "fullwidth icon missing"); DestroyIcon(icon);
+            for (const auto code : {VK_RETURN, VK_BACK, VK_ESCAPE, VK_LEFT, VK_DELETE, VK_TAB})
+                check(!s.key(code) && s.label() == L"Ａ", "fullwidth mode captured application editing key");
+            check(!s.key('C', true) && !s.key('Q', true), "fullwidth mode captured application shortcut");
+            const auto text = s.context->doc->text;
+            s.context->doc->reject_write = true;
+            check(!s.key('A') && s.context->doc->text == text && s.label() == L"Ａ", "failed fullwidth edit changed text/mode");
+            s.context->doc->reject_write = false; s.type("a");
+            check(s.context->doc->text == text + L"ａ", "retry after failed fullwidth edit incorrect");
+            check(s.key('J', true) && s.label() == L"あ", "fullwidth C-j did not return to hiragana");
+            s.type("kana"); check(s.context->doc->text.ends_with(L"ａかな"), "fullwidth C-j retained Latin input");
+            s.button()->OnMenuSelect(4); check(s.label() == L"Ａ", "fullwidth menu missing");
+            s.button()->OnClick(TF_LBI_CLK_LEFT, {}, nullptr);
+            check(s.label() == L"A" && s.host->open->value == 0, "fullwidth button did not toggle off");
+        }
+        {
+            Session s;
+            s.host->conversion->set(TF_CONVERSIONMODE_FULLSHAPE);
+            check(s.label() == L"Ａ" && s.host->open->value == 1, "external fullwidth mode ignored");
+            s.type("a"); check(s.context->doc->text == L"ａ", "external fullwidth mode did not reach engine");
+            s.host->open->set(0); s.host->conversion->set(TF_CONVERSIONMODE_FULLSHAPE);
+            check(s.label() == L"A", "conversion opened a closed IME");
+            s.host->open->set(1); check(s.label() == L"Ａ", "fullwidth conversion-before-open lost");
+            s.host->conversion->set(TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_FULLSHAPE);
+            check(s.label() == L"あ", "external hiragana after fullwidth ignored");
+            s.type("/wide-draft"); s.key(VK_SPACE); s.type("Labc"); s.key(VK_SPACE);
+            check(s.host->ui && s.host->open->value == 1 && s.label() == L"あ", "fullwidth draft changed outer Windows mode");
+            s.host->open->set(1); s.host->conversion->set(TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_FULLSHAPE);
+            check(s.host->ui.Get() != nullptr, "repeated Windows mode notification cancelled fullwidth draft");
+            s.key(VK_BACK); s.key(VK_RETURN);
+            check(s.context->doc->text == L"ａａｂｃ" && s.label() == L"あ" && !s.host->ui,
+                "fullwidth registration text or mode restoration incorrect");
+        }
+        {
+            for (const auto reading : {"n", "Kanjin", "KaK"}) {
+                Session s; s.type(reading);
+                const auto text = s.context->doc->text;
+                s.context->doc->reject_write = true;
+                check(!s.key('L', false, true) && s.label() == L"あ" && s.context->doc->text == text &&
+                    s.host->conversion->value == (TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_FULLSHAPE),
+                    "failed L edit changed pending text or Windows mode");
+                s.context->doc->reject_write = false; s.type("Labc");
+                const auto kana = std::string_view(reading) == "n" ? L"ん" : std::string_view(reading) == "Kanjin" ? L"かんじん" : L"か";
+                check(s.label() == L"Ａ" && s.context->doc->text == std::wstring(kana) + L"ａｂｃ", "L retry lost prefix or reading");
+            }
+            Session selected; selected.type("Kanji"); selected.key(VK_SPACE); selected.type("Labc");
+            check(selected.context->doc->text == L"漢字ａｂｃ" && selected.label() == L"Ａ", "selected candidate lost on L");
+        }
+        {
+            Session s(false, false, true, Mode::FullWidthLatin);
+            check(s.label() == L"Ａ" && s.host->open->value == 1, "startup lost Windows fullwidth mode");
+        }
+        {
             Session s(false, false, true);
             check(s.label() == L"ア" && s.host->open->value == 1, "default startup lost Windows open mode");
         }
         {
             auto settings = read_dictionary_settings(root / L"settings.ini");
             settings.startup_ime_off = true; save_dictionary_settings(root / L"settings.ini", settings);
-            for (const auto initial : {0, 1, 2}) {
-                Session s(initial == 1, false, initial == 2);
+            for (const auto initial : {0, 1, 2, 3}) {
+                Session s(initial == 1, false, initial >= 2, initial == 3 ? Mode::FullWidthLatin : Mode::Katakana);
                 check(s.label() == L"A" && s.host->open->value == 0 && s.host->conversion->value == 0,
                     "startup did not force engine and Windows OFF");
                 check(!s.key('A'), "startup OFF captured ordinary typing");
@@ -320,8 +386,13 @@ int wmain(int argc, wchar_t** argv) {
             settings.off_key_exclusions.clear(); save_dictionary_settings(root / L"settings.ini", settings);
         }
         check(module_objects == 0, "mode objects retained service");
+        wait_for_dictionary([&] { return std::filesystem::exists(file) && read_user_dictionary(file).revision() >= 2; });
         Sleep(600);
-        check(!std::filesystem::exists(file) || read_user_dictionary(file).revision() == 0, "mode switch learned unconfirmed text");
+        const auto learned = read_user_dictionary(file);
+        const auto kanji = learned.lookup({U"かんじ"}), wide_draft = learned.lookup({U"wide-draft"});
+        check(learned.revision() == 2 && learned.entries().size() == 2 &&
+            kanji.size() == 1 && kanji[0].text == U"漢字" && wide_draft.size() == 1 && wide_draft[0].text == U"ａｂｃ",
+            "mode switch learned unconfirmed text or lost explicit confirmation");
         std::cout << "PASS mode labels, Windows state, quote keys, app exclusions, composition lifetime and teardown\n"; result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();

@@ -54,7 +54,7 @@ constexpr auto base_rules = std::to_array<Rule>({
     {"z ", U"　"}, {"z*", U"※"}, {"z,", U"‥"}, {"z-", U"〜"}, {"z.", U"…"},
     {"z/", U"・"}, {"z0", U"○"}, {"z@", U"◎"}, {"z[", U"『"}, {"z]", U"』"},
     {"z{", U"〖"}, {"z}", U"〗"}, {"z(", U"（"}, {"z)", U"）"},
-    {"zh", U"←"}, {"zj", U"↓"}, {"zk", U"↑"}, {"zl", U"→"}
+    {"zh", U"←"}, {"zj", U"↓"}, {"zk", U"↑"}, {"zl", U"→"}, {"zL", U"⇒"}
 });
 bool consonant(char ch) { return ch >= 'a' && ch <= 'z' && std::string_view("aiueon").find(ch) == std::string_view::npos; }
 }

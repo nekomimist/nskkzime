@@ -5,6 +5,17 @@
 #include <utility>
 
 namespace nskkzime {
+namespace {
+// DDSKK's default skk-jisx0208-latin-vector, indexed by printable ASCII.
+constexpr std::u32string_view fullwidth_latin_table =
+    U"　！”＃＄％＆’（）＊＋，−．／"
+    U"０１２３４５６７８９：；＜＝＞？"
+    U"＠ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯ"
+    U"ＰＱＲＳＴＵＶＷＸＹＺ［＼］＾＿"
+    U"‘ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏ"
+    U"ｐｑｒｓｔｕｖｗｘｙｚ｛｜｝〜";
+static_assert(fullwidth_latin_table.size() == 95);
+}
 std::vector<LookupCandidate> Dictionary::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
     std::vector<LookupCandidate> result;
     for (const auto& key : keys)
@@ -160,6 +171,7 @@ bool Engine::would_handle(Key key) const {
     if (key.code == KeyCode::Hiragana) return true;
     if (input_.mode == Mode::Latin) return false;
     if (key.code == KeyCode::Character) return key.character >= 0x20 && key.character <= 0x7e;
+    if (input_.mode == Mode::FullWidthLatin && key.code == KeyCode::Space) return true;
     return input_.stage != Stage::Direct || !input_.romaji.pending().empty();
 }
 void Engine::append(std::u32string text, Result& result) {
@@ -393,6 +405,11 @@ Result Engine::handle_input(Key key) {
         input_.mode = Mode::Hiragana;
         return result;
     }
+    if (input_.mode == Mode::FullWidthLatin && (key.code == KeyCode::Character || key.code == KeyCode::Space)) {
+        const auto ch = key.code == KeyCode::Space ? ' ' : key.character;
+        result.committed += fullwidth_latin_table[static_cast<std::size_t>(ch - ' ')];
+        return result;
+    }
     if (key.code == KeyCode::Cancel) {
         if (input_.stage == Stage::Selecting) {
             restore_reading();
@@ -457,7 +474,7 @@ Result Engine::handle_input(Key key) {
     }
     // Resolve a failed prefix before dispatching a command. Other characters,
     // including normalized shifted input, resolve it inside Romaji::push.
-    if (ch == '/' || ch == 'q' || ch == 'l') append(input_.romaji.resolve_pending(ch), result);
+    if (ch == '/' || ch == 'q' || ch == 'l' || ch == 'L') append(input_.romaji.resolve_pending(ch), result);
     if (input_.stage == Stage::Direct && input_.romaji.pending().empty() && ch == '/') {
         input_.stage = Stage::Reading; input_.abbrev = true;
         return result;
@@ -471,12 +488,13 @@ Result Engine::handle_input(Key key) {
         }
         return result;
     }
-    if (input_.romaji.pending().empty() && ch == 'l') {
+    if (input_.romaji.pending().empty() && (ch == 'l' || ch == 'L')) {
         confirm(result);
-        input_.mode = Mode::Latin;
+        input_.mode = ch == 'L' ? Mode::FullWidthLatin : Mode::Latin;
         return result;
     }
-    if (ch >= 'A' && ch <= 'Z') {
+    // Case-sensitive continuations such as zL take precedence over Shift handling.
+    if (ch >= 'A' && ch <= 'Z' && !input_.romaji.accepts(ch)) {
         ch = static_cast<char>(ch - 'A' + 'a');
         if (input_.stage == Stage::Direct) {
             append(input_.romaji.flush(), result);

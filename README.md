@@ -49,7 +49,7 @@ ZIPで導入する場合は [GitHub Releases](https://github.com/nekomimist/nskk
 ```
 
 導入後、Windowsの入力方式からnskkzimeを選び、C-jでかな入力にする。
-入力モード「あ／ア／A」の右クリックメニューの「設定…」で、SKK辞書とzenzのモデルを指定する。
+入力モード「あ／ア／A／Ａ」の右クリックメニューの「設定…」で、SKK辞書とzenzのモデルを指定する。
 設定の変更は、利用するアプリを起動し直すと反映される。
 
 ## 文書

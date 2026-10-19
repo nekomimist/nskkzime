@@ -76,6 +76,78 @@ int main() {
         }},
         {"input/katakana-mode", [] { Session s; s.type("qkanaqkana"); equal(s.committed, U"カナかな"); }},
         {"input/latin-mode", [] { Session s; s.type("l"); require(!s.key({KeyCode::Character, 'A'}).consumed, "Latin must pass through"); s.key({KeyCode::Hiragana}); s.type("a"); equal(s.committed, U"あ"); }},
+        {"input/fullwidth-latin-printable-ascii", [] {
+            Session s; s.type("L");
+            require(s.engine.mode() == Mode::FullWidthLatin, "L did not select fullwidth Latin");
+            for (char ch = ' '; ch <= '~'; ++ch) {
+                char32_t expected = static_cast<char32_t>(ch) + 0xfee0;
+                switch (ch) {
+                case ' ': expected = U'　'; break;
+                case '"': expected = U'”'; break;
+                case '\'': expected = U'’'; break;
+                case '-': expected = U'−'; break;
+                case '`': expected = U'‘'; break;
+                case '~': expected = U'〜'; break;
+                default: break;
+                }
+                const auto result = s.key({KeyCode::Character, ch});
+                require(result.consumed && !result.learning && !result.conversion_started, "fullwidth character triggered conversion or learning");
+                equal(result.committed, std::u32string(1, expected));
+                require(s.engine.stage() == Stage::Direct && s.engine.preedit().empty() && s.engine.composition_text().empty(),
+                    "fullwidth Latin retained composition");
+            }
+            equal(s.key({KeyCode::Space}).committed, U"　");
+            for (const auto code : {KeyCode::Enter, KeyCode::Backspace, KeyCode::Cancel, KeyCode::PageDown, KeyCode::PageUp, KeyCode::SelectCandidate})
+                require(!s.key({code}).consumed, "fullwidth Latin captured an application editing key");
+            for (const auto ch : {'\x1f', '\x7f', static_cast<char>(0x80)})
+                require(!s.key({KeyCode::Character, ch}).consumed, "fullwidth Latin accepted non-ASCII input");
+        }},
+        {"input/fullwidth-latin-return-and-reset", [] {
+            for (const auto mode : {Mode::Hiragana, Mode::Katakana}) {
+                Session s; s.engine.set_mode(mode); s.type("LqlQL/");
+                equal(s.committed, U"ｑｌＱＬ／");
+                s.engine.reset();
+                require(s.engine.mode() == Mode::FullWidthLatin, "reset changed fullwidth mode");
+                s.key({KeyCode::Hiragana}); s.type("kana"); equal(s.committed, U"ｑｌＱＬ／かな");
+                s.engine.set_mode(Mode::FullWidthLatin); s.type("a"); equal(s.committed, U"ｑｌＱＬ／かなａ");
+                s.engine.set_mode(Mode::Latin);
+                require(!s.key({KeyCode::Character, 'L'}).consumed, "ASCII Latin L switched to fullwidth");
+            }
+            Session abbrev; abbrev.type("/AbL"); equal(abbrev.engine.preedit(), U"▽AbL");
+            require(abbrev.engine.abbrev() && abbrev.engine.mode() == Mode::Hiragana, "abbrev L changed mode");
+        }},
+        {"input/fullwidth-latin-prefix-and-trial", [] {
+            for (const auto mode : {Mode::Hiragana, Mode::Katakana}) {
+                for (const auto prefix : {"d", "ky", "n", "nn"}) {
+                    Session s; s.engine.set_mode(mode); s.type(prefix);
+                    const auto revision = s.engine.revision();
+                    require(s.engine.would_handle({KeyCode::Character, 'L'}) && s.engine.revision() == revision, "fullwidth probe mutated input");
+                    auto trial = s.engine; trial.handle({KeyCode::Character, 'L'});
+                    require(s.engine.mode() == mode && !s.engine.preedit().empty(), "fullwidth trial changed original");
+                    s.type("Labc");
+                    const auto kana = std::string_view(prefix).starts_with('n') ? (mode == Mode::Hiragana ? U"ん" : U"ン") : U"";
+                    equal(s.committed, std::u32string(kana) + U"ａｂｃ");
+                    require(s.engine.mode() == Mode::FullWidthLatin && s.engine.preedit().empty(), "failed prefix blocked fullwidth mode");
+                }
+            }
+        }},
+        {"conversion/fullwidth-latin-commits-reading-and-selection", [] {
+            for (const auto input : {"Kanji", "Kad", "KaK", "Kan"}) {
+                Session s; s.type(input); s.type("Labc");
+                const auto kana = std::string_view(input) == "Kanji" ? U"かんじ" : std::string_view(input) == "Kan" ? U"かん" : U"か";
+                equal(s.committed, std::u32string(kana) + U"ａｂｃ");
+                require(s.engine.mode() == Mode::FullWidthLatin && s.engine.stage() == Stage::Direct, "fullwidth mode retained reading/okuri");
+            }
+            Session s; s.type("Kanji"); s.key({KeyCode::Space});
+            const auto result = s.key({KeyCode::Character, 'L'});
+            require(result.learning && result.learning->candidate.text == U"漢字", "L lost candidate learning");
+            s.type("abc"); equal(s.committed, U"漢字ａｂｃ");
+        }},
+        {"input/shifted-symbol-before-fullwidth-command", [] {
+            Session s; s.type("zlzL"); equal(s.committed, U"→⇒");
+            require(s.engine.mode() == Mode::Hiragana && s.engine.preedit().empty(), "zL entered fullwidth mode");
+            s.type("KazL"); equal(s.engine.preedit(), U"▽か⇒");
+        }},
         {"input/failed-prefix-mode-commands", [] {
             for (const auto mode : {Mode::Hiragana, Mode::Katakana}) {
                 for (const auto prefix : {"d", "ky", "n", "nn"}) {
@@ -456,7 +528,7 @@ int main() {
         {"unicode/non-bmp", [] { require(utf8(U"𠮷") == "\xf0\xa0\xae\xb7", "non-BMP UTF-8 failed"); equal(katakana(U"かな𠮷"), U"カナ𠮷"); }},
         {"state/random-key-invariants", [] {
             Session s; std::mt19937 random(12345);
-            const std::string alphabet = "KanjiTaBeruqxl'-,/127890";
+            const std::string alphabet = "KanjiTaBeruqxlL'-,/127890";
             for (int i = 0; i < 10000; ++i) {
                 const auto choice = random() % (alphabet.size() + 7);
                 const Key key = choice < alphabet.size() ? Key{KeyCode::Character, alphabet[choice]} : Key{static_cast<KeyCode>(1 + random() % 8), 0, random() % 20};

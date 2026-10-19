@@ -9,9 +9,15 @@ namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr std::array<const GUID*, 2> ids{{&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION}};
-constexpr std::array<Mode, 3> modes{{Mode::Hiragana, Mode::Katakana, Mode::Latin}};
-const wchar_t* text(Mode mode) { return mode == Mode::Hiragana ? L"あ" : mode == Mode::Katakana ? L"ア" : L"A"; }
+constexpr std::array<Mode, 4> modes{{Mode::Hiragana, Mode::Katakana, Mode::Latin, Mode::FullWidthLatin}};
+constexpr std::array<const wchar_t*, 4> mode_names{{L"ひらがな", L"カタカナ", L"英数（IMEオフ）", L"全英（全角英数）"}};
+const wchar_t* text(Mode mode) {
+    if (mode == Mode::Hiragana) return L"あ";
+    if (mode == Mode::Katakana) return L"ア";
+    return mode == Mode::FullWidthLatin ? L"Ａ" : L"A";
+}
 const wchar_t* description(Mode mode) {
+    if (mode == Mode::FullWidthLatin) return L"nskkzime: 全英（全角英数）";
     return mode == Mode::Hiragana ? L"nskkzime: ひらがな" : mode == Mode::Katakana ? L"nskkzime: カタカナ" : L"nskkzime: 英数（IMEオフ）";
 }
 HRESULT string_result(const wchar_t* text, BSTR* out) {
@@ -96,9 +102,8 @@ HRESULT ModeButton::popup(POINT point, const RECT* area) noexcept {
     try {
         const UniqueMenu menu(CreatePopupMenu());
         if (!menu) return E_OUTOFMEMORY;
-        constexpr std::array<const wchar_t*, 3> names{{L"ひらがな", L"カタカナ", L"英数（IMEオフ）"}};
         for (UINT i = 0; i < modes.size(); ++i) {
-            if (!AppendMenuW(menu.get(), MF_STRING | (modes[i] == mode_ ? MF_CHECKED : 0), i + 1, names[i])) return E_FAIL;
+            if (!AppendMenuW(menu.get(), MF_STRING | (modes[i] == mode_ ? MF_CHECKED : 0), i + 1, mode_names[i])) return E_FAIL;
         }
         if (!AppendMenuW(menu.get(), MF_SEPARATOR, 0, nullptr)) return E_FAIL;
         {
@@ -117,10 +122,9 @@ HRESULT ModeButton::popup(POINT point, const RECT* area) noexcept {
 }
 HRESULT ModeButton::InitMenu(ITfMenu* menu) {
     if (!menu) return E_POINTER;
-    constexpr std::array<const wchar_t*, 3> names{{L"ひらがな", L"カタカナ", L"英数（IMEオフ）"}};
     for (UINT i = 0; i < modes.size(); ++i) {
         const auto hr = menu->AddMenuItem(i + 1, modes[i] == mode_ ? TF_LBMENUF_CHECKED : 0, nullptr, nullptr,
-            names[i], static_cast<ULONG>(wcslen(names[i])), nullptr);
+            mode_names[i], static_cast<ULONG>(wcslen(mode_names[i])), nullptr);
         if (FAILED(hr)) return hr;
     }
     auto hr = menu->AddMenuItem(0, TF_LBMENUF_SEPARATOR, nullptr, nullptr, nullptr, 0, nullptr);
@@ -229,7 +233,9 @@ HRESULT InputMode::OnChange(REFGUID guid) {
     auto next = Mode::Latin;
     if (*open) {
         const auto conversion = read(compartments_[1].Get());
-        if (guid == *ids[1] && conversion && !(*conversion & TF_CONVERSIONMODE_NATIVE)) next = Mode::Latin;
+        if (conversion && !(*conversion & TF_CONVERSIONMODE_NATIVE) && (*conversion & TF_CONVERSIONMODE_FULLSHAPE))
+            next = Mode::FullWidthLatin;
+        else if (guid == *ids[1] && conversion && !(*conversion & TF_CONVERSIONMODE_NATIVE)) next = Mode::Latin;
         else next = conversion && (*conversion & TF_CONVERSIONMODE_KATAKANA) ? Mode::Katakana : Mode::Hiragana;
     }
     if (next == mode_) return S_OK; // Repeated Windows notifications must not cancel an active registration.
@@ -241,8 +247,13 @@ void InputMode::publish(Mode mode) noexcept {
     if (client_ == TF_CLIENTID_NULL) return;
     mode_ = mode;
     writing_ = true;
-    write(compartments_[1].Get(), client_, mode == Mode::Latin ? 0 : TF_CONVERSIONMODE_NATIVE | TF_CONVERSIONMODE_FULLSHAPE |
-        (mode == Mode::Katakana ? TF_CONVERSIONMODE_KATAKANA : 0));
+    LONG conversion = 0;
+    if (mode != Mode::Latin) {
+        conversion = TF_CONVERSIONMODE_FULLSHAPE;
+        if (mode != Mode::FullWidthLatin) conversion |= TF_CONVERSIONMODE_NATIVE;
+        if (mode == Mode::Katakana) conversion |= TF_CONVERSIONMODE_KATAKANA;
+    }
+    write(compartments_[1].Get(), client_, conversion);
     write(compartments_[0].Get(), client_, mode != Mode::Latin);
     writing_ = false;
     const auto button = button_; if (button) button->update(mode);

@@ -191,10 +191,25 @@ int main() {
             check(s.engine.mode() == Mode::Latin && s.saved.empty(), "draft switch leaked text or learning");
             s.enter(); equal(s.document, U"site"); check(s.saved.size() == 1 && s.engine.mode() == Mode::Hiragana, "draft mode was not restored");
         }},
+        {"fullwidth-draft-edit-return-and-mode-restoration", [] {
+            Session s; s.engine.set_mode(Mode::Katakana); s.start(); s.type("LAb"); s.space(); s.type("12");
+            s.key({KeyCode::Backspace}); equal(s.engine.registration_text(), U"Ａｂ　１");
+            check(s.document.empty() && s.saved.empty() && s.engine.mode() == Mode::FullWidthLatin, "fullwidth draft leaked into document");
+            s.key({KeyCode::Hiragana}); s.type("kana"); s.enter(); equal(s.document, U"Ａｂ　１かな");
+            check(s.saved.size() == 1 && s.saved[0].candidate.text == s.document && s.engine.mode() == Mode::Katakana,
+                "fullwidth registration lost text or outer mode");
+            Session cancelled; cancelled.start(); cancelled.type("Labc"); cancelled.cancel();
+            equal(cancelled.engine.preedit(), U"▽みち");
+            check(cancelled.document.empty() && cancelled.saved.empty() && cancelled.engine.mode() == Mode::Hiragana,
+                "cancelled fullwidth registration leaked text or mode");
+        }},
         {"draft-and-recursion-limits-are-transactional", [] {
-            Session s; s.start(); s.type("l" + std::string(1024, 'a'));
-            check(s.key({KeyCode::Character, 'b'}).registration_limit, "oversized draft accepted");
-            equal(s.engine.registration_text(), std::u32string(1024, U'a')); s.enter(); check(s.saved.size() == 1, "bounded draft not accepted");
+            for (const auto mode_key : {'l', 'L'}) {
+                Session s; s.start(); s.type(std::string(1, mode_key) + std::string(1024, 'a'));
+                check(s.key({KeyCode::Character, 'b'}).registration_limit, "oversized draft accepted");
+                equal(s.engine.registration_text(), std::u32string(1024, mode_key == 'L' ? U'ａ' : U'a'));
+                s.enter(); check(s.saved.size() == 1, "bounded draft not accepted");
+            }
             Session nested; for (int i = 0; i < 8; ++i) nested.start("/x");
             nested.type("/y"); check(nested.key({KeyCode::Space}).registration_limit && nested.engine.registration_depth() == 8, "recursion limit ignored");
             nested.engine.reset(); check(!nested.engine.registering(), "reset retained nested state");
