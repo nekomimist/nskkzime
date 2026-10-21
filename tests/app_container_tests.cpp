@@ -418,11 +418,20 @@ int container_test(bool denied, bool real_model) {
         check(config == first, "reactivation copied the dictionary again");
         LearningRequest request{learning_client_id(), 1, {{U"ちょうき", 0}, {}, {}}, DictionaryAction::Learn};
         request.event.candidate.text = U"長期";
+        request.event.rerank_gap = 4.0;
         check(container_operation(config->generation, "LRN1", encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY",
             "external container write");
         const auto dictionary = container_runtime_dictionary(); const auto end = GetTickCount64() + 3000; bool seen = false;
         while (!seen && GetTickCount64() < end) { seen = !dictionary->lookup({U"ちょうき", 0}).empty(); Sleep(10); }
         check(seen, "AppContainer missed another writer's save");
+        const auto boost_end = GetTickCount64() + 3000;
+        while (!dictionary->rerank_boost(request.event.key) && GetTickCount64() < boost_end) Sleep(10);
+        check(dictionary->rerank_boost(request.event.key) && dictionary->rerank_boost(request.event.key)->gap == 4.0, "AppContainer lost rerank boost snapshot");
+        ++request.sequence; request.action = DictionaryAction::Rerank; request.event.rerank_gap = 0.0;
+        check(container_operation(config->generation, "LRN1", encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY", "container boost-only clear rejected");
+        const auto clear_end = GetTickCount64() + 3000;
+        while (dictionary->rerank_boost(request.event.key) && GetTickCount64() < clear_end) Sleep(10);
+        check(!dictionary->rerank_boost(request.event.key) && !dictionary->lookup(request.event.key).empty(), "container boost-only clear changed vocabulary");
     }
     {
         Session session; session.type("/99"); session.key(VK_SPACE); session.key(VK_SPACE); session.key(VK_SPACE);

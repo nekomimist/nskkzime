@@ -96,7 +96,7 @@ skk_trace.exe --dict 'C:\辞書\SKK-JISYO.L' 'Kanji<Space><Enter>'
 
 ```powershell
 .\scripts\package.ps1 # out/packages/nskkzime-v<版番号>-windows-x64.zip と .zip.sha256 を作成
-.\scripts\package.ps1 -Verify out\packages\nskkzime-v0.1.0-windows-x64.zip
+.\scripts\package.ps1 -Verify out\packages\nskkzime-v0.2.0-windows-x64.zip
 # 展開したフォルダーで、管理者のPowerShell 7から
 .\tools\install.ps1 -Action Install
 .\tools\install.ps1 -Action Status

@@ -1,4 +1,6 @@
 #include "nskkzime/inference_policy.h"
+#include "nskkzime/learning.h"
+#include "nskkzime/dictionary.h"
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -30,6 +32,79 @@ int main() {
             check(apply_inference_result(s.after,plan,scored(plan,{-3,0,-5}),policy),"best candidate not promoted");
             check(s.after.candidates()[0].id==old[1].id&&s.after.candidates()[1].id==old[0].id&&s.after.candidates()[2].id==old[2].id,"other ranks or IDs changed");
             const auto result=s.after.handle({KeyCode::Enter}); check(result.committed==U"解答"&&result.learning&&result.learning->candidate.source==CandidateSource::Dictionary,"rerank changed learning policy");
+        }},
+        {"policy/rerank-learns-raw-gap-and-other-context-can-win",[] {
+            auto user = std::make_shared<UserDictionary>();
+            auto dictionary = std::make_shared<DictionarySet>(std::vector<std::shared_ptr<const Dictionary>>{user, demo_dictionary()});
+            InferencePolicy policy; policy.rerank = true;
+            const auto convert = [&] { return start("Kaitou", dictionary); };
+            auto first = convert();
+            const auto plan = *plan_inference(first.before, first.after, first.result, policy);
+            check(apply_inference_result(first.after, plan, scored(plan, {-5, 0, -2}), policy), "initial promotion missing");
+            auto choice = first.after.handle({KeyCode::SelectCandidate, 0, 1});
+            check(choice.learning && choice.learning->rerank_gap == 5.0, "override did not learn raw gap");
+            user->apply({std::string(32, 'a'), 1, *choice.learning});
+            auto next = convert(); const auto again = *plan_inference(next.before, next.after, next.result, policy);
+            check(!apply_inference_result(next.after, again, scored(again, {-5, 0, -2}), policy) && next.after.composition_text() == U"回答", "boost did not preserve learned first word");
+            choice = next.after.handle({KeyCode::Enter});
+            check(choice.learning && !choice.learning->rerank_gap, "accepting first changed boost");
+            auto other = convert(); const auto context = *plan_inference(other.before, other.after, other.result, policy);
+            check(apply_inference_result(other.after, context, scored(context, {-9, 0, -2}), policy), "other context could not overturn boost");
+            choice = other.after.handle({KeyCode::SelectCandidate, 0, 1});
+            check(choice.learning->rerank_gap == 9.0, "boost fed back into learned raw gap");
+            user->apply({std::string(32, 'a'), 2, *choice.learning});
+            auto replace = convert(); const auto replacement = *plan_inference(replace.before, replace.after, replace.result, policy);
+            apply_inference_result(replace.after, replacement, scored(replacement, {-5, 0, -2}), policy);
+            choice = replace.after.handle({KeyCode::SelectCandidate, 0, 2});
+            check(choice.learning->candidate.text == U"解凍" && choice.learning->rerank_gap == 2.0, "second preference was not replaced");
+            auto clear = convert(); const auto clearing = *plan_inference(clear.before, clear.after, clear.result, policy);
+            apply_inference_result(clear.after, clearing, scored(clearing, {-5, 0, -2}), policy);
+            choice = clear.after.handle({KeyCode::SelectCandidate, 0, 1});
+            check(choice.learning->rerank_gap == 0.0, "raw best selection did not clear boost");
+            policy.rerank_learn = false;
+            auto disabled = convert(); const auto no_learning = *plan_inference(disabled.before, disabled.after, disabled.result, policy);
+            check(apply_inference_result(disabled.after, no_learning, scored(no_learning, {-5, 0, -2}), policy), "disabled learning used stored boost");
+            check(!disabled.after.handle({KeyCode::SelectCandidate, 0, 1}).learning->rerank_gap, "disabled learning captured scores");
+        }},
+        {"policy/rerank-no-promotion-unscored-cancel-and-registration",[] {
+            InferencePolicy policy; policy.rerank = true; policy.rerank_limit = 2;
+            auto s = start(); auto plan = *plan_inference(s.before, s.after, s.result, policy);
+            const auto revision = s.after.revision();
+            check(!apply_inference_result(s.after, plan, scored(plan, {0, -3}), policy) && s.after.revision() > revision, "unchanged order lost scoring evidence");
+            auto choice = s.after.handle({KeyCode::SelectCandidate, 0, 1});
+            check(choice.learning->rerank_gap == 3.0, "no-promotion override not learned");
+            s = start(); plan = *plan_inference(s.before, s.after, s.result, policy);
+            apply_inference_result(s.after, plan, scored(plan, {0, -3}), policy);
+            check(s.after.handle({KeyCode::SelectCandidate, 0, 2}).learning->rerank_gap == 0.0, "unscored word did not clear boost");
+            s = start(); plan = *plan_inference(s.before, s.after, s.result, policy);
+            apply_inference_result(s.after, plan, scored(plan, {0, -3}), policy);
+            s.after.handle({KeyCode::Cancel}); s.after.handle({KeyCode::Space});
+            check(!s.after.handle({KeyCode::SelectCandidate, 0, 1}).learning->rerank_gap, "cancelled conversion leaked scores");
+            s = start(); plan = *plan_inference(s.before, s.after, s.result, policy);
+            apply_inference_result(s.after, plan, scored(plan, {0, -3}), policy);
+            s.after.handle({KeyCode::Space}); s.after.handle({KeyCode::Space}); s.after.handle({KeyCode::Space});
+            check(s.after.registering(), "registration fixture did not exhaust candidates");
+            type(s.after, "mikan"); choice = s.after.handle({KeyCode::Enter});
+            check(choice.registration && choice.learning->rerank_gap == 0.0, "registration did not clear original conversion boost");
+            s = start(); plan = *plan_inference(s.before, s.after, s.result, policy);
+            apply_inference_result(s.after, plan, scored(plan, {0, -3}), policy);
+            s.after.append_generated({{"new", U"新語", {}, CandidateSource::GeneratedFallback, LearningPolicy::DoNotLearn}});
+            choice = s.after.handle({KeyCode::Enter});
+            check(!choice.learning && choice.rerank_learning && choice.rerank_learning->rerank_gap == 0.0, "unlearned fallback did not clear boost separately");
+        }},
+        {"policy/rerank-okuri-boost-is-a-stem-preference",[] {
+            auto user = std::make_shared<UserDictionary>();
+            user->apply({std::string(32, 'a'), 1, {{U"か", 'k'}, U"く", {"user", U"描", U"注釈"}, 8.0}});
+            auto dictionary = std::make_shared<DictionarySet>(std::vector<std::shared_ptr<const Dictionary>>{user, demo_dictionary()});
+            InferencePolicy policy; policy.rerank = true;
+            for (const auto input : {"KaK", "qKaK"}) {
+                Engine engine(dictionary); type(engine, input); const auto before = engine; const auto result = type(engine, "e");
+                const auto plan = *plan_inference(before, engine, result, policy);
+                check(plan.request.candidates == std::vector<std::u32string>{U"書け", U"描け"}, "okuri fixture or scoring suffix changed");
+                check(apply_inference_result(engine, plan, scored(plan, {0, -5}), policy), "boost did not transfer across actual okuri");
+                const auto accepted = engine.handle({KeyCode::Enter});
+                check(accepted.learning->key == LookupKey{U"か", 'k'} && accepted.learning->candidate.text == U"描" && !accepted.learning->rerank_gap, "okuri preference retained suffix or rewrote accepted boost");
+            }
         }},
         {"policy/promote-confidence-and-malformed-score",[] {
             auto s=start(); InferencePolicy policy; policy.rerank=true; const auto plan=*plan_inference(s.before,s.after,s.result,policy);

@@ -31,6 +31,7 @@ void help() {
         "  --disable-inference       Disable zenz and clear its saved paths\n"
         "  --set-zenz-min-length N   Prefer generation for N or more kana (0 disables)\n"
         "  --set-zenz-rerank on|off  Promote the best dictionary candidate when confident\n"
+        "  --set-zenz-rerank-learn on|off Learn raw-score gaps from choices against reranking\n"
         "  --set-zenz-learning on|off Learn short fallback generations after successful commit\n"
         "  --set-zenz-unknown-context on|off  Allow local context use when input scope is unknown\n"
         "  --enable-input-log DIR    Save readings, surrounding text and candidates for diagnosis\n"
@@ -59,7 +60,7 @@ int wmain(int argc, wchar_t** argv) {
             if (!explicit_file->is_absolute()) throw std::invalid_argument("--config requires an absolute path");
         }
         const std::wstring_view action(argv[index++]);
-        const bool policy = action == L"--set-zenz-min-length" || action == L"--set-zenz-rerank" || action == L"--set-zenz-learning" || action == L"--set-zenz-unknown-context";
+        const bool policy = action == L"--set-zenz-min-length" || action == L"--set-zenz-rerank" || action == L"--set-zenz-rerank-learn" || action == L"--set-zenz-learning" || action == L"--set-zenz-unknown-context";
         const bool enable_log = action == L"--enable-input-log", disable_log = action == L"--disable-input-log";
         const bool enable_tsf_log = action == L"--enable-tsf-log", disable_tsf_log = action == L"--disable-tsf-log";
         const bool candidates = action == L"--set-candidate-show-after" || action == L"--set-candidate-keys";
@@ -133,6 +134,7 @@ int wmain(int argc, wchar_t** argv) {
                 } else {
                     if (value != L"on" && value != L"off") throw std::invalid_argument("zenz toggle must equal on or off");
                     if (action == L"--set-zenz-unknown-context") settings.zenz.allow_unknown_context = value == L"on";
+                    else if (action == L"--set-zenz-rerank-learn") settings.zenz.policy.rerank_learn = value == L"on";
                     else (action == L"--set-zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == L"on";
                 }
             }

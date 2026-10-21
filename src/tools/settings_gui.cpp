@@ -63,7 +63,7 @@ void update_enabled(Editor& editor) {
     const auto romaji = editor.pages[1], inference = editor.pages[2];
     enabled(romaji, IDC_ROMAJI_PATH, checked(romaji, IDC_CUSTOM_ROMAJI));
     enabled(romaji, IDC_ROMAJI_BROWSE, checked(romaji, IDC_CUSTOM_ROMAJI));
-    for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_RERANK, IDC_LEARN_GENERATED})
+    for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_RERANK, IDC_RERANK_LEARN, IDC_LEARN_GENERATED})
         enabled(inference, id, checked(inference, IDC_ZENZ));
     enabled(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, checked(inference, IDC_ZENZ));
     for (const auto id : {IDC_LOG_DIRECTORY, IDC_LOG_BROWSE})
@@ -130,6 +130,7 @@ void reload(Editor& editor) {
         check(editor.pages[2], IDC_ZENZ, zenz.enabled);
         set(editor.pages[2], IDC_MODEL, zenz.model.native());
         check(editor.pages[2], IDC_RERANK, zenz.policy.rerank);
+        check(editor.pages[2], IDC_RERANK_LEARN, zenz.policy.rerank_learn);
         check(editor.pages[2], IDC_LEARN_GENERATED, zenz.policy.learn_fallback);
         check(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT, zenz.allow_unknown_context);
         const auto advanced = editor.pages[3];
@@ -190,6 +191,7 @@ DictionarySettings draft(Editor& editor) {
     zenz.model = get(editor.pages[2], IDC_MODEL);
     zenz.server.clear(); // Always the bundled server; an override is development-only (settings file).
     zenz.policy.rerank = checked(editor.pages[2], IDC_RERANK);
+    zenz.policy.rerank_learn = checked(editor.pages[2], IDC_RERANK_LEARN);
     zenz.policy.learn_fallback = checked(editor.pages[2], IDC_LEARN_GENERATED);
     zenz.allow_unknown_context = checked(editor.pages[5], IDC_ALLOW_UNKNOWN_CONTEXT);
     const auto page = editor.pages[3];

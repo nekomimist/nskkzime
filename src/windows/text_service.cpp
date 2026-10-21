@@ -663,7 +663,9 @@ private:
                     self->cancel_inference();
                     const bool fallback = pending.plan.purpose == InferencePurpose::Fallback ||
                         (pending.plan.purpose == InferencePurpose::LongReading && next.candidates().empty());
-                    const bool changed = adjusted || (fallback && next.resume_registration());
+                    // Valid scores also retain evidence for learning when the
+                    // threshold keeps the displayed order unchanged.
+                    const bool changed = next.revision() != pending.revision || (fallback && next.resume_registration());
                     if (changed && next.registering()) {
                         self->candidates_.locate(pending.context.Get(), pending.composition.Get(), cookie, pending.session, true);
                         if (!self->manager_ || self->engine_.revision() != pending.revision ||
@@ -739,7 +741,7 @@ private:
         std::wstring learning_reason;
         const bool starting_registration = next.registration_depth() > engine_.registration_depth();
         const bool starting_forget = next.forgetting() && !engine_.forgetting() && next.forget_target().has_value();
-        const auto permission = (result.learning || result.forgetting || starting_registration || starting_forget) ?
+        const auto permission = (result.learning || result.rerank_learning || result.forgetting || starting_registration || starting_forget) ?
             learning_permission(target, current.Get(), cookie, learning_reason) : LearningPermission::Unavailable;
         const bool persistence_allowed = permission == LearningPermission::Allowed;
         const bool protected_registration = starting_registration && permission == LearningPermission::Protected;
@@ -801,6 +803,10 @@ private:
                 if (result.registration) engine_.remember_registration(*result.learning);
             } else if (result.learning || ((result.forgetting || starting_registration || starting_forget) && !persistence_allowed)) {
                 skip_runtime_learning(dictionary_, std::move(learning_reason));
+            }
+            if (result.rerank_learning) {
+                if (persistence_allowed) publish_runtime_rerank_learning(dictionary_, *result.rerank_learning);
+                else skip_runtime_learning(dictionary_, std::move(learning_reason));
             }
             refresh_candidates(cookie, protected_registration ? L"保護された入力欄のため、単語登録を行いません。" : L"");
             if (scored) {

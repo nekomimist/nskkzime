@@ -56,7 +56,7 @@ std::string serialize(const DictionarySettings& settings) {
     const auto& policy = settings.zenz.policy;
     if (settings.zenz.enabled || !settings.zenz.model.empty() || !settings.zenz.server.empty() || settings.zenz.threads != 4 || settings.zenz.timeout_ms != 1000 ||
         settings.zenz.idle_seconds != ZenzSettings{}.idle_seconds ||
-        policy.long_min_length != 10 || policy.rerank || policy.learn_fallback || policy.rerank_limit != 20 || policy.score_timeout_ms != 300 ||
+        policy.long_min_length != 10 || policy.rerank || !policy.rerank_learn || policy.learn_fallback || policy.rerank_limit != 20 || policy.score_timeout_ms != 300 ||
         policy.rerank_wait_ms != InferencePolicy{}.rerank_wait_ms || policy.promote_threshold != 1.0f || policy.max_score_gap != 8.0f) {
         bytes += settings.zenz.enabled ? "inference=zenz\n" : "inference=off\n";
         if (!settings.zenz.model.empty()) bytes += "zenz-model=" + utf8_message(settings.zenz.model.native()) + "\n";
@@ -68,6 +68,7 @@ std::string serialize(const DictionarySettings& settings) {
             "\nzenz-max-score-gap="+std::to_string(policy.max_score_gap)+"\n";
         // Written only when changed: older IMEs still running reject unknown keys.
         if (policy.rerank_wait_ms != InferencePolicy{}.rerank_wait_ms) bytes += "zenz-rerank-wait-ms=" + std::to_string(policy.rerank_wait_ms) + "\n";
+        if (!policy.rerank_learn) bytes += "zenz-rerank-learn=off\n";
         if (settings.zenz.idle_seconds != ZenzSettings{}.idle_seconds) bytes += "zenz-idle-seconds=" + std::to_string(settings.zenz.idle_seconds) + "\n";
     }
     for (const auto& path : settings.dictionaries) {
@@ -155,6 +156,7 @@ std::wstring zenz_settings_status(const ZenzSettings& settings) {
         L"\r\nスレッド: " + std::to_wstring(settings.threads) + L" / 期限: " + std::to_wstring(settings.timeout_ms) + L" ms" +
         L" / サーバー待機: " + std::to_wstring(settings.idle_seconds) + L" 秒"+
         L"\r\n長い読みの生成: "+std::to_wstring(settings.policy.long_min_length)+L"文字（0は無効） / 候補採点: "+(settings.policy.rerank ? L"on" : L"off")+
+        L" / 採点への選び直しの学習: "+(settings.policy.rerank_learn ? L"on" : L"off")+
         L" / 短い生成候補の学習: "+(settings.policy.learn_fallback ? L"on" : L"off") + context + logging;
 }
 std::wstring wide_message(std::string_view text) {
@@ -254,7 +256,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             if (romaji) throw std::invalid_argument("romaji must appear at most once");
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);
         } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms" ||
-            key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
+            key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-rerank-learn" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
             key == "zenz-rerank-wait-ms" || key == "zenz-idle-seconds" || key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" ||
             key == "zenz-unknown-context") {
             if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
@@ -273,9 +275,9 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             } else if (key == "zenz-model" || key == "zenz-server") {
                 auto& path = key == "zenz-model" ? settings.zenz.model : settings.zenz.server;
                 path = std::filesystem::path(wide_message(value)); validate_path(path);
-            } else if (key == "zenz-rerank" || key == "zenz-learn-fallback") {
+            } else if (key == "zenz-rerank" || key == "zenz-rerank-learn" || key == "zenz-learn-fallback") {
                 if (value != "on" && value != "off") throw std::invalid_argument("zenz toggle must equal on or off");
-                (key == "zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == "on";
+                (key == "zenz-rerank" ? settings.zenz.policy.rerank : key == "zenz-rerank-learn" ? settings.zenz.policy.rerank_learn : settings.zenz.policy.learn_fallback) = value == "on";
             } else if (key == "zenz-promote-threshold" || key == "zenz-max-score-gap") {
                 float number = 0;
                 const auto parsed = std::from_chars(value.data(),value.data()+value.size(),number);

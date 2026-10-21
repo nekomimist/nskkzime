@@ -119,7 +119,7 @@ std::uint64_t user_dictionary_revision(const std::filesystem::path& file) {
     // still validates the checksum whenever this differs from a known value.
     unsigned char header[13]{}; DWORD count = 0;
     need(ReadFile(stream.get(), header, sizeof(header), &count, nullptr) && count == sizeof(header) &&
-        (!std::memcmp(header, "NKUD1", 5) || !std::memcmp(header, "NKUD2", 5)), "invalid user dictionary header");
+        (!std::memcmp(header, "NKUD1", 5) || !std::memcmp(header, "NKUD2", 5) || !std::memcmp(header, "NKUD3", 5)), "invalid user dictionary header");
     std::uint64_t revision = 0;
     for (int i = 7; i >= 0; --i) revision = (revision << 8) | header[5 + i];
     return revision;

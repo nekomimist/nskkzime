@@ -25,12 +25,12 @@ struct Session {
     }
     ~Session() {service->Deactivate();context->pump();}
     void transitory() { origin = test_host::transitory_context(context.Get()); }
-    void key(WPARAM code,bool shift=false) {
+    void key(WPARAM code,bool shift=false,bool applied=true) {
         BYTE state[256]{}; if(shift)state[VK_SHIFT]=state[VK_LSHIFT]=0x80; SetKeyboardState(state);
         const auto param=static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code),MAPVK_VK_TO_VSC))<<16;
         auto* input = origin ? origin.Get() : context.Get();
         BOOL eaten=FALSE; keys->OnTestKeyDown(input,code,param,&eaten); check(eaten,"preflight");
-        keys->OnKeyDown(input,code,param,&eaten); check(eaten,"key"); keys->OnKeyUp(input,code,param,&eaten);
+        keys->OnKeyDown(input,code,param,&eaten); check((eaten != FALSE)==applied,"key"); keys->OnKeyUp(input,code,param,&eaten);
     }
     void type(std::string_view text) {for(const auto ch:text) {const auto vk=VkKeyScanExW(ch,GetKeyboardLayout(0));key(LOBYTE(vk),(HIBYTE(vk)&1)!=0);}}
     void start(std::string_view text="Kaitou") {type(text);const auto time=GetTickCount64();key(VK_SPACE);check(GetTickCount64()-time<150,"key blocked on scoring");}
@@ -46,7 +46,7 @@ int wmain(int argc,wchar_t** argv) {
     const auto root=std::filesystem::current_path()/("tsf-policy-"+id);std::filesystem::create_directory(root);
     const auto config=root/L"settings.ini", dictionary=root/L"dictionary.skk", user=root/L"user-dictionary.nskkdb";
     const auto log_directory = root / L"input-logs";
-    {std::ofstream file(dictionary,std::ios::binary);file<<"かいとう /回答;元一/解答;元二/解凍;元三/\nありがとうございます /元一;辞書/元二/\nかk /書;文章/描;絵/\n";}
+    {std::ofstream file(dictionary,std::ios::binary);file<<"かいとう /回答;元一/解答;元二/解凍;元三/\nありがとうございます /元一;辞書/元二/\nかk /書;文章/描;絵/\nかどう /稼動/稼働/\nこうどう /行動/公道/\nきどう /起動/軌道/\n";}
     DictionarySettings settings{{dictionary},false};settings.zenz={true,root/L"fixture.gguf",argv[1],4,1500}; settings.zenz.policy.rerank=true;
     settings.zenz.policy.rerank_wait_ms=0; // Most cases below exercise the asynchronous path; the wait is tested separately.
     save_dictionary_settings(config,settings);
@@ -205,7 +205,39 @@ int wmain(int argc,wchar_t** argv) {
         {Session s;s.context->unknown_scope=true;s.start("Ringo");s.complete();check(s.context->doc->text==L"前有難うございます後","unknown-scope fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"りんご"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"unknown-scope field did not persist a short fallback");}
         {Session s;s.start("Arigatougozaimasu");s.complete();s.key(VK_RETURN);s.wait(250);check(read_user_dictionary(user).lookup({U"ありがとうございます"}).empty(),"long generation polluted dictionary");}
-        check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy, opt-in logging and learning\n";result=0;
+        // Both application paths must retain raw scores when a boost keeps the
+        // order unchanged, so choosing the raw best can clear that preference.
+        for (const bool synchronous : {false, true}) {
+            settings.zenz.policy.rerank_wait_ms = synchronous ? 400 : 0;
+            settings.candidates.show_after = 1; save_dictionary_settings(config, settings);
+            const auto reading = synchronous ? U"こうどう" : U"かどう";
+            const auto input = synchronous ? "Koudou" : "Kadou";
+            const auto preferred = synchronous ? L"行動" : L"稼動";
+            const auto boost_saved = [&](bool present) {
+                const auto until = GetTickCount64() + 4000;
+                do {
+                    try { const auto boost = read_user_dictionary(user).rerank_boost({reading});
+                        if (present ? boost && boost->gap == 5.0 : !boost) return; } catch (...) {}
+                    messages(); Sleep(20);
+                } while (GetTickCount64() < until);
+                throw std::runtime_error("rerank learning was not saved");
+            };
+            { Session s; s.type(input); s.key(VK_SPACE); if (!synchronous) s.complete();
+              s.key(VK_SPACE); s.key(VK_RETURN); boost_saved(true); }
+            { Session s; s.type(input); s.key(VK_SPACE); if (!synchronous) s.complete();
+              check(s.context->doc->text == std::wstring(L"前") + preferred + L"後", "learned word sank again");
+              s.key(VK_SPACE); s.key(VK_RETURN); boost_saved(false); }
+        }
+        settings.zenz.policy.rerank_wait_ms = 0; save_dictionary_settings(config, settings);
+        { Session s; s.start("Kidou"); s.complete();
+          // Selecting and committing another row must write different text.
+          // Enter on the already displayed word intentionally skips SetText.
+          s.context->doc->reject_write = true; s.key('S', false, false); s.wait(100);
+          check(!read_user_dictionary(user).rerank_boost({U"きどう"}), "failed confirmation saved a rerank boost");
+          s.context->doc->reject_write = false; s.context->input_scope = IS_PRIVATE; s.context->notify();
+          s.key('S'); s.wait(100);
+          check(!read_user_dictionary(user).rerank_boost({U"きどう"}), "protected confirmation saved a rerank boost"); }
+        check(module_objects==0,"policy retained COM objects");std::cout<<"PASS asynchronous promote/long priority, okuri context, key/pointer freeze, deadlines, failed edits, privacy, opt-in logging and rerank learning\n";result=0;
     } catch(const std::exception& error) {std::cerr<<"FAIL "<<error.what()<<'\n';}
     SetKeyboardState(previous);CoUninitialize();try {server.get();}catch(...) {result=1;}Sleep(300); // Let background saves release the writer lock.
     std::error_code ignored;std::filesystem::remove_all(root,ignored);return result;

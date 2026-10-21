@@ -5,7 +5,7 @@
 namespace nskkzime {
 inline constexpr std::size_t learning_max_bytes = 16 * 1024 * 1024;
 inline constexpr std::size_t import_max_candidates = 50000;
-enum class DictionaryAction { Learn, Forget };
+enum class DictionaryAction { Learn, Forget, Rerank };
 // Binary envelope with length-prefixed UTF-8 strings; shared by disk and IPC.
 struct LearningRequest {
     std::string client; // 32 hexadecimal digits, unique to a producer lifetime.
@@ -29,6 +29,7 @@ public:
     std::vector<Candidate> lookup(const LookupKey&, std::u32string_view okuri = {}) const override;
     std::vector<Candidate> lookup_scope(const LookupKey&, std::u32string_view okuri) const;
     std::optional<LearningEvent> forget_target(const LookupKey&, std::u32string_view, std::u32string_view) const override;
+    std::optional<RerankBoost> rerank_boost(const LookupKey&) const override;
     std::string serialize() const;
     std::vector<LearningEvent> entries() const; // Key order, then candidate priority.
     std::string export_skk() const; // UTF-8; throws if a key cannot be represented losslessly.
@@ -42,6 +43,7 @@ private:
     };
     void acknowledge(const std::string& client, std::uint64_t sequence);
     std::map<Key, std::vector<Candidate>> entries_;
+    std::map<LookupKey, RerankBoost> boosts_;
     // Least recently written first. Only recent producers can still retry, so
     // older IDs are retired instead of accumulating for every process lifetime.
     std::vector<std::pair<std::string, std::uint64_t>> clients_;

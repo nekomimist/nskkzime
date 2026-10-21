@@ -1,5 +1,7 @@
 #include "nskkzime/learning.h"
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -20,6 +22,9 @@ void event_check(const LearningEvent& event, bool generic_okuri = false) {
     check((event.key.okuri == 0 && event.okuri.empty()) || (event.key.okuri >= 'a' && event.key.okuri <= 'z' && (generic_okuri || !event.okuri.empty())));
     check(event.candidate.learning == LearningPolicy::Learn &&
         (event.candidate.source == CandidateSource::Dictionary || event.candidate.source == CandidateSource::GeneratedFallback));
+    if (event.rerank_gap)
+        check(std::isfinite(*event.rerank_gap) && *event.rerank_gap >= 0 &&
+            *event.rerank_gap <= 2.0 * std::numeric_limits<float>::max());
 }
 void client_check(std::string_view client) {
     check(client.size() == 32 && std::all_of(client.begin(), client.end(), [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); }));
@@ -65,23 +70,30 @@ std::uint32_t checksum(std::string_view bytes) {
 }
 void validate_learning(const LearningRequest& request) {
     client_check(request.client); check(request.sequence != 0); event_check(request.event,request.action == DictionaryAction::Forget);
-    check(request.action == DictionaryAction::Learn || request.action == DictionaryAction::Forget);
+    check(request.action == DictionaryAction::Learn || request.action == DictionaryAction::Forget || request.action == DictionaryAction::Rerank);
+    if (request.action == DictionaryAction::Forget) check(!request.event.rerank_gap);
+    if (request.action == DictionaryAction::Rerank) check(request.event.rerank_gap.has_value());
 }
 std::string encode_learning(const LearningRequest& request) {
-    validate_learning(request); Writer w; w.bytes = request.action == DictionaryAction::Learn ? "NKL1" : "NKF1";
-    w.string(request.client); w.number(request.sequence); w.event(request.event); return w.bytes;
+    validate_learning(request); Writer w;
+    w.bytes = request.action == DictionaryAction::Forget ? "NKF1" : request.action == DictionaryAction::Rerank ? "NKR1" :
+        request.event.rerank_gap ? "NKL2" : "NKL1";
+    w.string(request.client); w.number(request.sequence); w.event(request.event);
+    if (request.event.rerank_gap) w.number(std::bit_cast<std::uint64_t>(*request.event.rerank_gap));
+    return w.bytes;
 }
 LearningRequest decode_learning(std::string_view bytes) {
-    check(bytes.size() <= 20000 && (bytes.starts_with("NKL1") || bytes.starts_with("NKF1"))); Reader r{bytes.substr(4)};
+    check(bytes.size() <= 20000 && (bytes.starts_with("NKL1") || bytes.starts_with("NKF1") || bytes.starts_with("NKL2") || bytes.starts_with("NKR1"))); Reader r{bytes.substr(4)};
     LearningRequest request; request.client = r.string(32); request.sequence = r.number(); request.event = r.event(bytes.starts_with("NKF1"));
-    request.action = bytes.starts_with("NKF1") ? DictionaryAction::Forget : DictionaryAction::Learn;
+    request.action = bytes.starts_with("NKF1") ? DictionaryAction::Forget : bytes.starts_with("NKR1") ? DictionaryAction::Rerank : DictionaryAction::Learn;
+    if (bytes.starts_with("NKL2") || bytes.starts_with("NKR1")) request.event.rerank_gap = std::bit_cast<double>(r.number());
     check(r.bytes.empty()); validate_learning(request); return request;
 }
 void validate_import(const ImportRequest& request) {
     client_check(request.client); check(request.sequence != 0);
     check(!request.entries.empty() && request.entries.size() <= import_max_candidates);
     for (const auto& entry : request.entries) {
-        event_check(entry,true); check(entry.candidate.source == CandidateSource::Dictionary);
+        event_check(entry,true); check(entry.candidate.source == CandidateSource::Dictionary && !entry.rerank_gap);
     }
 }
 namespace {
@@ -117,20 +129,36 @@ bool UserDictionary::apply(const LearningRequest& request) {
     const auto previous = find_client(clients_, request.client);
     if (previous != clients_.end() && previous->second >= request.sequence) return false;
     Key key{request.event.key, request.event.okuri};
-    check(request.action == DictionaryAction::Forget || entries_.contains(key) || entries_.size() < max_entries);
+    check(request.action != DictionaryAction::Learn || entries_.contains(key) || entries_.size() < max_entries);
     check(revision_ != std::numeric_limits<std::uint64_t>::max());
+    auto next = *this;
     if (request.action == DictionaryAction::Forget) {
-        if (const auto found = entries_.find(key); found != entries_.end()) {
+        if (const auto found = next.entries_.find(key); found != next.entries_.end()) {
             std::erase_if(found->second, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
-            if (found->second.empty()) entries_.erase(found);
+            if (found->second.empty()) next.entries_.erase(found);
         }
-    } else {
-        auto& candidates = entries_[std::move(key)];
+        if (const auto boost = next.boosts_.find(request.event.key);
+            boost != next.boosts_.end() && boost->second.text == request.event.candidate.text) next.boosts_.erase(boost);
+    } else if (request.action == DictionaryAction::Learn) {
+        auto& candidates = next.entries_[std::move(key)];
         std::erase_if(candidates, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
         candidates.insert(candidates.begin(), request.event.candidate);
         if (candidates.size() > max_candidates) candidates.resize(max_candidates);
     }
-    acknowledge(request.client, request.sequence); ++revision_; return true;
+    if (request.event.rerank_gap) {
+        if (*request.event.rerank_gap == 0) next.boosts_.erase(request.event.key);
+        else {
+            check(next.boosts_.contains(request.event.key) || next.boosts_.size() < max_entries);
+            next.boosts_.insert_or_assign(request.event.key, RerankBoost{request.event.candidate.text, *request.event.rerank_gap});
+        }
+    }
+    next.acknowledge(request.client, request.sequence); ++next.revision_;
+    (void)next.serialize();
+    *this = std::move(next); return true;
+}
+std::optional<RerankBoost> UserDictionary::rerank_boost(const LookupKey& key) const {
+    const auto found = boosts_.find(key);
+    return found == boosts_.end() ? std::nullopt : std::optional{found->second};
 }
 std::vector<Candidate> UserDictionary::lookup_scope(const LookupKey& key, std::u32string_view okuri) const {
     const auto found = entries_.find({key, std::u32string(okuri)});
@@ -161,18 +189,25 @@ std::string UserDictionary::serialize() const {
     // Old readers must reject scopes they cannot interpret, rather than erase
     // or silently broaden them. Exact-only dictionaries remain version 1.
     const auto generic = std::any_of(entries_.begin(),entries_.end(),[](const auto& entry) { return entry.first.lookup.okuri && entry.first.okuri.empty(); });
-    Writer w; w.bytes = generic ? "NKUD2" : "NKUD1"; w.number(revision_); w.number(clients_.size());
+    Writer w; w.bytes = !boosts_.empty() ? "NKUD3" : generic ? "NKUD2" : "NKUD1"; w.number(revision_); w.number(clients_.size());
     for (const auto& [client, sequence] : clients_) { w.string(client); w.number(sequence); }
     w.number(entries_.size());
     for (const auto& [key, candidates] : entries_) {
         w.number(candidates.size());
         for (const auto& candidate : candidates) w.event({key.lookup, key.okuri, candidate});
     }
+    if (!boosts_.empty()) {
+        w.number(boosts_.size());
+        for (const auto& [key, boost] : boosts_) {
+            w.text(key.reading); w.number(static_cast<unsigned char>(key.okuri)); w.text(boost.text);
+            w.number(std::bit_cast<std::uint64_t>(boost.gap));
+        }
+    }
     w.number(checksum(w.bytes)); check(w.bytes.size() <= learning_max_bytes); return w.bytes;
 }
 UserDictionary UserDictionary::parse(std::string_view bytes) {
-    check(bytes.size() >= 37 && bytes.size() <= learning_max_bytes && (bytes.starts_with("NKUD1") || bytes.starts_with("NKUD2")));
-    const bool generic_okuri = bytes.starts_with("NKUD2");
+    check(bytes.size() >= 37 && bytes.size() <= learning_max_bytes && (bytes.starts_with("NKUD1") || bytes.starts_with("NKUD2") || bytes.starts_with("NKUD3")));
+    const bool generic_okuri = !bytes.starts_with("NKUD1");
     Reader trailer{bytes.substr(bytes.size() - 8)}; check(trailer.number() == checksum(bytes.substr(0, bytes.size() - 8)));
     Reader r{bytes.substr(5, bytes.size() - 13)}; UserDictionary result; result.revision_ = r.number();
     const auto clients = r.number(); check(clients <= max_clients);
@@ -190,6 +225,16 @@ UserDictionary UserDictionary::parse(std::string_view bytes) {
             e = r.event(generic_okuri); check(e.key == key.lookup && e.okuri == key.okuri);
             check(std::none_of(candidates.begin(), candidates.end(), [&](const Candidate& c) { return c.text == e.candidate.text; }));
             candidates.push_back(std::move(e.candidate));
+        }
+    }
+    if (bytes.starts_with("NKUD3")) {
+        const auto count = r.number(); check(count <= max_entries);
+        for (std::uint64_t i = 0; i < count; ++i) {
+            LookupKey key{from_utf8(r.string())}; text_check(key.reading);
+            const auto letter = r.number(); check(letter == 0 || (letter >= 'a' && letter <= 'z')); key.okuri = static_cast<char>(letter);
+            RerankBoost boost{from_utf8(r.string()), std::bit_cast<double>(r.number())}; text_check(boost.text);
+            check(std::isfinite(boost.gap) && boost.gap > 0 && boost.gap <= 2.0 * std::numeric_limits<float>::max());
+            check(result.boosts_.emplace(std::move(key), std::move(boost)).second);
         }
     }
     check(r.bytes.empty()); return result;

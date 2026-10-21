@@ -52,8 +52,9 @@ BEGIN
     EDITTEXT IDC_MODEL, 5, 44, 303, 15, ES_AUTOHSCROLL
     PUSHBUTTON "参照…", IDC_MODEL_BROWSE, 316, 44, 66, 16
     LTEXT "推論サーバーは、このIMEと同じ版に同梱されたものを使います。", -1, 5, 70, 378, 24
-    AUTOCHECKBOX "辞書候補を採点し、確かな候補を先頭へ移す(&R)", IDC_RERANK, 5, 111, 378, 15
-    AUTOCHECKBOX "短い読みの追加生成候補を学習する(&L)", IDC_LEARN_GENERATED, 5, 134, 378, 15
+    AUTOCHECKBOX "辞書候補を採点し、確かな候補を先頭へ移す(&R)", IDC_RERANK, 5, 100, 378, 15
+    AUTOCHECKBOX "採点後に選び直した語のスコア差を覚える(&C)", IDC_RERANK_LEARN, 5, 119, 378, 15
+    AUTOCHECKBOX "短い読みの追加生成候補を学習する(&L)", IDC_LEARN_GENERATED, 5, 138, 378, 15
     LTEXT "長い読みの生成候補は学習しません。推論が使えなくても辞書入力は継続できます。\nモデルの取得・IMEの登録はこの画面では行いません。", -1, 5, 162, 378, 24
 END
 

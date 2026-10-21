@@ -2,6 +2,7 @@
 #include "learning_ipc.h"
 #include "local_storage.h"
 #include <functional>
+#include <limits>
 #include <iostream>
 #include <stdexcept>
 
@@ -44,6 +45,50 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc != 1) return 2;
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"rerank/codec-persistence-replacement-clearing-and-okuri", [] {
+            UserDictionary data;
+            auto request = update(1, {U"か", 'k'}, U"描", U"く"); request.event.rerank_gap = 8.5;
+            const auto encoded = encode_learning(request);
+            check(encoded.starts_with("NKL2") && decode_learning(encoded).event.rerank_gap == 8.5, "extended learning codec lost gap");
+            check(data.apply(decode_learning(encoded)), "boost was not applied");
+            check(data.serialize().starts_with("NKUD3"), "boost exposed to older readers");
+            data = UserDictionary::parse(data.serialize());
+            check(!data.apply(request) && data.rerank_boost({U"か", 'k'})->gap == 8.5, "retry changed persisted boost");
+            check(!data.rerank_boost({U"か"}) && !data.rerank_boost({U"か", 'g'}), "boost crossed reading boundary");
+            request = update(2, {U"か", 'k'}, U"掻", U"け"); request.event.rerank_gap = 3.0;
+            data.apply(request);
+            check(data.rerank_boost({U"か", 'k'})->text == U"掻" && data.rerank_boost({U"か", 'k'})->gap == 3.0, "actual okuri split boosts or gap accumulated");
+            auto merge = imported(U"かk /書/\n"); data.apply(merge);
+            data = UserDictionary::parse(data.serialize());
+            check(data.lookup({U"か", 'k'}, U"こ").size() == 1 && data.rerank_boost({U"か", 'k'})->text == U"掻", "NKUD3 lost generic okuri or boost");
+            check(!data.entries().front().rerank_gap, "exported entry inherited boost metadata");
+            request = update(3, {U"か", 'k'}, U"新語", U"く"); request.event.rerank_gap = 0.0; request.action = DictionaryAction::Rerank;
+            const auto before = data.entries().size();
+            check(encode_learning(request).starts_with("NKR1"), "boost-only envelope missing");
+            data.apply(decode_learning(encode_learning(request)));
+            check(!data.rerank_boost({U"か", 'k'}) && data.entries().size() == before, "boost-only clear learned a new word");
+            check(data.serialize().starts_with("NKUD2"), "cleared metadata retained newer format");
+            request.action = DictionaryAction::Learn; request.sequence = 4; request.event.rerank_gap = 2.0; data.apply(request);
+            request.sequence = 5; request.event.rerank_gap.reset(); request.action = DictionaryAction::Forget; data.apply(request);
+            check(!data.rerank_boost({U"か", 'k'}), "forgotten word retained boost");
+        }},
+        {"rerank/reject-invalid-gap-without-changing-dictionary", [] {
+            UserDictionary data;
+            auto request = update(1, {U"かな"}, U"仮名");
+            const auto before = data.serialize();
+            for (const double gap : {-1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::max()}) {
+                request.event.rerank_gap = gap;
+                rejects([&] { data.apply(request); });
+                rejects([&] { encode_learning(request); });
+                check(data.serialize() == before, "invalid gap partly changed dictionary");
+            }
+            request.event.rerank_gap = 4.0;
+            const auto encoded = encode_learning(request);
+            rejects([&] { decode_learning(encoded.substr(0, encoded.size() - 1)); });
+            rejects([&] { decode_learning(encoded + "x"); });
+            data.apply(request); const auto bytes = data.serialize();
+            for (std::size_t i = 0; i < bytes.size(); ++i) { auto broken = bytes; broken[i] ^= 1; rejects([&] { UserDictionary::parse(broken); }); }
+        }},
         {"forget/exact-key-okuri-spelling-and-retry", [] {
             auto data = fixture(); auto request = update(6, {U"か", 'k'}, U"描", U"く"); request.action = DictionaryAction::Forget;
             const auto decoded = decode_learning(encode_learning(request));

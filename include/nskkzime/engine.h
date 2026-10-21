@@ -25,6 +25,10 @@ struct LookupKey {
     char okuri = 0;
     auto operator<=>(const LookupKey&) const = default;
 };
+struct RerankBoost {
+    std::u32string text; // Stem, without annotation or okuri.
+    double gap = 0;
+};
 // Transient identity: display text may differ from the dictionary spelling.
 // Lookup and learning keys differ for fixed literals found under numeric keys.
 struct CandidateOrigin {
@@ -47,6 +51,9 @@ struct LearningEvent {
     LookupKey key;
     std::u32string okuri; // Hiragana, separate from the candidate's stem.
     Candidate candidate;
+    // No value leaves rerank learning unchanged; zero clears it; a positive
+    // raw-score gap replaces the reading's boost with this candidate's stem.
+    std::optional<double> rerank_gap = std::nullopt;
 };
 class Dictionary {
 public:
@@ -61,6 +68,7 @@ public:
     // Immutable/CLI dictionaries keep local registrations until lookup observes
     // them. A persistence wrapper can release the cache after durable delivery.
     virtual bool registration_pending(const LearningEvent&) const { return true; }
+    virtual std::optional<RerankBoost> rerank_boost(const LookupKey&) const { return {}; }
     // Resolve an actual user entry, including its exact or generic okuri scope.
     virtual std::optional<LearningEvent> forget_target(const LookupKey&, std::u32string_view, std::u32string_view) const { return {}; }
 };
@@ -87,6 +95,7 @@ struct Result {
     // after successfully applying this Result's text and adopting the Engine.
     // DoNotLearn candidates and long generations never produce this event.
     std::optional<LearningEvent> learning;
+    std::optional<LearningEvent> rerank_learning; // Boost-only update for a DoNotLearn fallback.
     std::optional<LearningEvent> forgetting; // Same transactional delivery contract as learning.
 };
 
@@ -125,6 +134,9 @@ public:
     bool append_generated(std::vector<Candidate>);
     bool prepend_generated(std::vector<Candidate>); // Long reading: only before candidate interaction.
     bool promote_candidate(std::size_t index); // Keep all other candidates and metadata in order.
+    std::optional<RerankBoost> rerank_boost() const;
+    void record_rerank(std::span<const float> scores); // Raw scores in current dictionary order, before promotion.
+    void finish_rerank(); // Remember the first candidate after promotion.
     bool can_reorder_candidates() const;
     bool generation_attempted() const;
     void note_generation_attempt(); // Once per fresh conversion, even after timeout/cancellation.
@@ -154,6 +166,11 @@ private:
         std::vector<Candidate> candidates;
         std::size_t candidate_index = 0;
         bool candidates_touched = false, generation_attempted = false;
+        struct Rerank {
+            std::u32string top;
+            std::vector<std::pair<std::u32string, float>> scores;
+        };
+        std::optional<Rerank> rerank;
     };
     struct Registration { Input original; std::u32string draft, anchor; };
     Result handle_input(Key);
@@ -169,6 +186,7 @@ private:
     void convert(Result& result);
     void confirm(Result& result);
     LearningEvent learning_event(const Candidate&) const;
+    static void learn_rerank_choice(const Input&, LearningEvent&);
     std::u32string display(std::u32string_view text) const;
     std::shared_ptr<const Dictionary> dictionary_;
     std::shared_ptr<const RomajiRules> rules_;

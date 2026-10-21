@@ -85,7 +85,7 @@ struct Broker {
                 if (!response) throw ContainerFailure(ContainerReason::Cancelled);
                 return std::move(*response);
             }
-            if (!body.starts_with("NKL1") && !body.starts_with("NKF1")) throw std::runtime_error("unsupported learning operation");
+            if (!body.starts_with("NKL1") && !body.starts_with("NKF1") && !body.starts_with("NKL2") && !body.starts_with("NKR1")) throw std::runtime_error("unsupported learning operation");
             (void)commit_learning(file, decode_learning(body));
             return "OKAY";
         }

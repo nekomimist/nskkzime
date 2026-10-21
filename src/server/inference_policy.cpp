@@ -43,13 +43,21 @@ bool apply_inference_result(Engine& engine, const PlannedInference& plan, const 
     if (plan.purpose == InferencePurpose::Rerank) {
         if (!engine.can_reorder_candidates() || response.scores.size() != plan.request.candidates.size() || response.scores.size() < 2 ||
             response.scores.size() > engine.candidates().size()) return false;
-        std::size_t best = 0;
         for (std::size_t i=0; i<response.scores.size(); ++i) {
             if (!std::isfinite(response.scores[i]) || engine.scoring_text(i) != plan.request.candidates[i]) return false;
-            if (response.scores[i] > response.scores[best]) best = i;
         }
-        if (response.scores[best]-response.scores[0] <= policy.promote_threshold) return false;
-        return engine.promote_candidate(best);
+        const auto boost = policy.rerank_learn ? engine.rerank_boost() : std::nullopt;
+        const auto adjusted_score = [&](std::size_t i) {
+            return static_cast<double>(response.scores[i]) +
+                (boost && boost->text == engine.candidates()[i].text ? boost->gap : 0.0);
+        };
+        std::size_t best = 0;
+        for (std::size_t i = 1; i < response.scores.size(); ++i)
+            if (adjusted_score(i) > adjusted_score(best)) best = i;
+        if (policy.rerank_learn) engine.record_rerank(response.scores);
+        const bool promoted = adjusted_score(best) - adjusted_score(0) > policy.promote_threshold && engine.promote_candidate(best);
+        engine.finish_rerank();
+        return promoted;
     }
     if (response.candidates.size() > plan.request.count || (!response.scores.empty() && response.scores.size() != response.candidates.size())) return false;
     for (const auto score : response.scores) if (!std::isfinite(score)) return false;

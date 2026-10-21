@@ -26,7 +26,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock", L"held.nskkdb", L"held.nskkdb.lock", L"blocker"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock", L"held.nskkdb", L"held.nskkdb.lock", L"rerank.nskkdb", L"rerank.nskkdb.lock", L"blocker"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -64,6 +64,28 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 1) return 2;
     Files files; const auto file = files.root / L"user.nskkdb";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"client/rerank-pending-overlay-sync-restart-and-boost-only-clear", [&] {
+            const auto isolated = files.root / L"rerank.nskkdb";
+            auto first = std::make_shared<LearningDictionary>(demo_dictionary(), isolated);
+            auto second = std::make_shared<LearningDictionary>(demo_dictionary(), isolated);
+            auto event = update().event; event.rerank_gap = 4.0;
+            {
+                const auto held = hold_writer_lock(isolated);
+                first->learn(event);
+                check(first->rerank_boost(event.key)->gap == 4.0 && first->lookup(event.key)[0].text == event.candidate.text, "pending boost or dictionary order invisible");
+                auto clear = event; clear.rerank_gap = 0.0; clear.candidate.text = U"未学習";
+                first->learn_rerank(clear);
+                check(!first->rerank_boost(event.key) && first->lookup(event.key)[0].text == event.candidate.text, "pending boost-only clear changed vocabulary");
+                first->learn(event);
+            }
+            until([&] { const auto boost = second->rerank_boost(event.key); return boost && boost->gap == 4.0; });
+            until([&] { return !first->registration_pending(event); });
+            auto restarted = std::make_shared<LearningDictionary>(demo_dictionary(), isolated);
+            until([&] { const auto boost = restarted->rerank_boost(event.key); return boost && boost->gap == 4.0; });
+            check(user_dictionary_revision(isolated) == read_user_dictionary(isolated).revision(), "NKUD3 revision read failed");
+            auto cleared = event; cleared.rerank_gap = 0.0; first->learn_rerank(cleared);
+            until([&] { return !second->rerank_boost(event.key) && !restarted->rerank_boost(event.key); });
+        }},
         {"client/numeric-template-pending-persisted-restarted-and-deleted", [&] {
             const auto isolated = files.root / L"numeric.nskkdb";
             const auto base = SkkDictionary::parse(U"# /#1/#3/#2/\n99 /固定/\n");

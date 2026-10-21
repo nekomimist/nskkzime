@@ -94,6 +94,15 @@ void RuntimeDictionary::learn(const LearningEvent& event) const noexcept {
     const auto snapshot = state_->snapshot.load();
     if (snapshot && snapshot->registration) publish_learning(snapshot->dictionary,event);
 }
+void RuntimeDictionary::learn_rerank(const LearningEvent& event) const noexcept {
+    const auto snapshot = state_->snapshot.load();
+    if (snapshot && snapshot->registration)
+        if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) learning->learn_rerank(event);
+}
+std::optional<RerankBoost> RuntimeDictionary::rerank_boost(const LookupKey& key) const {
+    const auto snapshot = state_->snapshot.load();
+    return snapshot ? snapshot->dictionary->rerank_boost(key) : std::nullopt;
+}
 std::optional<LearningEvent> RuntimeDictionary::forget_target(const LookupKey& key, std::u32string_view okuri, std::u32string_view text) const {
     const auto snapshot = state_->snapshot.load();
     return snapshot && snapshot->registration ? snapshot->dictionary->forget_target(key, okuri, text) : std::nullopt;
@@ -187,6 +196,9 @@ bool runtime_dictionary_ready() {
 }
 void publish_runtime_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
     if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->learn(event);
+}
+void publish_runtime_rerank_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
+    if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->learn_rerank(event);
 }
 void skip_runtime_learning(const std::shared_ptr<const Dictionary>& dictionary, std::wstring reason) noexcept {
     if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->skipped(std::move(reason));

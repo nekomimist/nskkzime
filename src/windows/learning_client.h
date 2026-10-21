@@ -1,5 +1,6 @@
 #pragma once
 #include "nskkzime/dictionary.h"
+#include "nskkzime/learning.h"
 #include <filesystem>
 
 namespace nskkzime::windows {
@@ -13,12 +14,14 @@ public:
     std::vector<LookupCandidate> lookup_many(std::span<const LookupKey>, std::u32string_view okuri = {}) const override;
     bool registration_pending(const LearningEvent&) const override;
     std::optional<LearningEvent> forget_target(const LookupKey&, std::u32string_view, std::u32string_view) const override;
+    std::optional<RerankBoost> rerank_boost(const LookupKey&) const override;
     bool forget(const LearningEvent&) const noexcept;
     void learn(const LearningEvent&) const noexcept;
+    void learn_rerank(const LearningEvent&) const noexcept;
     void skipped(std::wstring reason) const noexcept;
     std::wstring status() const;
 private:
-    bool enqueue(const LearningEvent&, bool forget) const noexcept;
+    bool enqueue(const LearningEvent&, DictionaryAction) const noexcept;
     struct State;
     std::shared_ptr<State> state_;
 };

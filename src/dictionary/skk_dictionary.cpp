@@ -308,6 +308,11 @@ std::vector<Candidate> SkkDictionary::lookup(const LookupKey& key, std::u32strin
 DictionarySet::DictionarySet(std::vector<std::shared_ptr<const Dictionary>> dictionaries) : dictionaries_(std::move(dictionaries)) {
     for (const auto& dictionary : dictionaries_) if (!dictionary) throw std::invalid_argument("null dictionary in DictionarySet");
 }
+std::optional<RerankBoost> DictionarySet::rerank_boost(const LookupKey& key) const {
+    for (const auto& dictionary : dictionaries_)
+        if (auto boost = dictionary->rerank_boost(key)) return boost;
+    return {};
+}
 std::vector<Candidate> DictionarySet::lookup(const LookupKey& key, std::u32string_view okuri) const {
     std::vector<Candidate> result;
     for (const auto& dictionary : dictionaries_) merge_unique(result, dictionary->lookup(key, okuri));

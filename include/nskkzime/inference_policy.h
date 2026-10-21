@@ -5,6 +5,7 @@ namespace nskkzime {
 struct InferencePolicy {
     unsigned long_min_length = 10; // Zero disables long-reading priority.
     bool rerank = false, learn_fallback = false;
+    bool rerank_learn = true;
     unsigned rerank_limit = 20, score_timeout_ms = 300;
     // Wait this long for scores before showing the first candidate, so the list
     // does not reorder after display. Zero keeps scoring fully asynchronous.
@@ -18,6 +19,8 @@ struct PlannedInference {
 };
 void validate_inference_policy(const InferencePolicy&);
 std::optional<PlannedInference> plan_inference(const Engine& before, const Engine& after, const Result&, const InferencePolicy&);
-// Only mutates on a usable result. The host validates revisions, context and deadlines first.
+// Returns whether candidate order/content changed. Valid scores can still
+// update the Engine revision to retain learning evidence without reordering.
+// The host validates revisions, context and deadlines first.
 bool apply_inference_result(Engine&, const PlannedInference&, const InferenceResponse&, const InferencePolicy&);
 }

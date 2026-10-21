@@ -145,6 +145,9 @@ int main() {
             const auto text = "version=1\nzenz-min-length=12\nzenz-rerank=on\nzenz-learn-fallback=on\nzenz-rerank-limit=8\nzenz-score-timeout-ms=250\nzenz-promote-threshold=1.5\nzenz-max-score-gap=7.5\n";
             const auto settings=parse_dictionary_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_dictionary_settings(file,settings);
             const auto policy=read_dictionary_settings(file).zenz.policy;
+            require(policy.rerank_learn && serialize_dictionary_settings(settings).find("zenz-rerank-learn")==std::string::npos, "default rerank learning disabled or written");
+            const auto no_rerank_learning = parse_dictionary_settings("version=1\nzenz-rerank-learn=off\n");
+            require(!parse_dictionary_settings(serialize_dictionary_settings(no_rerank_learning)).zenz.policy.rerank_learn, "rerank learning off roundtrip");
             require(policy.long_min_length==12&&policy.rerank&&policy.learn_fallback&&policy.rerank_limit==8&&policy.score_timeout_ms==250&&policy.promote_threshold==1.5f&&policy.max_score_gap==7.5f,"policy roundtrip");
             // The wait key is written only when changed, so older IMEs keep reading default files.
             require(policy.rerank_wait_ms==InferencePolicy{}.rerank_wait_ms&&serialize_dictionary_settings(settings).find("zenz-rerank-wait-ms")==std::string::npos,"default wait was written");
@@ -155,7 +158,7 @@ int main() {
             require(read_dictionary_settings(file).zenz.idle_seconds==86400,"idle time roundtrip");
             for(const auto invalid:{"zenz-idle-seconds=0","zenz-idle-seconds=86401"})
                 rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
-            for(const auto invalid:{"zenz-min-length=1025","zenz-rerank=yes","zenz-learn-fallback=yes","zenz-rerank-limit=1","zenz-rerank-limit=65",
+            for(const auto invalid:{"zenz-min-length=1025","zenz-rerank=yes","zenz-rerank-learn=yes","zenz-rerank-learn=off\nzenz-rerank-learn=off","zenz-learn-fallback=yes","zenz-rerank-limit=1","zenz-rerank-limit=65",
                 "zenz-rerank-wait-ms=1001","zenz-rerank-wait-ms=-1","zenz-rerank-wait-ms=0\nzenz-rerank-wait-ms=0",
                 "zenz-score-timeout-ms=0","zenz-score-timeout-ms=10001","zenz-promote-threshold=nan","zenz-promote-threshold=-1",
                 "zenz-max-score-gap=inf","zenz-max-score-gap=101","zenz-min-length=0\nzenz-min-length=10"})

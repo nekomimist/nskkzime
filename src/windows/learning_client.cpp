@@ -42,6 +42,7 @@ struct LearningDictionary::State {
     std::vector<Candidate> scope(const LookupKey& key, std::u32string_view okuri) const {
         auto result = snapshot.load()->lookup_scope(key, okuri);
         for (const auto& request : queue) {
+            if (request.action == DictionaryAction::Rerank) continue;
             if (request.event.key != key || request.event.okuri != okuri) continue;
             std::erase_if(result, [&](const Candidate& item) { return item.text == request.event.candidate.text; });
             if (request.action == DictionaryAction::Learn) {
@@ -195,6 +196,20 @@ std::optional<LearningEvent> LearningDictionary::forget_target(const LookupKey& 
             if (candidate.text == text) return LearningEvent{key, {}, candidate};
     return {};
 }
+std::optional<RerankBoost> LearningDictionary::rerank_boost(const LookupKey& key) const {
+    const std::lock_guard lock(state_->mutex);
+    auto boost = state_->snapshot.load()->rerank_boost(key);
+    for (const auto& request : state_->queue) {
+        if (request.event.key != key) continue;
+        if (request.action == DictionaryAction::Forget) {
+            if (boost && boost->text == request.event.candidate.text) boost.reset();
+        } else if (request.event.rerank_gap) {
+            if (*request.event.rerank_gap == 0) boost.reset();
+            else boost = RerankBoost{request.event.candidate.text, *request.event.rerank_gap};
+        }
+    }
+    return boost;
+}
 std::vector<LookupCandidate> LearningDictionary::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
     std::vector<LookupCandidate> result;
     {
@@ -211,15 +226,15 @@ std::vector<LookupCandidate> LearningDictionary::lookup_many(std::span<const Loo
 bool LearningDictionary::registration_pending(const LearningEvent& event) const {
     const std::lock_guard lock(state_->mutex);
     for (auto it = state_->queue.rbegin(); it != state_->queue.rend(); ++it)
-        if (it->event.key == event.key && it->event.okuri == event.okuri && it->event.candidate.text == event.candidate.text)
+        if (it->action != DictionaryAction::Rerank && it->event.key == event.key && it->event.okuri == event.okuri && it->event.candidate.text == event.candidate.text)
             return it->action == DictionaryAction::Learn;
     return false;
 }
-bool LearningDictionary::enqueue(const LearningEvent& event, bool forget) const noexcept {
+bool LearningDictionary::enqueue(const LearningEvent& event, DictionaryAction action) const noexcept {
     try {
         const std::lock_guard lock(state_->mutex);
         if (state_->queue.size() >= 128) { ++state_->dropped; return false; }
-        LearningRequest request{state_->client, state_->sequence + 1, event, forget ? DictionaryAction::Forget : DictionaryAction::Learn}; validate_learning(request);
+        LearningRequest request{state_->client, state_->sequence + 1, event, action}; validate_learning(request);
         state_->queue.push_back(std::move(request)); ++state_->sequence;
         state_->skipped.clear();
         SetEvent(state_->wake.get()); SetEvent(state_->interrupt.get());
@@ -227,8 +242,9 @@ bool LearningDictionary::enqueue(const LearningEvent& event, bool forget) const 
     } catch (...) { ++state_->dropped; /* Never turn an applied key into a failed key. */ }
     return false;
 }
-void LearningDictionary::learn(const LearningEvent& event) const noexcept { enqueue(event, false); }
-bool LearningDictionary::forget(const LearningEvent& event) const noexcept { return enqueue(event, true); }
+void LearningDictionary::learn(const LearningEvent& event) const noexcept { enqueue(event, DictionaryAction::Learn); }
+void LearningDictionary::learn_rerank(const LearningEvent& event) const noexcept { enqueue(event, DictionaryAction::Rerank); }
+bool LearningDictionary::forget(const LearningEvent& event) const noexcept { return enqueue(event, DictionaryAction::Forget); }
 void LearningDictionary::skipped(std::wstring reason) const noexcept {
     try { const std::lock_guard lock(state_->mutex); state_->skipped = std::move(reason); } catch (...) {}
 }

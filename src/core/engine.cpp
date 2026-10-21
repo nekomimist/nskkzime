@@ -50,8 +50,10 @@ void Engine::clear_composition() {
     input_.romaji.clear(); input_.reading.clear(); input_.okuri.clear(); input_.okuri_letter = 0; input_.deleted_okuri = 0;
     input_.candidates.clear(); input_.candidate_index = 0;
     input_.candidates_touched = input_.generation_attempted = false;
+    input_.rerank.reset();
 }
 void Engine::restore_reading() {
+    input_.rerank.reset();
     if (input_.deleted_okuri) {
         input_.reading += input_.visible_okuri();
         input_.okuri.clear(); input_.okuri_letter = 0; input_.deleted_okuri = 0;
@@ -90,6 +92,19 @@ bool Engine::promote_candidate(std::size_t index) {
     if (!can_reorder_candidates() || index == 0 || index >= input_.candidates.size()) return false;
     std::rotate(input_.candidates.begin(),input_.candidates.begin()+static_cast<std::ptrdiff_t>(index),input_.candidates.begin()+static_cast<std::ptrdiff_t>(index+1));
     ++revision_; return true;
+}
+std::optional<RerankBoost> Engine::rerank_boost() const {
+    return dictionary_->rerank_boost({input_.reading, input_.okuri_letter});
+}
+void Engine::record_rerank(std::span<const float> scores) {
+    Input::Rerank record;
+    for (std::size_t i = 0; i < scores.size(); ++i)
+        record.scores.emplace_back(input_.candidates.at(i).text, scores[i]);
+    input_.rerank = std::move(record);
+    ++revision_;
+}
+void Engine::finish_rerank() {
+    if (input_.rerank) input_.rerank->top = input_.candidates.front().text;
 }
 bool Engine::prepend_generated(std::vector<Candidate> candidates) {
     if (registering() || inference_reading().empty() || (input_.stage == Stage::Selecting && !can_reorder_candidates()) || candidates.empty()) return false;
@@ -184,6 +199,7 @@ void Engine::convert(Result& result) {
     if (input_.reading.empty()) return;
     if (!dictionary_->ready()) { result.dictionary_pending = true; return; }
     result.conversion_started = true;
+    input_.rerank.reset();
     input_.deleted_okuri = 0;
     input_.candidates_touched = input_.generation_attempted = false;
     const LookupKey lookup{input_.reading, input_.okuri_letter};
@@ -247,13 +263,30 @@ LearningEvent Engine::learning_event(const Candidate& candidate) const {
         event.candidate.text = candidate.origin->text;
         event.candidate.origin.reset();
     }
+    learn_rerank_choice(input_, event);
     return event;
+}
+void Engine::learn_rerank_choice(const Input& input, LearningEvent& event) {
+    if (!input.rerank || input.rerank->top == event.candidate.text) return;
+    const auto& scores = input.rerank->scores;
+    const auto best = std::max_element(scores.begin(), scores.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+    const auto selected = std::find_if(scores.begin(), scores.end(), [&](const auto& item) { return item.first == event.candidate.text; });
+    event.rerank_gap = selected != scores.end() && best != scores.end() ?
+        static_cast<double>(best->second) - selected->second : 0.0;
 }
 void Engine::confirm(Result& result) {
     result.committed += input_literal();
-    if (input_.stage == Stage::Selecting && input_.candidates[input_.candidate_index].learning == LearningPolicy::Learn &&
-        input_.candidates[input_.candidate_index].source != CandidateSource::GeneratedLong)
-        result.learning = learning_event(input_.candidates[input_.candidate_index]);
+    if (input_.stage == Stage::Selecting) {
+        auto event = learning_event(input_.candidates[input_.candidate_index]);
+        if (event.candidate.learning == LearningPolicy::Learn && event.candidate.source != CandidateSource::GeneratedLong)
+            result.learning = std::move(event);
+        else if (event.rerank_gap) {
+            // Only the score preference changes; the generated word stays out
+            // of the vocabulary when fallback learning is disabled.
+            event.candidate.learning = LearningPolicy::Learn;
+            result.rerank_learning = std::move(event);
+        }
+    }
     clear_composition();
 }
 Result Engine::handle(Key key) {
@@ -360,6 +393,7 @@ Result Engine::handle_registration(Key key) {
         const auto original = registrations_.back().original;
         result.learning = LearningEvent{{original.reading, original.okuri_letter}, original.okuri,
             {"registered:" + utf8(original.reading), word, {}}};
+        learn_rerank_choice(original, *result.learning);
         result.registration = true;
         input_.mode = original.mode; clear_composition(); registrations_.pop_back();
         const auto committed = word + display(original.visible_okuri());
@@ -379,7 +413,7 @@ Result Engine::handle_registration(Key key) {
         result.committed += static_cast<unsigned char>(key.character);
     else result = handle_input(key);
     registrations_[parent].draft += result.committed;
-    result.committed.clear(); result.learning.reset(); // Ordinary inner conversions do not learn tentative text.
+    result.committed.clear(); result.learning.reset(); result.rerank_learning.reset(); // Inner conversions are tentative.
     return result;
 }
 Result Engine::handle_input(Key key) {
