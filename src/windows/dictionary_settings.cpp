@@ -30,6 +30,8 @@ std::string serialize(const DictionarySettings& settings) {
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
     bytes += settings.learning ? "learning=on\n" : "learning=off\n";
     if (settings.startup_ime_off) bytes += "startup-ime-off=on\n";
+    validate_ui_settings(settings.ui);
+    if (settings.ui.font != default_ui_font) bytes += "ui-font=" + utf8_message(settings.ui.font) + "\n";
     validate_candidate_settings(settings.candidates);
     // Old/default settings retain their representation and behavior.
     if (settings.candidates.show_after != 1)
@@ -197,6 +199,16 @@ std::filesystem::path dictionary_settings_path() {
     CoTaskMemFree(raw);
     return path / L"nskkzime" / L"settings.ini";
 }
+void validate_ui_settings(const UiSettings& settings) {
+    const auto& font = settings.font;
+    if (font.empty() || font.size() >= LF_FACESIZE || font.front() == L' ' || font.back() == L' ' ||
+        std::any_of(font.begin(), font.end(), [](wchar_t ch) { return ch < 0x20 || ch == 0x7f; }))
+        throw std::invalid_argument("ui-font must contain 1..31 UTF-16 code units, without control characters or surrounding spaces");
+    utf8_message(font); // Reject malformed UTF-16 before saving or passing it to GDI.
+}
+std::wstring ui_settings_status(const UiSettings& settings) {
+    return L"入力UIのフォント: " + settings.font;
+}
 void validate_candidate_settings(const CandidateSettings& settings) {
     if (settings.show_after < 1 || settings.show_after > 99)
         throw std::invalid_argument("candidate-show-after must be 1..99");
@@ -212,7 +224,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     from_utf8(bytes); // Validate before interpreting keys or paths.
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    DictionarySettings settings; bool version = false, learning = false, romaji = false, startup_ime_off = false;
+    DictionarySettings settings; bool version = false, learning = false, romaji = false, startup_ime_off = false, ui_font = false;
     std::set<std::string_view> inference_keys, candidate_options, diagnostic_options;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
@@ -232,6 +244,9 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
             if (startup_ime_off || (value != "on" && value != "off"))
                 throw std::invalid_argument("startup-ime-off must appear at most once and equal on or off");
             startup_ime_off = true; settings.startup_ime_off = value == "on";
+        } else if (key == "ui-font") {
+            if (ui_font) throw std::invalid_argument("ui-font must appear at most once");
+            ui_font = true; settings.ui.font = wide_message(value);
         } else if (key == "off-key-exclude") {
             settings.off_key_exclusions.push_back(wide_message(value));
             validate_off_key_exclusions(settings.off_key_exclusions);
@@ -302,6 +317,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else throw std::invalid_argument("unknown settings key");
     }
     if (!version) throw std::invalid_argument("settings version is missing");
+    validate_ui_settings(settings.ui);
     validate_candidate_settings(settings.candidates);
     validate_zenz_settings(settings.zenz);
     validate_tsf_log_settings(settings.tsf_log);

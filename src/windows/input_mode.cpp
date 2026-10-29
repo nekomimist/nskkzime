@@ -57,8 +57,9 @@ UINT show_menu(HMENU menu, POINT point, const RECT* area) {
     return static_cast<UINT>(selected);
 }
 }
-ModeButton::ModeButton(std::weak_ptr<ModeActions> actions, MenuRunner menu_runner)
-    : actions_(std::move(actions)), menu_runner_(menu_runner ? std::move(menu_runner) : show_menu) { ++module_objects; }
+ModeButton::ModeButton(std::weak_ptr<ModeActions> actions, MenuRunner menu_runner, std::wstring font_face)
+    : actions_(std::move(actions)), menu_runner_(menu_runner ? std::move(menu_runner) : show_menu),
+      font_face_(std::move(font_face)) { ++module_objects; }
 ModeButton::~ModeButton() { --module_objects; }
 HRESULT ModeButton::QueryInterface(REFIID iid, void** out) {
     if (!out) return E_POINTER;
@@ -158,7 +159,7 @@ HRESULT ModeButton::GetIcon(HICON* out) {
     const auto old_bitmap = SelectObject(dc, mask);
     PatBlt(dc, 0, 0, width, height, WHITENESS); PatBlt(dc, 0, height, width, height, BLACKNESS);
     const auto font = CreateFontW(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH, font_face_.c_str());
     const auto old_font = font ? SelectObject(dc, font) : nullptr;
     SetTextColor(dc, RGB(0, 0, 0)); SetBkColor(dc, RGB(255, 255, 255));
     RECT rect{0, 0, width, height}; DrawTextW(dc, text(mode_), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -178,6 +179,11 @@ HRESULT ModeButton::UnadviseSink(DWORD cookie) {
     if (cookie != 1 || !sink_) return CONNECT_E_NOCONNECTION;
     sink_.Reset(); return S_OK;
 }
+void ModeButton::set_font(std::wstring_view font_face) {
+    if (font_face_ == font_face) return;
+    font_face_ = font_face;
+    const auto sink = sink_; if (sink) sink->OnUpdate(TF_LBI_ICON);
+}
 void ModeButton::update(Mode mode) noexcept {
     if (mode_ == mode) return;
     mode_ = mode; const auto sink = sink_; if (sink) sink->OnUpdate(TF_LBI_BTNALL);
@@ -196,7 +202,7 @@ HRESULT InputMode::QueryInterface(REFIID iid, void** out) {
 }
 ULONG InputMode::AddRef() { return ++refs_; }
 ULONG InputMode::Release() { const auto refs = --refs_; if (!refs) delete this; return refs; }
-void InputMode::connect(ITfThreadMgr* thread, TfClientId client, std::weak_ptr<ModeActions> actions, Mode mode) noexcept {
+void InputMode::connect(ITfThreadMgr* thread, TfClientId client, std::weak_ptr<ModeActions> actions, Mode mode, std::wstring_view font_face) noexcept {
     disconnect(); actions_ = std::move(actions); client_ = client; mode_ = mode;
     try {
         ComPtr<ITfCompartmentMgr> manager;
@@ -207,12 +213,15 @@ void InputMode::connect(ITfThreadMgr* thread, TfClientId client, std::weak_ptr<M
                     SUCCEEDED(compartments_[i].As(&source))) source->AdviseSink(IID_ITfCompartmentEventSink, this, &cookies_[i]);
             }
         }
-        button_.Attach(new ModeButton(actions_)); button_->update(mode_);
+        button_.Attach(new ModeButton(actions_, {}, std::wstring(font_face))); button_->update(mode_);
         if (thread && SUCCEEDED(thread->QueryInterface(IID_PPV_ARGS(&bar_))) && FAILED(bar_->AddItem(button_.Get()))) bar_.Reset();
         // An existing thread value belongs to Windows; preserve its on/off state.
         if (read(compartments_[0].Get())) OnChange(*ids[0]);
         else publish(mode_);
     } catch (...) { disconnect(); }
+}
+void InputMode::set_font(std::wstring_view font_face) {
+    if (button_) button_->set_font(font_face);
 }
 void InputMode::disconnect() noexcept {
     actions_.reset(); client_ = TF_CLIENTID_NULL;

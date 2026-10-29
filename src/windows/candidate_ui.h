@@ -2,6 +2,7 @@
 #include "module.h"
 #include "input_timing.h"
 #include "candidate_settings.h"
+#include "ui_settings.h"
 #include "nskkzime/engine.h"
 #include <wrl/client.h>
 #include <functional>
@@ -55,7 +56,8 @@ private:
 };
 class CandidateList final : public ITfCandidateListUIElement {
 public:
-    explicit CandidateList(PopupKind = PopupKind::Candidates, std::weak_ptr<CandidateActions> actions = {}, CandidateKeys = CandidateKeys::Numbers);
+    explicit CandidateList(PopupKind = PopupKind::Candidates, std::weak_ptr<CandidateActions> actions = {},
+        CandidateKeys = CandidateKeys::Numbers, std::wstring font_face = default_ui_font);
     ~CandidateList();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -82,6 +84,7 @@ public:
     void begin_interaction() noexcept;
     PopupKind kind() const { return kind_; }
     CandidateKeys keys() const { return keys_; }
+    std::wstring_view font_face() const { return font_face_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
     struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
@@ -99,6 +102,7 @@ private:
     std::vector<UINT> pages_;
     const PopupKind kind_;
     const CandidateKeys keys_;
+    const std::wstring font_face_;
     std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
@@ -119,7 +123,8 @@ class CandidatePresenter {
 public:
     ~CandidatePresenter() { close(); }
     void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false,
-        bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers, std::wstring_view notice = {}) noexcept;
+        bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers, std::wstring_view notice = {},
+        std::wstring_view font_face = default_ui_font) noexcept;
     // Also captures a position before a text mutation, even without a popup.
     void locate(ITfContext*, ITfComposition*, TfEditCookie, std::uint64_t session = 0, bool capture_position = false) noexcept;
     void dismiss_notice() noexcept;

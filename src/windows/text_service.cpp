@@ -191,6 +191,7 @@ public:
                 engine_.set_numeric_candidate_keys(false);
                 if (!configuration_.broker) {
                     candidate_settings_ = configuration_.dictionaries.settings.candidates;
+                    ui_settings_ = configuration_.dictionaries.settings.ui;
                     tool_commands_ = configuration_.tools;
                 }
                 dictionary_loaded_ = true;
@@ -235,7 +236,7 @@ public:
                 mode_actions_->open_tool = [launcher = tool_launcher_](ImeTool tool) { return launcher->open(tool); };
                 input_mode_.Attach(new InputMode);
                 connecting_mode_ = true;
-                input_mode_->connect(manager_.Get(), client_, mode_actions_, engine_.mode());
+                input_mode_->connect(manager_.Get(), client_, mode_actions_, engine_.mode(), ui_settings_.font);
                 connecting_mode_ = false;
                 apply_startup_mode();
                 for (std::size_t i = 0; i < mode_keys.size(); ++i) {
@@ -615,6 +616,8 @@ private:
             off_keys_enabled_ = !off_keys_excluded(remote->configuration.settings, host_executable_);
             diagnostics_ = TsfDiagnosticLog::create(remote->configuration.settings.tsf_log, in_app_container());
             candidate_settings_ = remote->configuration.settings.candidates;
+            ui_settings_ = remote->configuration.settings.ui;
+            if (input_mode_) input_mode_->set_font(ui_settings_.font);
             if (const auto config = inference_config(*remote)) {
                 inference_state_.configure(*config, [this](InferenceCompletion result) { receive_inference(std::move(result)); });
                 set_inference_status(this, L"推論: 補助プロセス経由でzenzを使用");
@@ -871,7 +874,7 @@ private:
         // display attributes. Present its reading separately from document text.
         const bool show_reading = composition_state_.origin && composition_state_.origin.Get() != composition_state_.context.Get();
         candidates_.update(manager_.Get(), context.Get(), engine_, candidate_actions_, show_reading,
-            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice);
+            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice, ui_settings_.font);
         if (!unchanged()) return;
         candidates_.locate(context.Get(), current.Get(), cookie, session);
         if (unchanged()) cancel_unshown_editor();
@@ -995,6 +998,7 @@ private:
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
     CandidateSettings candidate_settings_;
+    UiSettings ui_settings_;
     CandidateVisibility candidate_visibility_;
     ComPtr<InputMode> input_mode_;
     bool startup_mode_pending_ = true, connecting_mode_ = false;

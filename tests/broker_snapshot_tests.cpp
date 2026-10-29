@@ -49,9 +49,11 @@ int main() {
         config.settings.dictionaries = {files.root / "missing.skk", first, second};
         config.settings.off_key_exclusions = {L"Code.exe", L"WindowsTerminal.exe"};
         config.settings.startup_ime_off = true;
+        config.settings.ui.font = L"ＭＳ ゴシック";
         const auto partial = build_broker_snapshot(config, dictionary_configuration_id(config));
         const auto response = decode(partial);
         check(parse_dictionary_settings(response.settings).startup_ime_off, "startup mode not transferred to container");
+        check(parse_dictionary_settings(response.settings).ui.font == config.settings.ui.font, "UI font not transferred to container");
         check(parse_dictionary_settings(response.settings).off_key_exclusions == config.settings.off_key_exclusions,
             "OFF key exclusions not transferred to container");
         check(response.generation == dictionary_configuration_id(config) && wide_message(response.file) == config.file.native(),

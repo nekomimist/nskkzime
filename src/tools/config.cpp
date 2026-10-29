@@ -186,6 +186,7 @@ int wmain(int argc, wchar_t** argv) {
                 show(configuration.settings.learning ? L"学習: on" : L"学習: off");
                 show(configuration.settings.startup_ime_off ? L"アプリ起動時にIMEをオフ: on" : L"アプリ起動時にIMEをオフ: off");
                 show(candidate_settings_status(configuration.settings.candidates));
+                show(ui_settings_status(configuration.settings.ui));
                 show(configuration.settings.romaji_rules.empty() ? L"ローマ字: 内蔵ルール" : L"ローマ字: " + configuration.settings.romaji_rules.native());
                 show(zenz_settings_status(configuration.settings.zenz));
                 show(tsf_log_settings_status(configuration.settings.tsf_log));

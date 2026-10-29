@@ -58,8 +58,8 @@ std::optional<std::size_t> candidate_row_at(POINT point, SIZE client, int paddin
     const auto row = static_cast<std::size_t>((point.y - top) / line_height);
     return row < end - first ? std::optional{first + row} : std::nullopt;
 }
-CandidateList::CandidateList(PopupKind kind, std::weak_ptr<CandidateActions> actions, CandidateKeys keys)
-    : kind_(kind), keys_(keys), actions_(std::move(actions)) { ++module_objects; }
+CandidateList::CandidateList(PopupKind kind, std::weak_ptr<CandidateActions> actions, CandidateKeys keys, std::wstring font_face)
+    : kind_(kind), keys_(keys), font_face_(std::move(font_face)), actions_(std::move(actions)) { ++module_objects; }
 CandidateList::~CandidateList() { close(); --module_objects; }
 HRESULT CandidateList::QueryInterface(REFIID iid, void** output) {
     if (!output) return E_POINTER;
@@ -252,7 +252,7 @@ void CandidateList::render() noexcept {
             dpi_ = dpi ? dpi : 96;
             if (font_) DeleteObject(font_);
             font_ = CreateFontW(-MulDiv(18, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, font_face_.c_str());
             line_height_ = MulDiv(32, dpi_, 96); padding_ = MulDiv(10, dpi_, 96);
         }
         // Keep measurement bounded even if the host supplies a custom large page.
@@ -403,7 +403,7 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     return DefWindowProcW(window, message, wparam, lparam);
 }
 void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions, bool show_reading,
-    bool show_candidates, CandidateKeys keys, std::wstring_view notice) noexcept {
+    bool show_candidates, CandidateKeys keys, std::wstring_view notice, std::wstring_view font_face) noexcept {
     try {
         ++generation_;
         if (position_context_ && position_context_.Get() != context) invalidate_position();
@@ -412,7 +412,7 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
         if (!notifying && !reading && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close_ui(); return; }
         const auto kind = notifying ? PopupKind::Notice : reading ? PopupKind::Reading : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
         if (kind == PopupKind::Candidates && !show_candidates) { close_ui(); return; }
-        if (list_ && (list_->kind() != kind || list_->keys() != keys)) {
+        if (list_ && (list_->kind() != kind || list_->keys() != keys || list_->font_face() != font_face)) {
             const auto closing_generation = generation_ + 1;
             close_ui();
             if (generation_ != closing_generation) return;
@@ -428,7 +428,8 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
             if (generation != generation_) return;
             if (FAILED(manager_status) || !ui_manager) return;
             manager_ = std::move(ui_manager);
-            list_.Attach(new CandidateList(kind, notifying ? std::weak_ptr<CandidateActions>{} : std::move(actions), keys));
+            list_.Attach(new CandidateList(kind, notifying ? std::weak_ptr<CandidateActions>{} : std::move(actions), keys,
+                std::wstring(font_face)));
             if (notifying) list_->notice(notice, document.Get());
             else list_->update(engine, document.Get());
             BOOL show = TRUE;

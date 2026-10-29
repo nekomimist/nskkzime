@@ -54,6 +54,25 @@ int main() {
     const auto second = files.write(L"共通辞書.skk", "かな /仮名;共通/かな/\n");
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
+        {"settings/ui-font-default-roundtrip-and-validation", [&] {
+            const auto defaults = parse_dictionary_settings("version=1\n");
+            require(defaults.ui.font == L"Yu Gothic UI", "old settings changed UI font");
+            require(serialize_dictionary_settings(defaults).find("ui-font=") == std::string::npos, "default font changed old settings representation");
+            for (const auto& font : {std::wstring(L"Meiryo"), std::wstring(L"ＭＳ ゴシック"), std::wstring(31, L'a')}) {
+                auto settings = defaults; settings.ui.font = font;
+                const auto file = files.path(L"font-" + std::to_wstring(font.size()) + L".ini");
+                save_dictionary_settings(file, settings);
+                require(read_dictionary_settings(file).ui.font == font, "UI font lost on save");
+            }
+            for (const auto invalid : {"ui-font=", "ui-font=Meiryo\nui-font=Yu Gothic UI", "ui-font=bad\tfont"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+            rejects([&] { parse_dictionary_settings("version=1\nui-font=" + std::string(32, 'a')); });
+            for (const auto& font : {std::wstring{}, std::wstring(32, L'a'), std::wstring(L" Meiryo"), std::wstring(L"Meiryo "),
+                    std::wstring(L"Meiryo\nlearning=off"), std::wstring(L"bad\tfont"), std::wstring(1, L'\0'), std::wstring(1, wchar_t{0xd800})}) {
+                auto settings = defaults; settings.ui.font = font;
+                rejects([&] { serialize_dictionary_settings(settings); });
+            }
+        }},
         {"settings/startup-ime-off-opt-in-roundtrip-and-validation", [&] {
             require(!parse_dictionary_settings("version=1\n").startup_ime_off, "old settings forced IME off");
             for (const bool enabled : {true, false}) {

@@ -2,6 +2,7 @@
 #include "module.h"
 #include "nskkzime/engine.h"
 #include "tool_launcher.h"
+#include "ui_settings.h"
 #include <ctfutb.h>
 #include <ctffunc.h>
 #include <wrl/client.h>
@@ -23,7 +24,7 @@ inline constexpr std::array<GUID, 2> mode_key_ids{{toggle_mode_key, kanji_mode_k
 class ModeButton final : public ITfLangBarItemButton, public ITfSource {
 public:
     using MenuRunner = std::function<UINT(HMENU, POINT, const RECT*)>;
-    explicit ModeButton(std::weak_ptr<ModeActions> actions, MenuRunner menu_runner = {});
+    explicit ModeButton(std::weak_ptr<ModeActions> actions, MenuRunner menu_runner = {}, std::wstring font_face = default_ui_font);
     ~ModeButton();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -40,6 +41,7 @@ public:
     HRESULT STDMETHODCALLTYPE AdviseSink(REFIID, IUnknown*, DWORD*) override;
     HRESULT STDMETHODCALLTYPE UnadviseSink(DWORD) override;
     void update(Mode mode) noexcept;
+    void set_font(std::wstring_view);
     void close() noexcept;
 private:
     HRESULT select(Mode) noexcept;
@@ -50,6 +52,7 @@ private:
     Mode mode_ = Mode::Hiragana;
     DWORD status_ = 0;
     MenuRunner menu_runner_;
+    std::wstring font_face_;
     bool menu_open_ = false;
 };
 
@@ -63,7 +66,8 @@ public:
     ULONG STDMETHODCALLTYPE AddRef() override;
     ULONG STDMETHODCALLTYPE Release() override;
     HRESULT STDMETHODCALLTYPE OnChange(REFGUID) override;
-    void connect(ITfThreadMgr*, TfClientId, std::weak_ptr<ModeActions>, Mode) noexcept;
+    void connect(ITfThreadMgr*, TfClientId, std::weak_ptr<ModeActions>, Mode, std::wstring_view font_face = default_ui_font) noexcept;
+    void set_font(std::wstring_view);
     void disconnect() noexcept;
     void publish(Mode) noexcept;
 private:

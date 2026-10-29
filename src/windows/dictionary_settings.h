@@ -2,6 +2,7 @@
 #include "nskkzime/dictionary.h"
 #include "nskkzime/inference_policy.h"
 #include "candidate_settings.h"
+#include "ui_settings.h"
 #include <optional>
 
 namespace nskkzime::windows {
@@ -28,6 +29,7 @@ struct DictionarySettings {
     } tsf_log;
     std::vector<std::wstring> off_key_exclusions;
     bool startup_ime_off = false; // Initial TSF activation only; later mode choices remain available.
+    UiSettings ui;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;
@@ -52,6 +54,8 @@ std::wstring tsf_log_settings_status(const DictionarySettings::TsfLogSettings&);
 void validate_off_key_exclusions(const std::vector<std::wstring>&);
 bool off_keys_excluded(const DictionarySettings&, std::wstring_view executable);
 void validate_candidate_settings(const CandidateSettings&);
+void validate_ui_settings(const UiSettings&);
+std::wstring ui_settings_status(const UiSettings&);
 std::wstring candidate_settings_status(const CandidateSettings&);
 std::wstring zenz_settings_status(const ZenzSettings&);
 // Explicit inputs keep tests independent of the user's saved configuration.

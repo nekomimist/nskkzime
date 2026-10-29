@@ -8,6 +8,10 @@ DDSKKの操作を基にした現在の仕様。DDSKKとの違いは「DDSKKと�
 「設定…」か `nskkzime_settings.exe` で編集する。どちらも保存前に辞書・ルールを読み込んで検査する。
 変更は利用するアプリを起動し直すと反映される。
 
+設定画面の「表示」タブで、入力UIのフォントをインストール済みのフォントから選べる。
+候補一覧・読み・単語登録・削除確認・通知と、入力モードの文字アイコンに共通で適用する。
+文字サイズは従来どおりDPIやアイコンの大きさに合わせる。入力先アプリ内の本文のフォントはアプリ側で設定する。
+
 ```powershell
 nskkzime_config.exe --set-dictionaries 'C:\辞書\personal.skk' 'C:\辞書\SKK-JISYO.L'
 nskkzime_config.exe --set-zenz 'C:\models\ggml-model-Q5_K_M.gguf'
@@ -23,6 +27,7 @@ nskkzime_config.exe --check
 | `romaji` | なし | 独自のローマ字ルールファイル |
 | `candidate-show-after` | 1 | 候補一覧を表示するまでのSpace回数（1〜99） |
 | `candidate-keys` | numbers | 一覧の選択キー。`numbers`（1〜7）か `asdfjkl` |
+| `ui-font` | Yu Gothic UI | 入力UI共通のフォント名（最大31 UTF-16コード単位）。未インストールのフォントはWindowsが代替する |
 | `off-key-exclude` | なし | IMEオフ中のC-j・C-qをアプリへ渡すexe名。複数行可（最大32）、大文字小文字を区別しない完全一致 |
 | `inference` | off | `zenz` で推論を有効化 |
 | `zenz-model` | なし | GGUFモデルの絶対パス |

@@ -31,6 +31,26 @@ void drain_events() {
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&message); DispatchMessageW(&message); }
 }
+void presenter_fonts() {
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    ComPtr<test_host::Context> context; context.Attach(new test_host::Context);
+    Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});
+    CandidatePresenter presenter;
+    presenter.update(host.Get(), context.Get(), engine);
+    auto* list = static_cast<CandidateList*>(host->ui.Get());
+    check(list && list->font_face() == default_ui_font, "default popup font changed");
+    // Retain the previous element so an allocation cannot reuse its address.
+    const auto previous = host->ui;
+    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, {}, L"Meiryo");
+    list = static_cast<CandidateList*>(host->ui.Get());
+    check(list && host->ui != previous && list->font_face() == L"Meiryo", "font change retained the old popup");
+    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, {}, L"Meiryo");
+    check(host->ui.Get() == list, "unchanged font recreated the popup");
+    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, L"登録できません", L"Meiryo");
+    list = static_cast<CandidateList*>(host->ui.Get());
+    check(list && list->kind() == PopupKind::Notice && list->font_face() == L"Meiryo", "notification lost configured font");
+    presenter.close();
+}
 void popup_events() {
     struct Hook {
         HWINEVENTHOOK value = SetWinEventHook(EVENT_OBJECT_IME_SHOW, EVENT_OBJECT_IME_CHANGE, nullptr,
@@ -135,6 +155,7 @@ void presenter_positions() {
 int main() {
     try {
         popup_events();
+        presenter_fonts();
         presenter_positions();
         {
             enable_input_timing(true);

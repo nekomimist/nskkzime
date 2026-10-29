@@ -61,6 +61,7 @@ void candidate_settings_tests(const std::filesystem::path& root) {
     { std::ofstream file(dictionary, std::ios::binary);
       file << "こうほ /候補一/候補二/候補三/候補四/候補五/候補六/候補七/候補八/候補九/\nかk /書/描/掻/\n"; }
     DictionarySettings settings{{dictionary}, false}; settings.candidates = {3, CandidateKeys::Asdfjkl};
+    settings.ui.font = L"Meiryo";
     save_dictionary_settings(config, settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
     {
@@ -73,6 +74,7 @@ void candidate_settings_tests(const std::filesystem::path& root) {
         check(!eaten && !s.host->ui && s.context->doc->text == L"候補二", "failed edit advanced list count");
         s.context->doc->reject_write = false; s.key(VK_SPACE);
         check(s.host->ui && s.context->doc->text == L"候補三" && s.snapshot()->keys() == CandidateKeys::Asdfjkl, "third conversion did not show letter list");
+        check(s.snapshot()->font_face() == settings.ui.font, "saved UI font did not reach the TSF candidate popup");
         s.type("x"); check(s.host->ui && s.context->doc->text == L"候補二", "previous candidate hid opened list");
         s.type("a"); check(s.context->doc->text == L"候補一" && !s.host->ui && s.context->composition->ended, "A row was not selected");
         s.type("Kouho"); s.key(VK_SPACE); check(!s.host->ui, "new conversion inherited list count");

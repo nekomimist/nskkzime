@@ -107,6 +107,23 @@ void off_key_list(Editor& editor, int selected = -1) {
     fill_list(GetDlgItem(editor.pages[7], IDC_OFF_KEY_EXCLUSIONS), editor.off_key_exclusions, selected);
     update_enabled(editor);
 }
+int CALLBACK add_ui_font(const LOGFONTW* font, const TEXTMETRICW*, DWORD, LPARAM target) {
+    const auto combo = reinterpret_cast<HWND>(target);
+    if (!font->lfFaceName[0] || font->lfFaceName[0] == L'@') return 1;
+    const auto name = reinterpret_cast<LPARAM>(font->lfFaceName);
+    if (SendMessageW(combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), name) == CB_ERR)
+        return SendMessageW(combo, CB_ADDSTRING, 0, name) >= 0;
+    return 1;
+}
+void select_ui_font(HWND page, const std::wstring& font) {
+    const auto combo = GetDlgItem(page, IDC_UI_FONT);
+    const auto name = reinterpret_cast<LPARAM>(font.c_str());
+    auto index = SendMessageW(combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), name);
+    // Preserve a saved font even when it is no longer installed on this PC.
+    if (index == CB_ERR) index = SendMessageW(combo, CB_ADDSTRING, 0, name);
+    if (index < 0 || SendMessageW(combo, CB_SETCURSEL, index, 0) == CB_ERR)
+        throw std::runtime_error("cannot select UI font");
+}
 void reload(Editor& editor) {
     editor.valid = false;
     editor.loading = true;
@@ -126,6 +143,7 @@ void reload(Editor& editor) {
         set(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, std::to_wstring(settings.candidates.show_after));
         SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_SETCURSEL,
             settings.candidates.keys == CandidateKeys::Asdfjkl ? 1 : 0, 0);
+        select_ui_font(editor.pages[6], settings.ui.font);
         const auto& zenz = settings.zenz;
         check(editor.pages[2], IDC_ZENZ, zenz.enabled);
         set(editor.pages[2], IDC_MODEL, zenz.model.native());
@@ -183,6 +201,8 @@ DictionarySettings draft(Editor& editor) {
     const auto keys = SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_GETCURSEL, 0, 0);
     if (keys != 0 && keys != 1) throw std::invalid_argument("候補一覧の選択キーを選んでください。");
     result.candidates.keys = keys == 1 ? CandidateKeys::Asdfjkl : CandidateKeys::Numbers;
+    result.ui.font = get(editor.pages[6], IDC_UI_FONT);
+    validate_ui_settings(result.ui);
     result.romaji_rules = checked(editor.pages[1], IDC_CUSTOM_ROMAJI) ? get(editor.pages[1], IDC_ROMAJI_PATH) : L"";
     if (checked(editor.pages[1], IDC_CUSTOM_ROMAJI) && result.romaji_rules.empty())
         throw std::invalid_argument("ローマ字ルールのファイルを指定してください。");
@@ -400,7 +420,7 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(editor->large_icon));
             set(window, IDC_FILE, L"保存先: " + editor->file.native());
             SendDlgItemMessageW(window, IDC_REPORT, EM_SETLIMITTEXT, 65535, 0);
-            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈", L"候補一覧", L"キー操作"};
+            const std::array names{L"辞書", L"ローマ字", L"推論", L"詳細", L"診断", L"文脈", L"表示", L"キー操作"};
             for (std::size_t i = 0; i < editor->pages.size(); ++i) {
                 TCITEMW item{};
                 item.mask = TCIF_TEXT;
@@ -413,6 +433,14 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
             for (const auto label : {L"1–7", L"ASDFJKL"})
                 SendDlgItemMessageW(editor->pages[6], IDC_CANDIDATE_KEYS, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+            const auto font_combo = GetDlgItem(editor->pages[6], IDC_UI_FONT);
+            if (const auto dc = GetDC(window)) {
+                LOGFONTW font{}; font.lfCharSet = DEFAULT_CHARSET;
+                EnumFontFamiliesExW(dc, &font, add_ui_font, reinterpret_cast<LPARAM>(font_combo), 0);
+                ReleaseDC(window, dc);
+            }
+            select_ui_font(editor->pages[6], default_ui_font);
+            SendMessageW(font_combo, CB_SETMINVISIBLE, 10, 0);
             SendDlgItemMessageW(editor->pages[7], IDC_OFF_KEY_NAME, EM_SETLIMITTEXT, 32767, 0);
             show_page(*editor);
             reload(*editor);
