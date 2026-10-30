@@ -55,6 +55,7 @@ int wmain(int argc, wchar_t** argv) {
              settings.romaji_rules = romaji;
              settings.candidates = {5, CandidateKeys::Asdfjkl};
              settings.ui.font = L"ＭＳ ゴシック";
+             settings.ui.show_input_mode = true; settings.ui.input_mode_duration_ms = 1250;
              settings.tsf_log = {true, files.root};
              settings.off_key_exclusions = {L"Code.exe", L"WindowsTerminal.exe"};
              check(check_settings_draft(settings).valid, "valid configuration rejected");
@@ -64,6 +65,7 @@ int wmain(int argc, wchar_t** argv) {
                        !loaded.settings.learning && loaded.settings.startup_ime_off && loaded.settings.romaji_rules == romaji &&
                        loaded.settings.candidates.show_after == 5 && loaded.settings.candidates.keys == CandidateKeys::Asdfjkl &&
                        loaded.settings.ui.font == settings.ui.font &&
+                       loaded.settings.ui.show_input_mode && loaded.settings.ui.input_mode_duration_ms == 1250 &&
                        loaded.settings.tsf_log.enabled && loaded.settings.tsf_log.directory == files.root &&
                        loaded.settings.off_key_exclusions == settings.off_key_exclusions,
                    "saved configuration changed");

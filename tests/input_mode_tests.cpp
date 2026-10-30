@@ -4,6 +4,7 @@
 #include "tsf_mode_host.h"
 #include "learning_ipc.h"
 #include "candidate_ui.h"
+#include "mode_indicator.h"
 #include "isolated_settings.h"
 #include <iostream>
 #include <stdexcept>
@@ -94,6 +95,19 @@ struct Session {
     }
     ComPtr<ITfLangBarItemButton> button() { ComPtr<ITfLangBarItemButton> value; if (host->button) host->button.As(&value); return value; }
     std::wstring label() { BSTR value = nullptr; check(button() && SUCCEEDED(button()->GetText(&value)), "no label"); std::wstring result(value); SysFreeString(value); return result; }
+    void indicator_host() {
+        host->focused_document = context->document_manager;
+        context->active_view.Attach(new test_host::ContextView);
+    }
+    bool indicator() const {
+        GUID guid{};
+        return host->ui && SUCCEEDED(host->ui->GetGUID(&guid)) && guid == mode_indicator_ui_guid;
+    }
+    std::wstring description() const {
+        BSTR value = nullptr;
+        check(host->ui && SUCCEEDED(host->ui->GetDescription(&value)), "no UI description");
+        const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
+    }
 };
 }
 int wmain(int argc, wchar_t** argv) {
@@ -393,7 +407,108 @@ int wmain(int argc, wchar_t** argv) {
         check(learned.revision() == 2 && learned.entries().size() == 2 &&
             kanji.size() == 1 && kanji[0].text == U"漢字" && wide_draft.size() == 1 && wide_draft[0].text == U"ａｂｃ",
             "mode switch learned unconfirmed text or lost explicit confirmation");
-        std::cout << "PASS mode labels, Windows state, quote keys, app exclusions, composition lifetime and teardown\n"; result = 0;
+        // New UI is opt-in; all earlier contracts run with old settings.
+        use_isolated_settings(root / "indicator", "learning=on\ndictionary=" + settings_path(argv[1]) +
+            "\nshow-input-mode=on\ninput-mode-duration-ms=3000\n");
+        for (const bool same_document : {false, true}) {
+            Session s(true); s.indicator_host(); s.host->show_ui = TRUE;
+            ComPtr<test_host::Context> other; other.Attach(new test_host::Context);
+            s.host->open->write_query = [&] {
+                if (s.host->open->value != 1) return;
+                auto* document = static_cast<test_host::DocumentManager*>(s.context->document_manager.Get());
+                if (same_document) document->top = other.Get();
+                else s.host->focused_document = other->document_manager;
+                s.host->events->OnSetFocus(s.host->focused_document.Get(), s.context->document_manager.Get());
+            };
+            check(s.key('J', true) && s.label() == L"あ" && !s.host->ui, "focus move during IME open displayed marker in old field");
+            s.context->pump();
+            check(!s.host->ui, "deferred C-j mode display survived a focus move");
+            static_cast<test_host::DocumentManager*>(s.context->document_manager.Get())->top = s.context.Get();
+        }
+        {
+            Session s(true); s.indicator_host(); s.host->show_ui = TRUE;
+            s.context->notify_after_session = false;
+            unsigned focus_notifications = 0;
+            s.host->open->write_query = [&] {
+                if (s.host->open->value != 1) return;
+                ++focus_notifications;
+                s.host->events->OnSetFocus(s.context->document_manager.Get(), s.context->document_manager.Get());
+            };
+            check(s.key('J', true) && s.label() == L"あ" && focus_notifications == 1, "C-j did not open IME with focus notification");
+            check(s.indicator(), "same-field focus notification discarded C-j mode display");
+            s.context->pump();
+            BOOL shown = FALSE; s.host->ui->IsShown(&shown);
+            check(shown, "C-j mode display required an edit notification");
+            const auto retained = s.host->ui;
+            s.host->events->OnSetFocus(s.context->document_manager.Get(), s.context->document_manager.Get());
+            check(s.host->ui == retained, "same-field focus refresh closed visible mode display");
+            ComPtr<test_host::Context> other; other.Attach(new test_host::Context);
+            s.host->focused_document = other->document_manager;
+            s.host->events->OnSetFocus(other->document_manager.Get(), s.context->document_manager.Get());
+            check(!s.host->ui, "different-field focus retained mode display");
+        }
+        {
+            Session s(true); s.indicator_host(); s.host->show_ui = TRUE;
+            check(!s.host->ui && s.label() == L"A", "closed startup showed a mode notification");
+            check(s.key('J', true) && s.indicator() && s.label() == L"あ", "IME-off C-j missing mode indicator");
+            s.context->pump();
+            BOOL shown = FALSE;
+            s.host->ui->IsShown(&shown);
+            check(shown && s.description().find(L"ひらがな") != std::wstring::npos, "IME-off C-j indicator was not visible");
+            const auto hiragana_ui = s.host->ui;
+            s.type("l");
+            check(s.indicator() && s.label() == L"A" && s.host->open->value == 0, "hiragana l missing IME-off indicator");
+            s.context->pump();
+            s.host->ui->IsShown(&shown);
+            check(shown && s.description().find(L"IMEオフ") != std::wstring::npos, "hiragana l indicator was not visible");
+            hiragana_ui->IsShown(&shown);
+            check(!shown && s.context->doc->text.empty(), "SKK mode switch retained old indicator or inserted text");
+        }
+        {
+            Session s; s.indicator_host();
+            check(!s.host->ui, "initial mode synchronization displayed indicator");
+            s.type("q"); check(s.indicator() && s.description().find(L"カタカナ") != std::wstring::npos, "accepted q did not show mode");
+            s.context->pump();
+            s.type("a"); check(!s.host->ui, "ordinary input redisplayed indicator");
+            s.type("l"); check(s.indicator() && s.host->open->value == 0, "Latin transition missing indicator");
+            check(!s.key('Z') && !s.host->ui, "passthrough key did not dismiss marker");
+            check(s.key(VK_IME_OFF) && s.indicator(), "same-mode OFF key did not redisplay marker");
+            const auto previous_ui = s.host->ui;
+            check(s.key(VK_IME_ON) && s.indicator() && s.host->ui != previous_ui, "new mode retained old indicator");
+            const auto retained = s.host->ui;
+            s.host->open->set(0); check(s.indicator() && s.description().find(L"IMEオフ") != std::wstring::npos, "external close missing indicator");
+            BOOL shown = TRUE; retained->Show(TRUE); retained->IsShown(&shown);
+            check(!shown, "retained mode UI reopened");
+            s.keys->OnSetFocus(FALSE); check(!s.host->ui, "lost focus retained marker");
+            s.host->open->set(1); check(!s.host->ui, "background mode change displayed marker");
+            s.keys->OnSetFocus(TRUE);
+            s.context->reject_session = true;
+            check(!s.key('Q') && !s.host->ui && s.label() == L"あ", "rejected mode edit changed indicator or mode");
+            s.context->reject_session = false;
+            s.type("q"); check(s.indicator(), "mode display failed after rejected edit");
+            s.type("L"); check(s.indicator() && s.description().find(L"全角英数") != std::wstring::npos, "fullwidth mode indicator missing");
+            s.service->Deactivate(); s.context->pump();
+            check(!s.host->ui && !s.context->edits && !s.context->layout, "deactivation retained mode UI or layout request");
+        }
+        {
+            Session s; s.indicator_host();
+            s.type("/indicator-miss"); s.key(VK_SPACE);
+            check(s.host->ui && !s.indicator() && s.description().find(L"[あ]") != std::wstring::npos, "registration mode badge missing");
+            s.type("l");
+            check(!s.indicator() && s.description().find(L"[A 英数]") != std::wstring::npos && s.host->open->value == 1,
+                "inner Latin badge changed outer Windows state");
+            s.key('J', true); s.type("q");
+            check(!s.indicator() && s.description().find(L"[ア]") != std::wstring::npos, "registration kana mode badge stale");
+            s.type("L");
+            check(!s.indicator() && s.description().find(L"[Ａ]") != std::wstring::npos, "registration fullwidth badge stale");
+            s.key('J', true); s.type("Mizumizumizu"); s.key(VK_SPACE);
+            check(s.host->ui && !s.indicator() && s.description().find(L"[あ] 2") != std::wstring::npos, "recursive registration badge missing");
+            s.key(VK_ESCAPE);
+            check(s.host->ui && s.description().find(L"[あ] 1") != std::wstring::npos, "parent registration badge not restored");
+            s.key(VK_ESCAPE);
+        }
+        check(module_objects == 0, "mode indicator retained service or UI objects");
+        std::cout << "PASS mode labels, Windows state, quote keys, app exclusions, mode indicator, registration and teardown\n"; result = 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; }
     SetKeyboardState(previous); CoUninitialize();
     Sleep(300); // Let background saves release the writer lock.

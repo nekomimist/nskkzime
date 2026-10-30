@@ -32,6 +32,9 @@ std::string serialize(const DictionarySettings& settings) {
     if (settings.startup_ime_off) bytes += "startup-ime-off=on\n";
     validate_ui_settings(settings.ui);
     if (settings.ui.font != default_ui_font) bytes += "ui-font=" + utf8_message(settings.ui.font) + "\n";
+    if (settings.ui.show_input_mode) bytes += "show-input-mode=on\n";
+    if (settings.ui.input_mode_duration_ms != default_input_mode_duration_ms)
+        bytes += "input-mode-duration-ms=" + std::to_string(settings.ui.input_mode_duration_ms) + "\n";
     validate_candidate_settings(settings.candidates);
     // Old/default settings retain their representation and behavior.
     if (settings.candidates.show_after != 1)
@@ -205,9 +208,12 @@ void validate_ui_settings(const UiSettings& settings) {
         std::any_of(font.begin(), font.end(), [](wchar_t ch) { return ch < 0x20 || ch == 0x7f; }))
         throw std::invalid_argument("ui-font must contain 1..31 UTF-16 code units, without control characters or surrounding spaces");
     utf8_message(font); // Reject malformed UTF-16 before saving or passing it to GDI.
+    if (settings.input_mode_duration_ms < 1 || settings.input_mode_duration_ms > 60000)
+        throw std::invalid_argument("input-mode-duration-ms must be 1..60000");
 }
 std::wstring ui_settings_status(const UiSettings& settings) {
-    return L"入力UIのフォント: " + settings.font;
+    return L"入力UIのフォント: " + settings.font + L"\r\n入力モード表示: " +
+        (settings.show_input_mode ? std::to_wstring(settings.input_mode_duration_ms) + L"ms / 単語登録中は常時表示" : L"オフ");
 }
 void validate_candidate_settings(const CandidateSettings& settings) {
     if (settings.show_after < 1 || settings.show_after > 99)
@@ -225,7 +231,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
     DictionarySettings settings; bool version = false, learning = false, romaji = false, startup_ime_off = false, ui_font = false;
-    std::set<std::string_view> inference_keys, candidate_options, diagnostic_options;
+    std::set<std::string_view> inference_keys, candidate_options, diagnostic_options, mode_options;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -247,6 +253,18 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
         } else if (key == "ui-font") {
             if (ui_font) throw std::invalid_argument("ui-font must appear at most once");
             ui_font = true; settings.ui.font = wide_message(value);
+        } else if (key == "show-input-mode" || key == "input-mode-duration-ms") {
+            if (!mode_options.insert(key).second) throw std::invalid_argument("duplicate input mode setting");
+            if (key == "show-input-mode") {
+                if (value != "on" && value != "off") throw std::invalid_argument("show-input-mode must equal on or off");
+                settings.ui.show_input_mode = value == "on";
+            } else {
+                unsigned int number = 0;
+                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+                    throw std::invalid_argument("invalid input-mode-duration-ms");
+                settings.ui.input_mode_duration_ms = number;
+            }
         } else if (key == "off-key-exclude") {
             settings.off_key_exclusions.push_back(wide_message(value));
             validate_off_key_exclusions(settings.off_key_exclusions);

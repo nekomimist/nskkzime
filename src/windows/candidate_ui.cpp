@@ -1,4 +1,5 @@
 #include "candidate_ui.h"
+#include "mode_label.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -58,8 +59,8 @@ std::optional<std::size_t> candidate_row_at(POINT point, SIZE client, int paddin
     const auto row = static_cast<std::size_t>((point.y - top) / line_height);
     return row < end - first ? std::optional{first + row} : std::nullopt;
 }
-CandidateList::CandidateList(PopupKind kind, std::weak_ptr<CandidateActions> actions, CandidateKeys keys, std::wstring font_face)
-    : kind_(kind), keys_(keys), font_face_(std::move(font_face)), actions_(std::move(actions)) { ++module_objects; }
+CandidateList::CandidateList(PopupKind kind, std::weak_ptr<CandidateActions> actions, CandidateKeys keys, std::wstring font_face, bool show_input_mode)
+    : kind_(kind), keys_(keys), font_face_(std::move(font_face)), show_input_mode_(show_input_mode), actions_(std::move(actions)) { ++module_objects; }
 CandidateList::~CandidateList() { close(); --module_objects; }
 HRESULT CandidateList::QueryInterface(REFIID iid, void** output) {
     if (!output) return E_POINTER;
@@ -170,7 +171,9 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
         if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
         heading_ = heading; draft_ = draft; hint_ = hint;
     } else if (kind_ == PopupKind::Editor) {
-        const auto heading = L"単語登録 " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
+        const auto mode = show_input_mode_ ? L" [" + std::wstring(mode_label(engine.mode())) +
+            (engine.mode() == Mode::Latin ? L" 英数]" : L"]") : std::wstring{};
+        const auto heading = L"単語登録" + mode + L" " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
         const auto draft = wide(engine.registration_text());
         const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
             engine.input_stage() == Stage::Selecting ? L"クリック/" + std::wstring(candidate_labels(keys_)) + L"/Enter: 欄へ追加  PgDn/PgUp: 7件  Esc: 戻る" :
@@ -403,7 +406,7 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     return DefWindowProcW(window, message, wparam, lparam);
 }
 void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions, bool show_reading,
-    bool show_candidates, CandidateKeys keys, std::wstring_view notice, std::wstring_view font_face) noexcept {
+    bool show_candidates, CandidateKeys keys, std::wstring_view notice, std::wstring_view font_face, bool show_input_mode) noexcept {
     try {
         ++generation_;
         if (position_context_ && position_context_.Get() != context) invalidate_position();
@@ -412,7 +415,7 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
         if (!notifying && !reading && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close_ui(); return; }
         const auto kind = notifying ? PopupKind::Notice : reading ? PopupKind::Reading : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
         if (kind == PopupKind::Candidates && !show_candidates) { close_ui(); return; }
-        if (list_ && (list_->kind() != kind || list_->keys() != keys || list_->font_face() != font_face)) {
+        if (list_ && (list_->kind() != kind || list_->keys() != keys || list_->font_face() != font_face || list_->shows_input_mode() != show_input_mode)) {
             const auto closing_generation = generation_ + 1;
             close_ui();
             if (generation_ != closing_generation) return;
@@ -429,7 +432,7 @@ void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const
             if (FAILED(manager_status) || !ui_manager) return;
             manager_ = std::move(ui_manager);
             list_.Attach(new CandidateList(kind, notifying ? std::weak_ptr<CandidateActions>{} : std::move(actions), keys,
-                std::wstring(font_face)));
+                std::wstring(font_face), show_input_mode));
             if (notifying) list_->notice(notice, document.Get());
             else list_->update(engine, document.Get());
             BOOL show = TRUE;

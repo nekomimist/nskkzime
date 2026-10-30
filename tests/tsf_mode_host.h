@@ -15,6 +15,7 @@ public:
     ComPtr<ITfCompartmentEventSink> sink;
     bool reject_write = false, reject_sink = false;
     unsigned writes = 0;
+    std::function<void()> write_query;
     MODE_REFS(Compartment);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         *out = nullptr;
@@ -30,7 +31,9 @@ public:
     HRESULT STDMETHODCALLTYPE SetValue(TfClientId, const VARIANT* item) override {
         if (reject_write) return E_FAIL;
         if (item->vt != VT_I4) return E_INVALIDARG;
-        value = item->lVal; ++writes; const auto notify = sink; return notify ? notify->OnChange(id) : S_OK;
+        value = item->lVal; ++writes;
+        if (write_query) write_query();
+        const auto notify = sink; return notify ? notify->OnChange(id) : S_OK;
     }
     HRESULT STDMETHODCALLTYPE AdviseSink(REFIID iid, IUnknown* item, DWORD* cookie) override {
         if (reject_sink || sink || iid != IID_ITfCompartmentEventSink) return E_FAIL;

@@ -73,6 +73,29 @@ int main() {
                 rejects([&] { serialize_dictionary_settings(settings); });
             }
         }},
+        {"settings/input-mode-opt-in-roundtrip-and-validation", [&] {
+            const auto defaults = parse_dictionary_settings("version=1\n");
+            require(!defaults.ui.show_input_mode && defaults.ui.input_mode_duration_ms == 3000, "old settings enabled input mode UI");
+            require(serialize_dictionary_settings(defaults).find("input-mode") == std::string::npos, "default mode settings changed representation");
+            for (const auto duration : {1U, 3000U, 60000U}) {
+                auto settings = defaults;
+                settings.ui.show_input_mode = true; settings.ui.input_mode_duration_ms = duration;
+                const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));
+                require(loaded.ui.show_input_mode && loaded.ui.input_mode_duration_ms == duration, "mode settings lost on roundtrip");
+                settings.ui.show_input_mode = false;
+                require(!parse_dictionary_settings(serialize_dictionary_settings(settings)).ui.show_input_mode, "mode opt-out lost");
+            }
+            require(!parse_dictionary_settings("version=1\nshow-input-mode=off\n").ui.show_input_mode, "explicit off ignored");
+            for (const auto invalid : {"show-input-mode=yes", "show-input-mode=", "show-input-mode=on\nshow-input-mode=off",
+                    "input-mode-duration-ms=0", "input-mode-duration-ms=60001", "input-mode-duration-ms=-1",
+                    "input-mode-duration-ms=", "input-mode-duration-ms=1x", "input-mode-duration-ms=4294967296",
+                    "input-mode-duration-ms=1\ninput-mode-duration-ms=2"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+            for (const auto invalid : {0U, 60001U}) {
+                auto settings = defaults; settings.ui.input_mode_duration_ms = invalid;
+                rejects([&] { serialize_dictionary_settings(settings); });
+            }
+        }},
         {"settings/startup-ime-off-opt-in-roundtrip-and-validation", [&] {
             require(!parse_dictionary_settings("version=1\n").startup_ime_off, "old settings forced IME off");
             for (const bool enabled : {true, false}) {

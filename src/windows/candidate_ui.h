@@ -57,7 +57,7 @@ private:
 class CandidateList final : public ITfCandidateListUIElement {
 public:
     explicit CandidateList(PopupKind = PopupKind::Candidates, std::weak_ptr<CandidateActions> actions = {},
-        CandidateKeys = CandidateKeys::Numbers, std::wstring font_face = default_ui_font);
+        CandidateKeys = CandidateKeys::Numbers, std::wstring font_face = default_ui_font, bool show_input_mode = false);
     ~CandidateList();
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
@@ -85,6 +85,7 @@ public:
     PopupKind kind() const { return kind_; }
     CandidateKeys keys() const { return keys_; }
     std::wstring_view font_face() const { return font_face_; }
+    bool shows_input_mode() const { return show_input_mode_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
     struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
@@ -103,6 +104,7 @@ private:
     const PopupKind kind_;
     const CandidateKeys keys_;
     const std::wstring font_face_;
+    const bool show_input_mode_;
     std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
@@ -124,7 +126,7 @@ public:
     ~CandidatePresenter() { close(); }
     void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false,
         bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers, std::wstring_view notice = {},
-        std::wstring_view font_face = default_ui_font) noexcept;
+        std::wstring_view font_face = default_ui_font, bool show_input_mode = false) noexcept;
     // Also captures a position before a text mutation, even without a popup.
     void locate(ITfContext*, ITfComposition*, TfEditCookie, std::uint64_t session = 0, bool capture_position = false) noexcept;
     void dismiss_notice() noexcept;

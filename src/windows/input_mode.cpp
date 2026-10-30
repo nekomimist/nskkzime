@@ -1,4 +1,5 @@
 #include "input_mode.h"
+#include "mode_label.h"
 #include <algorithm>
 #include <string_view>
 #include <olectl.h>
@@ -12,9 +13,7 @@ constexpr std::array<const GUID*, 2> ids{{&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, 
 constexpr std::array<Mode, 4> modes{{Mode::Hiragana, Mode::Katakana, Mode::Latin, Mode::FullWidthLatin}};
 constexpr std::array<const wchar_t*, 4> mode_names{{L"ひらがな", L"カタカナ", L"英数（IMEオフ）", L"全英（全角英数）"}};
 const wchar_t* text(Mode mode) {
-    if (mode == Mode::Hiragana) return L"あ";
-    if (mode == Mode::Katakana) return L"ア";
-    return mode == Mode::FullWidthLatin ? L"Ａ" : L"A";
+    return mode_label(mode);
 }
 const wchar_t* description(Mode mode) {
     if (mode == Mode::FullWidthLatin) return L"nskkzime: 全英（全角英数）";

@@ -25,12 +25,14 @@ public:
     bool reject_sink = false;
     ComPtr<ITfKeyEventSink> keys;
     ComPtr<ITfThreadMgrEventSink> events;
+    ComPtr<ITfDocumentMgr> focused_document;
     ComPtr<ITfUIElement> ui;
     bool reject_ui = false;
     BOOL show_ui = FALSE;
     DWORD ui_id = 0;
     int ui_begins = 0, ui_updates = 0, ui_ends = 0;
     std::function<void()> ui_end_query;
+    std::function<void()> ui_begin_query;
     TEST_REFS(Manager);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
@@ -53,7 +55,9 @@ public:
     HRESULT STDMETHODCALLTYPE BeginUIElement(ITfUIElement* value, BOOL* show, DWORD* id) override {
         if (reject_ui) return E_FAIL;
         if (ui) return E_UNEXPECTED;
-        ui = value; *show = show_ui; *id = ++ui_id; ++ui_begins; return S_OK;
+        ui = value; *show = show_ui; *id = ++ui_id; ++ui_begins;
+        if (ui_begin_query) ui_begin_query();
+        return S_OK;
     }
     HRESULT STDMETHODCALLTYPE UpdateUIElement(DWORD id) override { if (!ui || id != ui_id) return E_INVALIDARG; ++ui_updates; return S_OK; }
     HRESULT STDMETHODCALLTYPE EndUIElement(DWORD id) override {
@@ -66,7 +70,7 @@ public:
     UNUSED_METHOD(Deactivate)
     UNUSED_METHOD(CreateDocumentMgr, ITfDocumentMgr**)
     UNUSED_METHOD(EnumDocumentMgrs, IEnumTfDocumentMgrs**)
-    UNUSED_METHOD(GetFocus, ITfDocumentMgr**)
+    HRESULT STDMETHODCALLTYPE GetFocus(ITfDocumentMgr** out) override { return focused_document.CopyTo(out); }
     UNUSED_METHOD(SetFocus, ITfDocumentMgr*)
     UNUSED_METHOD(AssociateFocus, HWND, ITfDocumentMgr*, ITfDocumentMgr**)
     UNUSED_METHOD(IsThreadFocus, BOOL*)
@@ -334,9 +338,12 @@ public:
     }
     std::shared_ptr<Document> doc = std::make_shared<Document>();
     bool reject_session = false;
+    bool notify_after_session = true;
+    HRESULT async_session_error = S_OK;
     bool defer_optional_session = false;
     bool reject_composition = false;
     bool reject_selection_read = false, interim_selection = false;
+    TfActiveSelEnd selection_active_end = TF_AE_NONE;
     unsigned selection_writes = 0, selection_reads = 0;
     bool reject_selection_write = false;
     bool readonly = false;
@@ -367,16 +374,17 @@ public:
     }
     HRESULT STDMETHODCALLTYPE RequestEditSession(TfClientId, ITfEditSession* edit, DWORD flags, HRESULT* status) override {
         if (reject_session) { *status = TF_E_SYNCHRONOUS; return S_OK; }
+        if ((flags & TF_ES_ASYNC) && FAILED(async_session_error)) { *status = async_session_error; return S_OK; }
         if ((flags & TF_ES_ASYNC) || (defer_optional_session && !(flags & TF_ES_SYNC))) {
             queued.emplace_back(edit); *status = TF_S_ASYNC;
         }
-        else { *status = edit->DoEditSession(1); notify(); }
+        else { *status = edit->DoEditSession(1); if (notify_after_session) notify(); }
         return S_OK;
     }
     void notify() { auto sink = edits; if (sink) sink->OnEndEdit(this, 1, nullptr); }
     void move_selection(LONG start, LONG end) { doc->caret = start; doc->selection_end = end; notify(); }
     void host_replace(LONG start, LONG end, std::wstring_view value) { doc->replace(start, end, value); notify(); }
-    void pump() { auto work = std::move(queued); queued.clear(); for (const auto& item : work) { item->DoEditSession(1); notify(); } }
+    void pump() { auto work = std::move(queued); queued.clear(); for (const auto& item : work) { item->DoEditSession(1); if (notify_after_session) notify(); } }
     HRESULT STDMETHODCALLTYPE AdviseSink(REFIID iid, IUnknown* sink, DWORD* cookie) override {
         if (iid == IID_ITfTextLayoutSink) {
             if (layout) return E_UNEXPECTED;
@@ -396,7 +404,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetSelection(TfEditCookie, ULONG, ULONG, TF_SELECTION* selection, ULONG* fetched) override {
         ++selection_reads;
         if (reject_selection_read) { *selection = {}; *fetched = 0; return E_FAIL; }
-        *selection = {new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end), {TF_AE_NONE, interim_selection ? TRUE : FALSE}};
+        *selection = {new Range(doc, doc->caret, doc->selection_end < 0 ? doc->caret : doc->selection_end), {selection_active_end, interim_selection ? TRUE : FALSE}};
         *fetched = 1; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetSelection(TfEditCookie, ULONG, const TF_SELECTION* selection) override {

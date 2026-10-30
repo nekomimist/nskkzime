@@ -144,6 +144,8 @@ void reload(Editor& editor) {
         SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_SETCURSEL,
             settings.candidates.keys == CandidateKeys::Asdfjkl ? 1 : 0, 0);
         select_ui_font(editor.pages[6], settings.ui.font);
+        check(editor.pages[6], IDC_SHOW_INPUT_MODE, settings.ui.show_input_mode);
+        set(editor.pages[6], IDC_INPUT_MODE_DURATION, std::to_wstring(settings.ui.input_mode_duration_ms));
         const auto& zenz = settings.zenz;
         check(editor.pages[2], IDC_ZENZ, zenz.enabled);
         set(editor.pages[2], IDC_MODEL, zenz.model.native());
@@ -202,6 +204,8 @@ DictionarySettings draft(Editor& editor) {
     if (keys != 0 && keys != 1) throw std::invalid_argument("候補一覧の選択キーを選んでください。");
     result.candidates.keys = keys == 1 ? CandidateKeys::Asdfjkl : CandidateKeys::Numbers;
     result.ui.font = get(editor.pages[6], IDC_UI_FONT);
+    result.ui.show_input_mode = checked(editor.pages[6], IDC_SHOW_INPUT_MODE);
+    result.ui.input_mode_duration_ms = number<unsigned>(editor.pages[6], IDC_INPUT_MODE_DURATION, L"入力モードの表示時間", 1, 60000);
     validate_ui_settings(result.ui);
     result.romaji_rules = checked(editor.pages[1], IDC_CUSTOM_ROMAJI) ? get(editor.pages[1], IDC_ROMAJI_PATH) : L"";
     if (checked(editor.pages[1], IDC_CUSTOM_ROMAJI) && result.romaji_rules.empty())

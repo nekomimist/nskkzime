@@ -28,7 +28,7 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 | 辞書 | `dictionary`, `compiled_dictionary`, `dictionary_cache`, `runtime_dictionary` |
 | 学習 | `learning`, `user_dictionary`, `user_dictionary_cli`, `dictionary_manager`, `tsf_learning` |
 | 設定 | `settings`, `settings_editor`, `config_cli`, `runtime_configuration`, `tool_launcher` |
-| TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_diagnostics`, `tsf_dictionary_startup` |
+| TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `mode_indicator`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_diagnostics`, `tsf_dictionary_startup` |
 | 推論 | `inference`, `inference_policy`, `tsf_inference`, `tsf_inference_policy`, `zenz_backend`, `tsf_zenz` |
 | AppContainer | `app_container`（一時的なAppContainerプロファイルで実際に子プロセスを起動）, `broker_snapshot` |
 | 配布 | `package`（梱包と検査）, `installation`（登録は模擬。導入・更新・復帰・解除）, `scoop` / `scoop_windows_powershell`（昇格プロセスは模擬） |

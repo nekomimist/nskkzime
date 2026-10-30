@@ -12,6 +12,7 @@
 #include "display_attributes.h"
 #include "candidate_ui.h"
 #include "input_mode.h"
+#include "mode_indicator.h"
 #include "context_text.h"
 #include "inference_client.h"
 #include "romaji_settings.h"
@@ -217,7 +218,7 @@ public:
                 if (engine_.revision() == revision && inference_state_.pending) cancel_inference();
             };
         } catch (...) { candidate_actions_.reset(); return E_OUTOFMEMORY; }
-        manager_ = manager; client_ = client;
+        manager_ = manager; client_ = client; key_foreground_ = true;
         auto hr = manager_.As(&keys_);
         if (SUCCEEDED(hr)) hr = keys_->AdviseKeyEventSink(client_, this, TRUE);
         if (FAILED(hr)) { candidate_actions_.reset(); keys_.Reset(); manager_.Reset(); client_ = TF_CLIENTID_NULL; return hr; }
@@ -257,6 +258,7 @@ public:
     HRESULT STDMETHODCALLTYPE Deactivate() override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Deactivate, diagnostic_state());
         startup_mode_pending_ = false;
+        dismiss_mode_indicator();
         if (tool_launcher_) { tool_launcher_->close(); tool_launcher_.reset(); }
         mode_actions_.reset();
         auto mode = std::move(input_mode_); if (mode) mode->disconnect();
@@ -287,7 +289,8 @@ public:
     HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyFocus, diagnostic_state());
         trace_tsf(TsfEvent::KeyFocus, TsfReason::None, S_OK, foreground);
-        if (!foreground) { cancel_quote(); finish_composition(TsfReason::FocusLost); }
+        key_foreground_ = foreground != FALSE;
+        if (!foreground) { dismiss_mode_indicator(); cancel_quote(); finish_composition(TsfReason::FocusLost); }
         else { apply_startup_mode(); configure_container(); }
         return S_OK;
     }
@@ -295,6 +298,9 @@ public:
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::TestKeyDown, diagnostic_state(context));
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
+        // Visual cleanup also covers keys we pass through (notably IME-off
+        // typing). It never consumes the key or advances the input engine.
+        dismiss_mode_indicator();
         if (!manager_ || !editable(context)) return S_OK;
         configure_container();
         const auto target = editing_context(context);
@@ -328,6 +334,7 @@ public:
         InputPhaseTiming setup(InputTimingPhase::KeySetup);
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
+        dismiss_mode_indicator();
         if (!manager_ || !editable(context)) return S_OK;
         configure_container();
         const ComPtr<ITfContext> origin(context);
@@ -344,7 +351,7 @@ public:
             return S_OK;
         }
         if (const auto mode = mode_key(code, engine_.outer_mode())) {
-            if (!(parameter & (static_cast<LPARAM>(1) << 30))) change_mode(*mode);
+            if (!(parameter & (static_cast<LPARAM>(1) << 30))) change_mode(*mode, true, context);
             *eaten = TRUE; if (code < eaten_keys_.size()) eaten_keys_.set(code); return S_OK;
         }
         if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
@@ -413,7 +420,7 @@ public:
         const auto target = editing_context(context);
         if (target.Get() != context && !editable(target.Get())) return S_OK;
         for (std::size_t i = 0; i < mode_keys.size(); ++i) if (preserved_[i] && guid == mode_key_ids[i]) {
-            change_mode(engine_.outer_mode() == Mode::Latin ? Mode::Hiragana : Mode::Latin);
+            change_mode(engine_.outer_mode() == Mode::Latin ? Mode::Hiragana : Mode::Latin, true, target.Get());
             *eaten = TRUE; break;
         }
         return S_OK;
@@ -499,6 +506,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr* document) override {
+        dismiss_mode_indicator();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentUninit, diagnostic_state());
         for (const auto& context : {composition_state_.context, composition_state_.origin}) {
             if (!context) continue;
@@ -510,6 +518,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* document, ITfDocumentMgr* previous) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentFocus, diagnostic_state());
         const ComPtr<TextService> self(this);
+        const auto indicator_request = mode_indicator_request_;
         const auto generation = ++focus_generation_;
         const auto quote_generation = quote_generation_;
         const auto current = composition_state_.composition;
@@ -521,6 +530,7 @@ public:
         trace_tsf(TsfEvent::DocumentTop, !context || FAILED(status) ? TsfReason::FocusUnavailable : TsfReason::None, status,
                   diagnostics_ ? diagnostics_->identity(context.Get()) : 0, diagnostics_ ? diagnostics_->identity(document) : 0, 0, document != nullptr);
         if (FAILED(status)) context.Reset();
+        const auto top = context;
         context = editing_context(context.Get());
         auto snapshot = diagnostic_state();
         snapshot.context = diagnostics_ ? diagnostics_->identity(context.Get()) : 0; // Preserve a genuinely unresolved target.
@@ -528,6 +538,11 @@ public:
         // GetTop/parent resolution can re-enter focus handling, accept a key or detach this session.
         if (generation != focus_generation_ || current.Get() != composition_state_.composition.Get() || session != composition_state_.session) {
             trace_tsf(TsfEvent::FocusResolved, TsfReason::Inactive, status, 0, 0, 0, document != nullptr); return S_OK;
+        }
+        if (indicator_request == mode_indicator_request_) {
+            const bool same_target = context && (mode_indicator_ ? mode_indicator_->matches_focus(document, top.Get()) :
+                mode_publish_context_.Get() == context.Get());
+            if (!same_target) dismiss_mode_indicator();
         }
         if (quote_generation == quote_generation_ && quote_context_.Get() != context.Get()) cancel_quote();
         trace_tsf(TsfEvent::FocusResolved, context ? TsfReason::None : TsfReason::FocusUnavailable, status, 0, 0, 0, document != nullptr);
@@ -538,6 +553,7 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
+        dismiss_mode_indicator();
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPush, diagnostic_state(context));
         const auto parent = editing_context(context); context = parent.Get();
@@ -546,6 +562,7 @@ public:
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
+        dismiss_mode_indicator();
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPop, diagnostic_state(context));
         // The parent compartment can already be gone when the origin is popped.
@@ -600,7 +617,7 @@ private:
         if (configuration_.broker && !remote) return;
         const auto& settings = remote ? remote->configuration.settings : configuration_.dictionaries.settings;
         startup_mode_pending_ = false;
-        if (settings.startup_ime_off) change_mode(Mode::Latin);
+        if (settings.startup_ime_off) change_mode(Mode::Latin, false);
     }
     void configure_container() noexcept {
         try {
@@ -703,19 +720,61 @@ private:
             if (FAILED(hr) && matches(pending)) cancel_inference();
         } catch (...) { if (inference_state_.pending && inference_state_.pending->id == id) cancel_inference(); }
     }
-    void change_mode(Mode mode) noexcept {
+    void dismiss_mode_indicator() noexcept {
+        ++mode_indicator_request_;
+        mode_publish_context_.Reset();
+        auto indicator = std::move(mode_indicator_);
+        if (indicator) indicator->close();
+    }
+    void publish_mode(ITfContext* target = nullptr) noexcept {
+        const auto request = mode_indicator_request_;
+        const auto previous = mode_publish_context_;
+        // Opening an IME may refresh focus without moving the caret. Let that
+        // notification identify the field whose accepted mode we will display.
+        mode_publish_context_ = target;
+        const auto binding = input_mode_;
+        if (binding) binding->publish(engine_.mode());
+        if (request == mode_indicator_request_) mode_publish_context_ = previous;
+    }
+    void show_mode_indicator(ITfContext* target = nullptr) noexcept {
+        if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || engine_.registering() ||
+            engine_.forgetting() || engine_.stage() != Stage::Direct || !engine_.preedit().empty()) return;
+        const ComPtr<TextService> self(this);
+        dismiss_mode_indicator();
+        const auto request = mode_indicator_request_;
+        const auto revision = engine_.revision();
+        try {
+            const auto thread = manager_;
+            ComPtr<ITfDocumentMgr> document;
+            ComPtr<ITfContext> origin;
+            if (FAILED(thread->GetFocus(&document)) || !document || FAILED(document->GetTop(&origin))) return;
+            const auto context = editing_context(origin.Get());
+            if (target && context.Get() != target) return;
+            if (!context || !editable(context.Get()) || request != mode_indicator_request_ ||
+                !manager_ || revision != engine_.revision()) return;
+            ComPtr<ModeIndicator> indicator;
+            indicator.Attach(new ModeIndicator(engine_.mode(), ui_settings_));
+            mode_indicator_ = indicator;
+            indicator->start(manager_.Get(), context.Get(), client_, origin.Get());
+        } catch (...) { if (request == mode_indicator_request_) dismiss_mode_indicator(); }
+    }
+    void change_mode(Mode mode, bool notify = true, ITfContext* context = nullptr) noexcept {
         // Initial compartment synchronization is not an explicit mode choice.
         if (!connecting_mode_) startup_mode_pending_ = false;
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ModeChange, diagnostic_state());
         const ComPtr<TextService> self(this);
         if (!manager_) return;
+        dismiss_mode_indicator();
         if (engine_.mode() != mode || engine_.registering()) {
             trace_tsf(TsfEvent::ModeChange, TsfReason::ModeChanged);
             finish_composition(TsfReason::ModeChanged); engine_.set_mode(mode);
             update_tsf_trace(diagnostic_state());
         }
-        const auto binding = input_mode_; if (binding) binding->publish(engine_.mode());
+        const auto revision = engine_.revision(), request = mode_indicator_request_;
+        publish_mode(context);
+        if (notify && !connecting_mode_ && revision == engine_.revision() && request == mode_indicator_request_)
+            show_mode_indicator(context);
     }
     HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied, ITfContext* origin = nullptr) {
         const auto before_notice = composition_state_.composition;
@@ -792,10 +851,13 @@ private:
         }
         const auto status = apply(target, cookie, result.committed, next);
         if (SUCCEEDED(status)) {
+            const bool mode_changed = engine_.mode() != next.mode();
             cancel_inference();
             visibility.advance(key, result, next);
             candidate_visibility_ = visibility;
             engine_ = std::move(next); applied = true;
+            const auto accepted_revision = engine_.revision();
+            const auto indicator_request = mode_indicator_request_;
             if (origin && composition_state_.composition && composition_state_.context.Get() == target) composition_state_.origin = origin;
             update_tsf_trace(diagnostic_state(target, origin));
             trace_tsf(TsfEvent::StateAccepted);
@@ -819,11 +881,12 @@ private:
             }
             // Inner registration input has its own modes. Keep Windows open
             // until the outer editor is completed or explicitly abandoned.
-            const auto binding = input_mode_;
-            if (binding && !engine_.registering()) {
+            if (input_mode_ && !engine_.registering()) {
                 const InputPhaseTiming mode(InputTimingPhase::ModeSync);
-                binding->publish(engine_.mode());
+                publish_mode(target);
             }
+            if (mode_changed && engine_.revision() == accepted_revision && mode_indicator_request_ == indicator_request)
+                show_mode_indicator(target);
             if (inference_text && inference_state_.client && composition_state_.composition && !engine_.registering()) {
                 try {
                     inference_state_.submit(std::move(*plan), std::move(*inference_text), engine_.revision(), composition_state_.session,
@@ -874,7 +937,7 @@ private:
         // display attributes. Present its reading separately from document text.
         const bool show_reading = composition_state_.origin && composition_state_.origin.Get() != composition_state_.context.Get();
         candidates_.update(manager_.Get(), context.Get(), engine_, candidate_actions_, show_reading,
-            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice, ui_settings_.font);
+            candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice, ui_settings_.font, ui_settings_.show_input_mode);
         if (!unchanged()) return;
         candidates_.locate(context.Get(), current.Get(), cookie, session);
         if (unchanged()) cancel_unshown_editor();
@@ -999,6 +1062,10 @@ private:
     CandidatePresenter candidates_;
     CandidateSettings candidate_settings_;
     UiSettings ui_settings_;
+    ComPtr<ModeIndicator> mode_indicator_;
+    ComPtr<ITfContext> mode_publish_context_;
+    std::uint64_t mode_indicator_request_ = 0;
+    bool key_foreground_ = true;
     CandidateVisibility candidate_visibility_;
     ComPtr<InputMode> input_mode_;
     bool startup_mode_pending_ = true, connecting_mode_ = false;
