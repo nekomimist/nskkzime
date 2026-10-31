@@ -232,23 +232,15 @@ inline void native_probe_test(Probe& probe, HWND window, const std::filesystem::
             << " language=" << active.langid << '\n';
         if (module) {
             using Ready = HRESULT (WINAPI*)(BOOL*);
-            using Status = HRESULT (WINAPI*)(BSTR*);
 #pragma warning(push)
 #pragma warning(disable: 4191)
             const auto ready = reinterpret_cast<Ready>(GetProcAddress(module, "NskkzimeIsDictionaryReady"));
-            const auto status = reinterpret_cast<Status>(GetProcAddress(module, "NskkzimeGetDictionaryStatus"));
 #pragma warning(pop)
             BOOL ready_value = FALSE; const auto ready_hr = ready ? ready(&ready_value) : E_NOINTERFACE;
             log << "ready_export=" << bool(ready) << " ready_hr=" << std::hex << static_cast<unsigned long>(ready_hr)
                 << std::dec << " ready=" << ready_value << '\n';
-            BSTR value = nullptr;
-            if (status && SUCCEEDED(status(&value)) && value) {
-                const auto length = static_cast<int>(SysStringLen(value));
-                std::string utf8(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, value, length, nullptr, 0, nullptr, nullptr)), '\0');
-                if (!utf8.empty()) WideCharToMultiByte(CP_UTF8, 0, value, length, utf8.data(), static_cast<int>(utf8.size()), nullptr, nullptr);
-                log << "dictionary_status=" << utf8 << '\n';
-            }
-            SysFreeString(value);
+            if (const auto status = probe.diagnostic_status("NskkzimeGetDictionaryStatus"); !status.empty())
+                log_text("dictionary_status", status);
         }
         log << "failure_restore_hr=" << std::hex << static_cast<unsigned long>(probe.restore()) << std::dec << '\n';
         throw;
