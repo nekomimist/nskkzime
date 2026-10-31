@@ -15,11 +15,11 @@ int band(UINT dpi) noexcept { return std::max(1, MulDiv(1, dpi ? static_cast<int
 COLORREF opaque(COLORREF color) noexcept { return color == transparent_key ? RGB(254, 0, 255) : color; }
 }
 
-std::optional<RECT> composition_underline_bounds(RECT text, RECT client, UINT dpi, UnderlineStyle style) noexcept {
+std::optional<RECT> composition_underline_bounds(RECT text, RECT client, UINT dpi) noexcept {
     if (text.bottom <= text.top || text.right < text.left || client.right <= client.left || client.bottom <= client.top) return {};
     // Two bands of the window text and background colors stay visible on
     // both light and dark fields without sampling the host's pixels.
-    const auto height = band(dpi) * (style == UnderlineStyle::Converted ? 4 : 2);
+    const auto height = band(dpi) * 2;
     // A fresh abbrev or okuri start has no text yet but is still composing.
     const auto width = std::max(text.right - text.left, (text.bottom - text.top) / 2);
     const RECT line{text.left, text.bottom - height, text.left + width, text.bottom};
@@ -53,7 +53,7 @@ void CompositionUnderline::locate(ITfContext* context, ITfComposition* compositi
     }
     OffsetRect(&client, origin.x, origin.y);
     const auto dpi = GetDpiForWindow(owner);
-    const auto bounds = composition_underline_bounds(text, client, dpi, style);
+    const auto bounds = composition_underline_bounds(text, client, dpi);
     if (!bounds) { hide(); return; }
     show(owner, *bounds, dpi, style);
 }
@@ -138,7 +138,7 @@ void CompositionUnderline::paint(HDC dc) const noexcept {
     const auto unit = band(dpi_);
     const bool converted = style_ == UnderlineStyle::Converted;
     // Like the usual IME attributes: dotted while reading, solid once converted.
-    const auto dark_height = converted ? 2 * unit : unit;
+    const auto dark_height = unit;
     const auto dash = converted ? std::max<LONG>(area.right, 1) : 2 * unit;
     const auto step = converted ? dash : 4 * unit;
     const auto dark = opaque(GetSysColor(COLOR_WINDOWTEXT)), light = opaque(GetSysColor(COLOR_WINDOW));

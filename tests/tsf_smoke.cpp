@@ -288,8 +288,8 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
               "reading underline did not follow the parent's layout");
         key(keys, origin.Get(), VK_SPACE);
         const auto converted = underline();
-        check(host->ui && parent->doc->text == L"漢字" && converted && height(*converted) == 2 * height(*reading),
-              "conversion did not switch to the converted underline");
+        check(host->ui && parent->doc->text == L"漢字" && converted && height(*converted) == height(*reading),
+              "conversion changed the underline thickness");
         key(keys, origin.Get(), VK_ESCAPE);
         check(!host->ui && parent->doc->text == L"かんじ" && underline() && height(*underline()) == height(*reading),
               "candidate cancel did not restore the reading underline");

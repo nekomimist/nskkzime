@@ -9,7 +9,7 @@ namespace nskkzime::windows {
 enum class UnderlineStyle { Reading, Converted };
 // Screen rectangle of the substitute underline for `text`, limited to the
 // owner's client area in screen coordinates. Empty compositions get a stub.
-std::optional<RECT> composition_underline_bounds(RECT text, RECT client, UINT dpi, UnderlineStyle) noexcept;
+std::optional<RECT> composition_underline_bounds(RECT text, RECT client, UINT dpi) noexcept;
 
 // The common EDIT accepts TSF edits through its transitory parent but never
 // paints display attributes. Draw only the underline, click-through, over the
