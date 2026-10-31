@@ -1,5 +1,6 @@
 /out/
 /.vs/
 /CMakeUserPresets.json
+/AGENTS.md
 *.user
 __pycache__/
