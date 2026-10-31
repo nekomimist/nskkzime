@@ -140,6 +140,7 @@ function Assert-ProtectedItem([string]$Path) {
     Assert-NskkzimeProtectedPath $Path
 }
 Assert-NskkzimePath $root
+# Reject an invalid package before any directory, lock or ACL change.
 if ($Action -in @('Install','Plan')) { $plannedBundle=Get-NskkzimeBundle $PackageDirectory $verifier }
 # Refuse unmanaged registrations before creating directories or copying files.
 $nativeVersion = Get-NskkzimeManagedVersion $root (& $readRegistration)
@@ -196,7 +197,7 @@ if ($Action -eq 'Plan') {
 }
 if (-not (Test-Path -LiteralPath $root)) {
     if ($Action -ne 'Install') { throw 'インストール先がありません。' }
-    $null = Get-NskkzimeBundle $PackageDirectory $verifier
+    # $plannedBundle already verified the package before this first write.
     $security = [Security.AccessControl.DirectorySecurity]::new()
     $security.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)')
     # Apply the protected DACL at creation, with no temporarily writable root.
