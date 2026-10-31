@@ -45,6 +45,7 @@ TSF側は次の状態をコピー上で計算し、本文の編集が成功し�
 本文への反映とcompositionの寿命、`inference_session` は推論の待機・識別・取消を担当する。
 矢印やアプリのショートカットを渡す前には、`OnTestKeyDown` 内でcompositionを終了する。
 標準EDITのように一時contextの親文書を公開するホストでは、親の本文・選択・通知を使う。
+親文書は表示属性を描かないため、未確定範囲の下に透過ウィンドウで下線だけを重ねる（`composition_underline`）。
 
 初回のActivateで設定を取得し（`runtime_configuration`）、辞書・ローマ字・推論・候補表示・
 GUIの保存先へ同じ値を渡す。辞書本体はバックグラウンドで読み込み、読み込み中もかな入力は使える。

@@ -261,43 +261,52 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
     succeeded(service->ActivateEx(host.Get(), 1, 0), "transitory activate failed"); wait_for_dictionary();
     auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
-    auto reading = [&]() {
-        GUID guid{};
-        return host->ui && SUCCEEDED(host->ui->GetGUID(&guid)) && guid == nskkzime::windows::reading_ui_guid;
+    // The substitute underline is a window of this thread, not a TSF UI element.
+    auto underline = []() -> std::optional<RECT> {
+        std::optional<RECT> found;
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM output) -> BOOL {
+            wchar_t name[64]{};
+            if (!GetClassNameW(window, name, 64) || !std::wstring_view(name).starts_with(L"nskkzime.CompositionUnderline.") ||
+                !IsWindowVisible(window)) return TRUE;
+            RECT rect{}; GetWindowRect(window, &rect); *reinterpret_cast<std::optional<RECT>*>(output) = rect; return FALSE;
+        }, reinterpret_cast<LPARAM>(&found));
+        return found;
     };
-    auto description = [&]() {
-        BSTR value = nullptr;
-        check(host->ui && SUCCEEDED(host->ui->GetDescription(&value)), "reading description missing");
-        const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
-    };
+    auto height = [](const RECT& rect) { return rect.bottom - rect.top; };
     {
         auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
+        ComPtr<test_host::ContextView> view; view.Attach(new test_host::ContextView); parent->active_view = view;
         type(keys, origin.Get(), "K");
-        check(reading() && description().find(L"▽k") != std::wstring::npos && parent->doc->text == L"k",
-              "first redirected key did not present its reading outside the document");
-        const auto retained = host->ui; const auto begins = host->ui_begins;
-        BOOL shown = TRUE; retained->IsShown(&shown); check(!shown, "ignored host UI suppression");
+        const auto first = underline();
+        check(!host->ui && parent->doc->text == L"k" && first && first->left == 100 && first->bottom == 120 && first->right == 110,
+              "first redirected key did not underline the parent's text");
         type(keys, origin.Get(), "anji");
-        check(host->ui_begins == begins && description().find(L"▽かんじ") != std::wstring::npos,
-              "reading updates reopened or failed to refresh UI");
-        key(keys, origin.Get(), VK_SPACE);
-        check(host->ui && !reading() && parent->doc->text == L"漢字", "reading did not transition to candidates");
-        retained->Show(TRUE); retained->IsShown(&shown); check(!shown, "old reading element reopened after transition");
-        key(keys, origin.Get(), VK_ESCAPE);
-        check(reading() && parent->doc->text == L"かんじ", "candidate cancel did not restore reading UI");
-        const auto queries = parent->layout_queries;
+        view->rect = {100, 100, 140, 120};
         parent->layout->OnLayoutChange(parent.Get(), TF_LC_CHANGE, nullptr); parent->pump();
-        check(parent->layout_queries > queries, "reading layout was not refreshed");
+        const auto reading = underline();
+        check(!host->ui && parent->doc->text == L"かんじ" && reading && reading->right == 140 && height(*reading) == height(*first),
+              "reading underline did not follow the parent's layout");
+        key(keys, origin.Get(), VK_SPACE);
+        const auto converted = underline();
+        check(host->ui && parent->doc->text == L"漢字" && converted && height(*converted) == 2 * height(*reading),
+              "conversion did not switch to the converted underline");
         key(keys, origin.Get(), VK_ESCAPE);
-        check(!host->ui && parent->doc->text.empty(), "reading cancel retained UI or markers");
-        type(keys, origin.Get(), "k"); check(reading(), "pending direct romaji missing reading UI");
-        type(keys, origin.Get(), "a"); check(!host->ui && parent->doc->text == L"か", "direct kana retained reading UI");
-        type(keys, origin.Get(), "/"); check(reading(), "empty abbrev lost reading state");
-        key(keys, origin.Get(), VK_ESCAPE); check(!host->ui, "abbrev cancel retained reading UI");
-        host->reject_ui = true;
-        type(keys, origin.Get(), "Ka"); key(keys, origin.Get(), VK_RETURN);
-        check(!host->ui && parent->doc->text == L"かか", "reading presentation failure broke text input");
-        host->reject_ui = false;
+        check(!host->ui && parent->doc->text == L"かんじ" && underline() && height(*underline()) == height(*reading),
+              "candidate cancel did not restore the reading underline");
+        key(keys, origin.Get(), VK_ESCAPE);
+        check(!host->ui && !underline() && parent->doc->text.empty(), "reading cancel retained UI or underline");
+        type(keys, origin.Get(), "k"); check(underline().has_value(), "pending direct romaji was not underlined");
+        type(keys, origin.Get(), "a"); check(!underline() && parent->doc->text == L"か", "direct kana retained the underline");
+        view->rect = {100, 100, 100, 120};
+        type(keys, origin.Get(), "/");
+        const auto abbrev = underline();
+        check(abbrev && abbrev->right - abbrev->left == 10, "empty abbrev lost its underline stub");
+        key(keys, origin.Get(), VK_ESCAPE); check(!underline(), "abbrev cancel retained the underline");
+        view->text_status = E_FAIL;
+        type(keys, origin.Get(), "Ka"); check(!underline(), "unavailable layout left an underline");
+        key(keys, origin.Get(), VK_RETURN);
+        check(!host->ui && parent->doc->text == L"かか", "underline failure broke text input");
+        view->text_status = S_OK;
     }
     {
         auto parent = fresh(); auto origin = test_host::transitory_context(parent.Get());
@@ -366,12 +375,13 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     }
     {
         auto parent = fresh(); auto native = test_host::transitory_context(parent.Get()); native->static_flags = 0;
-        type(keys, native.Get(), "Ka"); check(!host->ui, "native text store unnecessarily showed reading popup");
+        ComPtr<test_host::ContextView> view; view.Attach(new test_host::ContextView); native->active_view = view;
+        type(keys, native.Get(), "Ka"); check(!host->ui && !underline(), "native text store unnecessarily drew an underline");
         key(keys, native.Get(), VK_RETURN);
         check(native->doc->text == L"か" && parent->doc->text.empty(), "nontransitory native context was redirected");
     }
     succeeded(service->Deactivate(), "transitory deactivate failed");
-    check(!host->keys && !host->events && !host->ui, "transitory test leaked subscriptions");
+    check(!host->keys && !host->events && !host->ui && !underline(), "transitory test leaked subscriptions or underline");
 }
 void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;

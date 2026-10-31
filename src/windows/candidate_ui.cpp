@@ -79,7 +79,7 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
         *value = SysAllocString(description.c_str()); return *value ? S_OK : E_OUTOFMEMORY;
     } catch (...) { return E_OUTOFMEMORY; }
 }
-HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Notice ? notice_ui_guid : kind_ == PopupKind::Reading ? reading_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
+HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Notice ? notice_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
 HRESULT CandidateList::Show(BOOL show) { if (!show) { cancel_pointer(); discard_candidate_timing(paint_timing_); } requested_visible_ = show != FALSE; render(); return S_OK; }
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
@@ -152,15 +152,10 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     if (engine.candidates().size() > std::numeric_limits<UINT>::max()) throw std::length_error("too many candidates");
     std::vector<Row> rows;
     rows.reserve(engine.candidates().size());
-    for (std::size_t i = 0; kind_ != PopupKind::Reading && !engine.forgetting() && i < engine.candidates().size(); ++i)
+    for (std::size_t i = 0; !engine.forgetting() && i < engine.candidates().size(); ++i)
         rows.push_back({wide(engine.candidate_text(i)), wide(engine.candidates()[i].annotation)});
     updated_ = 0;
-    if (kind_ == PopupKind::Reading) {
-        const std::wstring heading = engine.stage() == Stage::Direct ? L"かな入力中" : L"変換前の読み";
-        const auto draft = wide(engine.preedit());
-        if (heading != heading_ || draft != draft_) updated_ |= all_updates;
-        heading_ = heading; draft_ = draft; hint_.clear();
-    } else if (engine.forgetting()) {
+    if (engine.forgetting()) {
         const auto& target = engine.forget_target();
         const auto heading = target ? L"学習語の削除  「" + wide(target->candidate.text) + L"」" : L"削除できる学習語がありません";
         const auto scope = target ? L"読み: " + wide(target->key.reading) + (target->key.okuri ?
@@ -246,7 +241,7 @@ void CandidateList::render() noexcept {
                 trace(L"owner-context", owner_process == GetCurrentProcessId(), root_process == GetCurrentProcessId(), owner_ == root);
             }
             window_ = CreateWindowExW(popup_ex_style,
-                class_name_.c_str(), kind_ == PopupKind::Notice ? L"nskkzime 通知" : kind_ == PopupKind::Reading ? L"nskkzime 読み" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
+                class_name_.c_str(), kind_ == PopupKind::Notice ? L"nskkzime 通知" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
                 owner_, nullptr, module_instance, this);
             if (!window_) { trace(L"window-failed", GetLastError()); UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
         }
@@ -270,11 +265,6 @@ void CandidateList::render() noexcept {
         if (kind_ == PopupKind::Notice) {
             SIZE size{}; GetTextExtentPoint32W(dc.value, draft_.c_str(), static_cast<int>(draft_.size()), &size);
             width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
-        }
-        if (kind_ == PopupKind::Reading) {
-            const auto text = label(draft_); SIZE size{};
-            GetTextExtentPoint32W(dc.value, text.c_str(), static_cast<int>(text.size()), &size);
-            width = std::max(MulDiv(120, dpi_, 96), static_cast<int>(size.cx) + padding_ * 2);
         }
         for (UINT i = first; i < visible_end; ++i) {
             const auto row = std::wstring(1, candidate_labels(keys_)[i - first]) + L"  " + label(rows_[i].text) + L"  — " + label(rows_[i].annotation);
@@ -329,7 +319,6 @@ void CandidateList::paint(HDC dc) const {
         const auto text = (offset ? L"…" : L"") + tail + L"▏";
         SIZE size{}; GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
         line(text, size.cx > area.right - padding_ * 2 ? DT_RIGHT : DT_END_ELLIPSIS);
-        if (kind_ == PopupKind::Reading) return;
     }
     if (!pages_.empty()) {
         const auto [first, end] = visible_rows();
@@ -405,15 +394,14 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     if (message == WM_NCDESTROY && self) { self->window_ = nullptr; SetWindowLongPtrW(window, GWLP_USERDATA, 0); }
     return DefWindowProcW(window, message, wparam, lparam);
 }
-void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions, bool show_reading,
+void CandidatePresenter::update(ITfThreadMgr* thread, ITfContext* context, const Engine& engine, std::weak_ptr<CandidateActions> actions,
     bool show_candidates, CandidateKeys keys, std::wstring_view notice, std::wstring_view font_face, bool show_input_mode) noexcept {
     try {
         ++generation_;
         if (position_context_ && position_context_.Get() != context) invalidate_position();
         const bool notifying = !notice.empty();
-        const bool reading = show_reading && !engine.registering() && engine.stage() != Stage::Selecting && !engine.preedit().empty();
-        if (!notifying && !reading && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close_ui(); return; }
-        const auto kind = notifying ? PopupKind::Notice : reading ? PopupKind::Reading : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
+        if (!notifying && !engine.registering() && (engine.stage() != Stage::Selecting || engine.candidates().empty())) { close_ui(); return; }
+        const auto kind = notifying ? PopupKind::Notice : engine.registering() || engine.forgetting() ? PopupKind::Editor : PopupKind::Candidates;
         if (kind == PopupKind::Candidates && !show_candidates) { close_ui(); return; }
         if (list_ && (list_->kind() != kind || list_->keys() != keys || list_->font_face() != font_face || list_->shows_input_mode() != show_input_mode)) {
             const auto closing_generation = generation_ + 1;
@@ -507,7 +495,7 @@ void CandidatePresenter::invalidate_position() noexcept {
 void CandidatePresenter::hide() noexcept { invalidate_position(); if (list_) list_->locate(nullptr, nullptr); }
 void CandidatePresenter::dismiss_notice() noexcept { if (list_ && list_->kind() == PopupKind::Notice) close_ui(); }
 Key CandidatePresenter::selection_key(Key key, const Engine& engine) const noexcept {
-    if (list_ && list_->kind() != PopupKind::Notice && list_->kind() != PopupKind::Reading &&
+    if (list_ && list_->kind() != PopupKind::Notice &&
         !engine.forgetting() && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character) {
         const auto slot = candidate_keys(list_->keys()).find(key.character);
         if (slot != std::string_view::npos) return {KeyCode::SelectCandidate, 0, list_->shortcut_index(slot)};

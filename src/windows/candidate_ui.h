@@ -31,9 +31,8 @@ struct CandidatePointer {
 std::optional<std::size_t> candidate_row_at(POINT, SIZE client, int padding, int line_height,
     bool registration, std::size_t first, std::size_t end) noexcept;
 inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
-inline constexpr GUID reading_ui_guid = {0x3eb96c26, 0x5b51, 0x4a45, {0x8c, 0x5a, 0x26, 0x29, 0x80, 0xa3, 0x19, 0x0b}};
 inline constexpr GUID notice_ui_guid = {0x136083bb, 0x0951, 0x45e4, {0x97, 0x1d, 0xc0, 0x59, 0x97, 0xfb, 0xd0, 0x4d}};
-enum class PopupKind { Candidates, Editor, Reading, Notice };
+enum class PopupKind { Candidates, Editor, Notice };
 // Count accepted user conversion steps, independently of candidate reordering
 // and async generation. A failed host edit must not advance this state.
 class CandidateVisibility {
@@ -124,8 +123,7 @@ private:
 class CandidatePresenter {
 public:
     ~CandidatePresenter() { close(); }
-    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_reading = false,
-        bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers, std::wstring_view notice = {},
+    void update(ITfThreadMgr*, ITfContext*, const Engine&, std::weak_ptr<CandidateActions> = {}, bool show_candidates = true, CandidateKeys keys = CandidateKeys::Numbers, std::wstring_view notice = {},
         std::wstring_view font_face = default_ui_font, bool show_input_mode = false) noexcept;
     // Also captures a position before a text mutation, even without a popup.
     void locate(ITfContext*, ITfComposition*, TfEditCookie, std::uint64_t session = 0, bool capture_position = false) noexcept;

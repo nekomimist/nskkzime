@@ -11,6 +11,7 @@
 #include <inputscope.h>
 #include "display_attributes.h"
 #include "candidate_ui.h"
+#include "composition_underline.h"
 #include "input_mode.h"
 #include "mode_indicator.h"
 #include "context_text.h"
@@ -270,7 +271,7 @@ public:
             preserved_[i] = false;
         }
         candidate_actions_.reset();
-        finish_composition(TsfReason::Deactivated);
+        finish_composition(TsfReason::Deactivated); underline_.close();
         inference_state_.client.reset(); clear_inference_status(this);
         inference_state_.allow_unknown_context = false;
         if (keys_) keys_->UnadviseKeyEventSink(client_);
@@ -476,7 +477,7 @@ public:
             cancel_inference();
             ++layout_generation_; layout_pending_ = false;
             ++selection_request_; selection_pending_ = false;
-            candidates_.hide(); return S_OK;
+            candidates_.hide(); underline_.hide(); return S_OK;
         }
         if (layout_pending_) return S_OK;
         try {
@@ -492,13 +493,17 @@ public:
                     const auto current = self->composition_state_.composition;
                     const auto session = self->composition_state_.session;
                     const auto revision = self->engine_.revision();
+                    const auto unchanged = [&] {
+                        return self->composition_state_.context.Get() == context.Get() && self->composition_state_.composition.Get() == current.Get() &&
+                            self->composition_state_.session == session && self->engine_.revision() == revision;
+                    };
                     if (current) self->candidates_.locate(context.Get(), current.Get(), cookie, session);
-                    if (self->composition_state_.context.Get() == context.Get() && self->composition_state_.composition.Get() == current.Get() &&
-                        self->composition_state_.session == session && self->engine_.revision() == revision) self->cancel_unshown_editor();
+                    if (current && unchanged()) self->locate_underline(cookie);
+                    if (unchanged()) self->cancel_unshown_editor();
                     return S_OK;
                 });
             if (FAILED(status)) layout_pending_ = false;
-        } catch (...) { layout_pending_ = false; candidates_.hide(); }
+        } catch (...) { layout_pending_ = false; candidates_.hide(); underline_.hide(); }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE EnumDisplayAttributeInfo(IEnumTfDisplayAttributeInfo** output) override {
@@ -936,14 +941,21 @@ private:
             return manager_ && composition_state_.context.Get() == context.Get() && composition_state_.composition.Get() == current.Get() &&
                 composition_state_.session == session && engine_.revision() == revision;
         };
-        // Common EDIT's full parent permits direct editing but does not paint
-        // display attributes. Present its reading separately from document text.
-        const bool show_reading = composition_state_.origin && composition_state_.origin.Get() != composition_state_.context.Get();
-        candidates_.update(manager_.Get(), context.Get(), engine_, candidate_actions_, show_reading,
+        candidates_.update(manager_.Get(), context.Get(), engine_, candidate_actions_,
             candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice, ui_settings_.font, ui_settings_.show_input_mode);
         if (!unchanged()) return;
         candidates_.locate(context.Get(), current.Get(), cookie, session);
+        if (!unchanged()) return;
+        locate_underline(cookie);
         if (unchanged()) cancel_unshown_editor();
+    }
+    // Common EDIT's full parent permits direct editing but does not paint
+    // display attributes. Underline the host's own text in their place.
+    void locate_underline(TfEditCookie cookie) noexcept {
+        const auto& state = composition_state_;
+        if (!state.composition || !state.origin || state.origin.Get() == state.context.Get()) { underline_.hide(); return; }
+        underline_.locate(state.context.Get(), state.composition.Get(), cookie,
+            engine_.stage() == Stage::Selecting && !engine_.registering() ? UnderlineStyle::Converted : UnderlineStyle::Reading);
     }
     void cancel_unshown_editor() noexcept {
         if (engine_.forgetting() && !candidates_.presentation_available()) {
@@ -1003,7 +1015,7 @@ private:
         clear_context_preview(this);
         ++layout_generation_; layout_pending_ = false;
         ++selection_request_; selection_pending_ = false;
-        candidates_.close();
+        candidates_.close(); underline_.hide();
         composition_state_.release_context();
         update_tsf_trace(diagnostic_state());
     }
@@ -1063,6 +1075,7 @@ private:
     std::shared_ptr<TsfDiagnosticLog> diagnostics_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
     CandidatePresenter candidates_;
+    CompositionUnderline underline_;
     CandidateSettings candidate_settings_;
     UiSettings ui_settings_;
     ComPtr<ModeIndicator> mode_indicator_;

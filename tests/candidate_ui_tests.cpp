@@ -41,12 +41,12 @@ void presenter_fonts() {
     check(list && list->font_face() == default_ui_font, "default popup font changed");
     // Retain the previous element so an allocation cannot reuse its address.
     const auto previous = host->ui;
-    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, {}, L"Meiryo");
+    presenter.update(host.Get(), context.Get(), engine, {}, true, CandidateKeys::Numbers, {}, L"Meiryo");
     list = static_cast<CandidateList*>(host->ui.Get());
     check(list && host->ui != previous && list->font_face() == L"Meiryo", "font change retained the old popup");
-    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, {}, L"Meiryo");
+    presenter.update(host.Get(), context.Get(), engine, {}, true, CandidateKeys::Numbers, {}, L"Meiryo");
     check(host->ui.Get() == list, "unchanged font recreated the popup");
-    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, L"登録できません", L"Meiryo");
+    presenter.update(host.Get(), context.Get(), engine, {}, true, CandidateKeys::Numbers, L"登録できません", L"Meiryo");
     list = static_cast<CandidateList*>(host->ui.Get());
     check(list && list->kind() == PopupKind::Notice && list->font_face() == L"Meiryo", "notification lost configured font");
     presenter.close();
@@ -86,7 +86,7 @@ void presenter_positions() {
     composition->range.Attach(new test_host::Range(context->doc, 0, 0));
     Engine engine(demo_dictionary()); type(engine, "Kanji"); engine.handle({KeyCode::Space});
     CandidatePresenter presenter;
-    presenter.update(host.Get(), context.Get(), engine, {}, false, false);
+    presenter.update(host.Get(), context.Get(), engine, {}, false);
     presenter.locate(context.Get(), composition.Get(), 1, 7, true); // No visible candidate list yet.
     engine.handle({KeyCode::Space}); engine.handle({KeyCode::Space});
     check(engine.registering(), "test did not exhaust candidates");
@@ -133,7 +133,7 @@ void presenter_positions() {
     presenter.close();
 
     view->text_status = S_OK; presenter.locate(context.Get(), composition.Get(), 1, 9, true);
-    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, L"保護された入力欄のため、単語登録を行いません。");
+    presenter.update(host.Get(), context.Get(), engine, {}, true, CandidateKeys::Numbers, L"保護された入力欄のため、単語登録を行いません。");
     check(host->ui != nullptr, "notice UI missing");
     GUID guid{}; host->ui->GetGUID(&guid); check(guid == notice_ui_guid, "notice identity incorrect");
     ComPtr<ITfCandidateListUIElement> candidates;
@@ -147,7 +147,7 @@ void presenter_positions() {
     presenter.update(host.Get(), context.Get(), engine);
     presenter.locate(context.Get(), composition.Get(), 1, 9);
     host->ui_end_query = [&] { presenter.close(); };
-    presenter.update(host.Get(), context.Get(), engine, {}, false, true, CandidateKeys::Numbers, L"保護された入力欄のため、単語登録を行いません。");
+    presenter.update(host.Get(), context.Get(), engine, {}, true, CandidateKeys::Numbers, L"保護された入力欄のため、単語登録を行いません。");
     check(!host->ui, "UI kind switch restored a popup after reentrant close");
     host->ui_end_query = {};
 }
@@ -293,26 +293,6 @@ int main() {
             BSTR description = nullptr; popup->GetDescription(&description);
             const bool unavailable = description && std::wstring_view(description).find(L"削除できる学習語がありません") != std::wstring_view::npos;
             SysFreeString(description); check(unavailable, "read-only deletion explanation unavailable to host");
-        }
-        {
-            enable_input_timing(true);
-            Engine engine(demo_dictionary()); type(engine, "KaK");
-            unsigned selections = 0;
-            auto actions = std::make_shared<CandidateActions>(); actions->select = [&](std::size_t, std::uint64_t) { ++selections; };
-            ComPtr<CandidateList> popup; popup.Attach(new CandidateList(PopupKind::Reading, actions));
-            { KeyTiming key; popup->update(engine, nullptr); }
-            ComPtr<ITfUIElement> element; check(SUCCEEDED(popup.As(&element)), "reading UI element unavailable");
-            ComPtr<ITfCandidateListUIElement> candidates;
-            check(element.As(&candidates) == E_NOINTERFACE, "reading advertised selectable candidates");
-            GUID guid{}; element->GetGUID(&guid); check(guid == reading_ui_guid, "reading UI identity missing");
-            BSTR value = nullptr; element->GetDescription(&value);
-            const bool has_reading = value && std::wstring_view(value).find(L"▽か*k") != std::wstring_view::npos;
-            SysFreeString(value); check(has_reading, "reading lost SKK state or pending okuri");
-            popup->request_selection(0); check(!selections, "reading popup selected a candidate");
-            check(input_timing_snapshot().pending_paints == 0, "reading counted as candidate presentation timing");
-            popup->close(); popup->Show(TRUE); BOOL shown = TRUE; popup->IsShown(&shown);
-            check(!shown, "closed reading popup reopened");
-            enable_input_timing(false);
         }
         check(module_objects == 0, "candidate COM object leaked");
         std::cout << "PASS candidate text/okuri, 7-row pages, host pagination, bounds, update flags, retained UI lifetime\n";
