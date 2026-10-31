@@ -1,6 +1,7 @@
 #include "input_mode.h"
 #include "mode_label.h"
 #include <algorithm>
+#include <string>
 #include <string_view>
 #include <olectl.h>
 #include <memory>
@@ -11,14 +12,7 @@ using Microsoft::WRL::ComPtr;
 namespace {
 constexpr std::array<const GUID*, 2> ids{{&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION}};
 constexpr std::array<Mode, 4> modes{{Mode::Hiragana, Mode::Katakana, Mode::Latin, Mode::FullWidthLatin}};
-constexpr std::array<const wchar_t*, 4> mode_names{{L"ひらがな", L"カタカナ", L"英数（IMEオフ）", L"全英（全角英数）"}};
-const wchar_t* text(Mode mode) {
-    return mode_label(mode);
-}
-const wchar_t* description(Mode mode) {
-    if (mode == Mode::FullWidthLatin) return L"nskkzime: 全英（全角英数）";
-    return mode == Mode::Hiragana ? L"nskkzime: ひらがな" : mode == Mode::Katakana ? L"nskkzime: カタカナ" : L"nskkzime: 英数（IMEオフ）";
-}
+std::wstring description(Mode mode) { return std::wstring(L"nskkzime: ") + mode_name(mode); }
 HRESULT string_result(const wchar_t* text, BSTR* out) {
     if (!out) return E_POINTER;
     *out = SysAllocString(text); return *out ? S_OK : E_OUTOFMEMORY;
@@ -80,8 +74,10 @@ HRESULT ModeButton::Show(BOOL show) {
     if (show) status_ &= ~TF_LBI_STATUS_HIDDEN; else status_ |= TF_LBI_STATUS_HIDDEN;
     const auto sink = sink_; if (sink) sink->OnUpdate(TF_LBI_STATUS); return S_OK;
 }
-HRESULT ModeButton::GetTooltipString(BSTR* out) { return string_result(description(mode_), out); }
-HRESULT ModeButton::GetText(BSTR* out) { return string_result(text(mode_), out); }
+HRESULT ModeButton::GetTooltipString(BSTR* out) {
+    try { return string_result(description(mode_).c_str(), out); } catch (...) { if (out) *out = nullptr; return E_OUTOFMEMORY; }
+}
+HRESULT ModeButton::GetText(BSTR* out) { return string_result(mode_label(mode_), out); }
 HRESULT ModeButton::select(Mode mode) noexcept {
     if (status_ & TF_LBI_STATUS_DISABLED) return S_FALSE;
     const auto actions = actions_.lock();
@@ -103,7 +99,7 @@ HRESULT ModeButton::popup(POINT point, const RECT* area) noexcept {
         const UniqueMenu menu(CreatePopupMenu());
         if (!menu) return E_OUTOFMEMORY;
         for (UINT i = 0; i < modes.size(); ++i) {
-            if (!AppendMenuW(menu.get(), MF_STRING | (modes[i] == mode_ ? MF_CHECKED : 0), i + 1, mode_names[i])) return E_FAIL;
+            if (!AppendMenuW(menu.get(), MF_STRING | (modes[i] == mode_ ? MF_CHECKED : 0), i + 1, mode_name(modes[i]))) return E_FAIL;
         }
         if (!AppendMenuW(menu.get(), MF_SEPARATOR, 0, nullptr)) return E_FAIL;
         {
@@ -124,7 +120,7 @@ HRESULT ModeButton::InitMenu(ITfMenu* menu) {
     if (!menu) return E_POINTER;
     for (UINT i = 0; i < modes.size(); ++i) {
         const auto hr = menu->AddMenuItem(i + 1, modes[i] == mode_ ? TF_LBMENUF_CHECKED : 0, nullptr, nullptr,
-            mode_names[i], static_cast<ULONG>(wcslen(mode_names[i])), nullptr);
+            mode_name(modes[i]), static_cast<ULONG>(wcslen(mode_name(modes[i]))), nullptr);
         if (FAILED(hr)) return hr;
     }
     auto hr = menu->AddMenuItem(0, TF_LBMENUF_SEPARATOR, nullptr, nullptr, nullptr, 0, nullptr);
@@ -161,7 +157,7 @@ HRESULT ModeButton::GetIcon(HICON* out) {
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH, font_face_.c_str());
     const auto old_font = font ? SelectObject(dc, font) : nullptr;
     SetTextColor(dc, RGB(0, 0, 0)); SetBkColor(dc, RGB(255, 255, 255));
-    RECT rect{0, 0, width, height}; DrawTextW(dc, text(mode_), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    RECT rect{0, 0, width, height}; DrawTextW(dc, mode_label(mode_), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     if (font) { SelectObject(dc, old_font); DeleteObject(font); }
     SelectObject(dc, old_bitmap); DeleteDC(dc);
     ICONINFO info{TRUE, 0, 0, mask, nullptr}; *out = CreateIconIndirect(&info); DeleteObject(mask);

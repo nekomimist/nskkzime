@@ -31,10 +31,10 @@ ULONG ModeIndicator::Release() { const auto count = --refs_; if (!count) delete 
 HRESULT ModeIndicator::GetDescription(BSTR* out) {
     if (!out) return E_POINTER;
     *out = nullptr;
-    const wchar_t* description = mode_ == Mode::Hiragana ? L"nskkzime 入力モード: ひらがな [あ]" :
-        mode_ == Mode::Katakana ? L"nskkzime 入力モード: カタカナ [ア]" :
-        mode_ == Mode::FullWidthLatin ? L"nskkzime 入力モード: 全角英数 [Ａ]" : L"nskkzime 入力モード: 英数（IMEオフ） [A]";
-    *out = SysAllocString(description);
+    try {
+        const auto description = std::wstring(L"nskkzime 入力モード: ") + mode_name(mode_) + L" [" + mode_label(mode_) + L"]";
+        *out = SysAllocString(description.c_str());
+    } catch (...) { return E_OUTOFMEMORY; }
     return *out ? S_OK : E_OUTOFMEMORY;
 }
 HRESULT ModeIndicator::GetGUID(GUID* out) {
