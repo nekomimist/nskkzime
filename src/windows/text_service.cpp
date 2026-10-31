@@ -246,6 +246,9 @@ public:
                 }
                 try {
                     if (const auto config = configuration_.broker ? std::nullopt : inference_config(configuration_)) {
+                        // Report an unusable server now instead of failing each conversion.
+                        // Read only its PE header; the server's ISA, not this DLL's, decides.
+                        require_zenz_cpu(current_cpu_features(), zenz_server_cpu_contract(config->server));
                         inference_state_.configure(*config, [this](InferenceCompletion result) { receive_inference(std::move(result)); });
                         set_inference_status(this,L"推論: zenzを使用");
                     }
