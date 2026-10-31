@@ -130,31 +130,27 @@ bool UserDictionary::apply(const LearningRequest& request) {
     if (previous != clients_.end() && previous->second >= request.sequence) return false;
     Key key{request.event.key, request.event.okuri};
     check(request.action != DictionaryAction::Learn || entries_.contains(key) || entries_.size() < max_entries);
+    const bool set_boost = request.event.rerank_gap && *request.event.rerank_gap != 0;
+    check(!set_boost || boosts_.contains(request.event.key) || boosts_.size() < max_entries);
     check(revision_ != std::numeric_limits<std::uint64_t>::max());
-    auto next = *this;
+    // Every failure is checked above. The byte limit is enforced when the
+    // caller serializes this working copy, before anything is written.
     if (request.action == DictionaryAction::Forget) {
-        if (const auto found = next.entries_.find(key); found != next.entries_.end()) {
+        if (const auto found = entries_.find(key); found != entries_.end()) {
             std::erase_if(found->second, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
-            if (found->second.empty()) next.entries_.erase(found);
+            if (found->second.empty()) entries_.erase(found);
         }
-        if (const auto boost = next.boosts_.find(request.event.key);
-            boost != next.boosts_.end() && boost->second.text == request.event.candidate.text) next.boosts_.erase(boost);
+        if (const auto boost = boosts_.find(request.event.key);
+            boost != boosts_.end() && boost->second.text == request.event.candidate.text) boosts_.erase(boost);
     } else if (request.action == DictionaryAction::Learn) {
-        auto& candidates = next.entries_[std::move(key)];
+        auto& candidates = entries_[std::move(key)];
         std::erase_if(candidates, [&](const Candidate& candidate) { return candidate.text == request.event.candidate.text; });
         candidates.insert(candidates.begin(), request.event.candidate);
         if (candidates.size() > max_candidates) candidates.resize(max_candidates);
     }
-    if (request.event.rerank_gap) {
-        if (*request.event.rerank_gap == 0) next.boosts_.erase(request.event.key);
-        else {
-            check(next.boosts_.contains(request.event.key) || next.boosts_.size() < max_entries);
-            next.boosts_.insert_or_assign(request.event.key, RerankBoost{request.event.candidate.text, *request.event.rerank_gap});
-        }
-    }
-    next.acknowledge(request.client, request.sequence); ++next.revision_;
-    (void)next.serialize();
-    *this = std::move(next); return true;
+    if (set_boost) boosts_.insert_or_assign(request.event.key, RerankBoost{request.event.candidate.text, *request.event.rerank_gap});
+    else if (request.event.rerank_gap) boosts_.erase(request.event.key);
+    acknowledge(request.client, request.sequence); ++revision_; return true;
 }
 std::optional<RerankBoost> UserDictionary::rerank_boost(const LookupKey& key) const {
     const auto found = boosts_.find(key);
