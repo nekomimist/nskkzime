@@ -47,13 +47,15 @@ bool apply_inference_result(Engine& engine, const PlannedInference& plan, const 
             if (!std::isfinite(response.scores[i]) || engine.scoring_text(i) != plan.request.candidates[i]) return false;
         }
         const auto boost = policy.rerank_learn ? engine.rerank_boost() : std::nullopt;
+        const auto boosted = [&](std::size_t i) { return boost && boost->text == engine.candidates()[i].text; };
         const auto adjusted_score = [&](std::size_t i) {
-            return static_cast<double>(response.scores[i]) +
-                (boost && boost->text == engine.candidates()[i].text ? boost->gap : 0.0);
+            return static_cast<double>(response.scores[i]) + (boosted(i) ? boost->gap : 0.0);
         };
+        // A learned gap lifts the chosen word exactly to the former best score.
+        // Let that tie favor the learned choice instead of the lower index.
         std::size_t best = 0;
         for (std::size_t i = 1; i < response.scores.size(); ++i)
-            if (adjusted_score(i) > adjusted_score(best)) best = i;
+            if (adjusted_score(i) > adjusted_score(best) || (adjusted_score(i) == adjusted_score(best) && boosted(i))) best = i;
         if (policy.rerank_learn) engine.record_rerank(response.scores);
         const bool promoted = adjusted_score(best) - adjusted_score(0) > policy.promote_threshold && engine.promote_candidate(best);
         engine.finish_rerank();

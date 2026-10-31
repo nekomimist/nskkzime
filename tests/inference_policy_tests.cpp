@@ -92,6 +92,17 @@ int main() {
             choice = s.after.handle({KeyCode::Enter});
             check(!choice.learning && choice.rerank_learning && choice.rerank_learning->rerank_gap == 0.0, "unlearned fallback did not clear boost separately");
         }},
+        {"policy/rerank-boost-wins-tie-below-first-candidate",[] {
+            auto user = std::make_shared<UserDictionary>();
+            user->apply({std::string(32, 'a'), 1, {{U"かいとう"}, {}, {"user", U"解凍", {}}, 4.0}, DictionaryAction::Rerank});
+            auto dictionary = std::make_shared<DictionarySet>(std::vector<std::shared_ptr<const Dictionary>>{user, demo_dictionary()});
+            InferencePolicy policy; policy.rerank = true;
+            auto s = start("Kaitou", dictionary); const auto plan = *plan_inference(s.before, s.after, s.result, policy);
+            check(plan.request.candidates == std::vector<std::u32string>{U"回答", U"解答", U"解凍"}, "boost-only entry changed vocabulary order");
+            // 解凍 reaches the raw best exactly (1 + 4 == 5) and must beat 解答 at a lower index.
+            check(apply_inference_result(s.after, plan, scored(plan, {0, 5, 1}), policy) && s.after.composition_text() == U"解凍",
+                "learned gap lost its tie to an earlier candidate");
+        }},
         {"policy/rerank-okuri-boost-is-a-stem-preference",[] {
             auto user = std::make_shared<UserDictionary>();
             user->apply({std::string(32, 'a'), 1, {{U"か", 'k'}, U"く", {"user", U"描", U"注釈"}, 8.0}});
