@@ -280,7 +280,8 @@ void Engine::confirm(Result& result) {
         auto event = learning_event(input_.candidates[input_.candidate_index]);
         if (event.candidate.learning == LearningPolicy::Learn && event.candidate.source != CandidateSource::GeneratedLong)
             result.learning = std::move(event);
-        else if (event.rerank_gap) {
+        // Long generations are never persisted, including as a rerank preference.
+        else if (event.rerank_gap && event.candidate.source != CandidateSource::GeneratedLong) {
             // Only the score preference changes; the generated word stays out
             // of the vocabulary when fallback learning is disabled.
             event.candidate.learning = LearningPolicy::Learn;

@@ -91,6 +91,11 @@ int main() {
             s.after.append_generated({{"new", U"新語", {}, CandidateSource::GeneratedFallback, LearningPolicy::DoNotLearn}});
             choice = s.after.handle({KeyCode::Enter});
             check(!choice.learning && choice.rerank_learning && choice.rerank_learning->rerank_gap == 0.0, "unlearned fallback did not clear boost separately");
+            s = start(); plan = *plan_inference(s.before, s.after, s.result, policy);
+            apply_inference_result(s.after, plan, scored(plan, {0, -3}), policy);
+            check(s.after.prepend_generated({{"long", U"長い文", {}, CandidateSource::GeneratedLong}}), "long generation fixture failed");
+            choice = s.after.handle({KeyCode::Enter});
+            check(choice.committed == U"長い文" && !choice.learning && !choice.rerank_learning, "long generation produced a rerank event");
         }},
         {"policy/rerank-boost-wins-tie-below-first-candidate",[] {
             auto user = std::make_shared<UserDictionary>();
