@@ -262,6 +262,7 @@ public:
     HRESULT STDMETHODCALLTYPE Deactivate() override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Deactivate, diagnostic_state());
         startup_mode_pending_ = false;
+        mode_focus_document_.Reset(); mode_focus_context_.Reset();
         dismiss_mode_indicator();
         if (tool_launcher_) { tool_launcher_->close(); tool_launcher_.reset(); }
         mode_actions_.reset();
@@ -294,8 +295,10 @@ public:
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::KeyFocus, diagnostic_state());
         trace_tsf(TsfEvent::KeyFocus, TsfReason::None, S_OK, foreground);
         key_foreground_ = foreground != FALSE;
-        if (!foreground) { dismiss_mode_indicator(); cancel_quote(); finish_composition(TsfReason::FocusLost); }
-        else { apply_startup_mode(); configure_container(); }
+        if (!foreground) {
+            mode_focus_document_.Reset(); mode_focus_context_.Reset();
+            dismiss_mode_indicator(); cancel_quote(); finish_composition(TsfReason::FocusLost);
+        } else { apply_startup_mode(); configure_container(); show_focus_mode_indicator(); }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext* context, WPARAM code, LPARAM parameter, BOOL* eaten) override {
@@ -514,6 +517,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr* document) override {
+        if (mode_focus_document_.Get() == document) { mode_focus_document_.Reset(); mode_focus_context_.Reset(); }
         dismiss_mode_indicator();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentUninit, diagnostic_state());
         for (const auto& context : {composition_state_.context, composition_state_.origin}) {
@@ -547,34 +551,44 @@ public:
         if (generation != focus_generation_ || current.Get() != composition_state_.composition.Get() || session != composition_state_.session) {
             trace_tsf(TsfEvent::FocusResolved, TsfReason::Inactive, status, 0, 0, 0, document != nullptr); return S_OK;
         }
-        if (indicator_request == mode_indicator_request_) {
-            const bool same_target = context && (mode_indicator_ ? mode_indicator_->matches_focus(document, top.Get()) :
-                mode_publish_context_.Get() == context.Get());
+        const bool focus_notice = indicator_request == mode_indicator_request_;
+        if (focus_notice) {
+            const bool same_target = context && ((mode_indicator_ && mode_indicator_->matches_focus(document, top.Get())) ||
+                mode_publish_context_.Get() == context.Get() ||
+                (mode_focus_document_.Get() == document && mode_focus_context_ == top));
             if (!same_target) dismiss_mode_indicator();
         }
+        const auto focus_indicator_request = mode_indicator_request_;
         if (quote_generation == quote_generation_ && quote_context_.Get() != context.Get()) cancel_quote();
         trace_tsf(TsfEvent::FocusResolved, context ? TsfReason::None : TsfReason::FocusUnavailable, status, 0, 0, 0, document != nullptr);
-        if (!composition_state_.context) return S_OK;
-        if (!context) defer_focus_finish();
-        else if (composition_state_.context.Get() != context.Get()) finish_composition(TsfReason::ContextChanged);
-        else cancel_focus_finish(TsfReason::FocusRestored);
+        if (composition_state_.context) {
+            if (!context) defer_focus_finish();
+            else if (composition_state_.context.Get() != context.Get()) finish_composition(TsfReason::ContextChanged);
+            else cancel_focus_finish(TsfReason::FocusRestored);
+        }
+        if (!context) { mode_focus_document_.Reset(); mode_focus_context_.Reset(); }
+        else if (focus_notice && focus_indicator_request == mode_indicator_request_) show_focus_mode_indicator();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
         dismiss_mode_indicator();
+        const auto indicator_request = mode_indicator_request_;
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPush, diagnostic_state(context));
         const auto parent = editing_context(context); context = parent.Get();
         update_tsf_trace(diagnostic_state(context));
         if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
+        if (indicator_request == mode_indicator_request_) show_focus_mode_indicator();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
         dismiss_mode_indicator();
+        const auto indicator_request = mode_indicator_request_;
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPop, diagnostic_state(context));
         // The parent compartment can already be gone when the origin is popped.
         if (composition_state_.context.Get() == context || composition_state_.origin.Get() == context) finish_composition(TsfReason::ContextPopped);
+        if (indicator_request == mode_indicator_request_) show_focus_mode_indicator();
         return S_OK;
     }
 private:
@@ -743,6 +757,25 @@ private:
         const auto binding = input_mode_;
         if (binding) binding->publish(engine_.mode());
         if (request == mode_indicator_request_) mode_publish_context_ = previous;
+    }
+    void show_focus_mode_indicator() noexcept {
+        if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || connecting_mode_) return;
+        const ComPtr<TextService> self(this);
+        const auto request = mode_indicator_request_, generation = focus_generation_;
+        try {
+            const auto thread = manager_;
+            ComPtr<ITfDocumentMgr> document;
+            ComPtr<ITfContext> origin;
+            if (FAILED(thread->GetFocus(&document)) || !document || FAILED(document->GetTop(&origin))) return;
+            const auto context = editing_context(origin.Get());
+            if (request != mode_indicator_request_ || generation != focus_generation_ || !manager_ || !key_foreground_) return;
+            if (mode_focus_document_ == document && mode_focus_context_ == origin) return;
+            // Remember the field beyond the notice's lifetime. Repeated focus
+            // refreshes (including IME open/close) must not restart its timer.
+            mode_focus_document_ = document; mode_focus_context_ = origin;
+            if (!context || mode_publish_context_ || (mode_indicator_ && mode_indicator_->matches_focus(document.Get(), origin.Get()))) return;
+            show_mode_indicator(context.Get());
+        } catch (...) { /* A focus notification must never fail input. */ }
     }
     void show_mode_indicator(ITfContext* target = nullptr) noexcept {
         if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || engine_.registering() ||
@@ -1080,6 +1113,8 @@ private:
     UiSettings ui_settings_;
     ComPtr<ModeIndicator> mode_indicator_;
     ComPtr<ITfContext> mode_publish_context_;
+    ComPtr<ITfDocumentMgr> mode_focus_document_;
+    ComPtr<ITfContext> mode_focus_context_;
     std::uint64_t mode_indicator_request_ = 0;
     bool key_foreground_ = true;
     CandidateVisibility candidate_visibility_;

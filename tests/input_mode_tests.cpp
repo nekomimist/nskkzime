@@ -109,6 +109,110 @@ struct Session {
         const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
     }
 };
+void focus_mode_indicator() {
+    for (const auto mode : {Mode::Hiragana, Mode::Katakana, Mode::Latin, Mode::FullWidthLatin}) {
+        Session s(mode == Mode::Latin, false, mode == Mode::Katakana || mode == Mode::FullWidthLatin, mode);
+        s.indicator_host(); s.host->show_ui = TRUE;
+        s.context->doc->text = L"selected"; s.context->doc->selection_end = 8;
+        const auto label = s.label();
+        const auto open = s.host->open->value, conversion = s.host->conversion->value;
+        const auto writes = s.host->open->writes + s.host->conversion->writes;
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr);
+        check(s.indicator() && s.description().find(L"[" + label + L"]") != std::wstring::npos, "focus did not show current mode");
+        s.context->pump();
+        BOOL shown = FALSE; s.host->ui->IsShown(&shown);
+        check(shown, "focused field mode was not visible");
+        check(s.label() == label && s.host->open->value == open && s.host->conversion->value == conversion &&
+            s.host->open->writes + s.host->conversion->writes == writes, "focus display changed input mode");
+        check(s.context->doc->text == L"selected" && s.context->doc->caret == 0 && s.context->doc->selection_end == 8 &&
+            !s.context->doc->writes && !s.context->selection_writes, "focus display edited text or selection");
+        const auto retained = s.host->ui;
+        s.keys->OnSetFocus(TRUE);
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), s.context->document_manager.Get());
+        check(s.host->ui == retained, "duplicate focus restarted mode display");
+        s.key(VK_RIGHT);
+        check(!s.host->ui, "navigation did not dismiss focus mode display");
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), s.context->document_manager.Get());
+        check(!s.host->ui, "same-field refresh redisplayed dismissed mode");
+        s.keys->OnSetFocus(FALSE);
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr);
+        check(!s.host->ui, "background focus displayed mode");
+        s.keys->OnSetFocus(TRUE); s.context->pump();
+        check(s.indicator(), "returning keyboard focus did not show mode");
+        s.host->focused_document.Reset();
+        s.host->events->OnSetFocus(nullptr, s.context->document_manager.Get());
+        check(!s.host->ui, "focus loss retained mode display");
+        s.host->focused_document = s.context->document_manager;
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr);
+        check(s.indicator(), "returning document focus did not show mode");
+    }
+    {
+        Session s; s.indicator_host(); s.host->show_ui = TRUE;
+        ComPtr<test_host::Context> other; other.Attach(new test_host::Context);
+        other->active_view.Attach(new test_host::ContextView);
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr);
+        const auto retained = s.host->ui;
+        s.host->focused_document = other->document_manager;
+        s.host->events->OnSetFocus(other->document_manager.Get(), s.context->document_manager.Get());
+        check(s.indicator() && s.host->ui != retained, "moving input fields did not replace mode display");
+        s.context->pump(); other->pump();
+        BOOL shown = TRUE; retained->IsShown(&shown);
+        check(!shown && !s.context->edits && !s.context->layout, "old field retained mode display or sinks");
+        s.keys->OnSetFocus(FALSE); other->pump();
+        check(!s.host->ui && !other->edits && !other->layout, "new field retained mode display after blur");
+    }
+    {
+        Session s; s.indicator_host();
+        auto* document = static_cast<test_host::DocumentManager*>(s.context->document_manager.Get());
+        ComPtr<test_host::Context> other; other.Attach(new test_host::Context);
+        other->active_view.Attach(new test_host::ContextView);
+        s.host->events->OnSetFocus(document, nullptr);
+        const auto first = s.host->ui;
+        document->top = other.Get(); s.host->events->OnPushContext(other.Get());
+        check(s.indicator() && s.host->ui != first, "focused context push did not show mode");
+        const auto second = s.host->ui;
+        document->top = s.context.Get(); s.host->events->OnPopContext(other.Get());
+        check(s.indicator() && s.host->ui != second && !other->edits && !other->layout, "context pop did not restore focus display");
+        s.context->pump(); other->pump();
+    }
+    {
+        Session s; s.indicator_host(); s.context->readonly = true;
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr);
+        check(!s.host->ui && !s.context->edits && !s.context->layout, "readonly field displayed mode");
+    }
+    {
+        Session s(true); s.indicator_host();
+        auto* document = static_cast<test_host::DocumentManager*>(s.context->document_manager.Get());
+        document->top_query = [&] { check(!s.key('Z'), "IME-off typing was captured during focus"); };
+        s.host->events->OnSetFocus(document, nullptr);
+        s.context->pump();
+        check(!s.host->ui, "focus notification redisplayed mode after a newer key");
+    }
+    {
+        Session s; s.indicator_host();
+        auto* document = static_cast<test_host::DocumentManager*>(s.context->document_manager.Get());
+        // Refresh focus while the notice is resolving its caret context.
+        document->top_query = [&] {
+            document->top_query = [&] {
+                document->top_query = [&] { s.host->events->OnSetFocus(document, document); };
+            };
+        };
+        s.host->events->OnSetFocus(document, nullptr);
+        s.context->pump();
+        check(s.indicator(), "reentrant same-field focus discarded pending mode display");
+    }
+    {
+        Session s; s.indicator_host(); s.type("Kan");
+        s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr);
+        check(!s.host->ui && s.context->composition, "focus refresh interrupted composition or showed mode");
+        ComPtr<test_host::Context> other; other.Attach(new test_host::Context);
+        other->active_view.Attach(new test_host::ContextView);
+        s.host->focused_document = other->document_manager;
+        s.host->events->OnSetFocus(other->document_manager.Get(), s.context->document_manager.Get());
+        check(s.indicator(), "moving from a composition did not show new field mode");
+        s.context->pump(); other->pump(); s.keys->OnSetFocus(FALSE); other->pump();
+    }
+}
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
@@ -408,8 +512,14 @@ int wmain(int argc, wchar_t** argv) {
             kanji.size() == 1 && kanji[0].text == U"漢字" && wide_draft.size() == 1 && wide_draft[0].text == U"ａｂｃ",
             "mode switch learned unconfirmed text or lost explicit confirmation");
         // New UI is opt-in; all earlier contracts run with old settings.
+        {
+            Session s; s.indicator_host();
+            s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr); s.keys->OnSetFocus(TRUE);
+            check(!s.host->ui, "disabled mode display appeared on focus");
+        }
         use_isolated_settings(root / "indicator", "learning=on\ndictionary=" + settings_path(argv[1]) +
             "\nshow-input-mode=on\ninput-mode-duration-ms=3000\n");
+        focus_mode_indicator();
         for (const bool same_document : {false, true}) {
             Session s(true); s.indicator_host(); s.host->show_ui = TRUE;
             ComPtr<test_host::Context> other; other.Attach(new test_host::Context);
