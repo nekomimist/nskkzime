@@ -67,7 +67,10 @@ foreach ($case in $specification.cases) {
     $caseRoot = Join-Path $runRoot $case.id
     [IO.Directory]::CreateDirectory($caseRoot) | Out-Null
     try {
-        $output = Invoke-ComparisonProcess $tracePath @('--dict', $fixture, '--', $case.keys) @{} $caseRoot
+        $method = if ($case.input_method) { $case.input_method } else { 'skk' }
+        $keyboard = if ($case.azik_keyboard) { $case.azik_keyboard } else { 'jp106' }
+        if ($method -notin @('skk', 'azik') -or $keyboard -notin @('jp106', 'us101')) { throw 'Invalid input profile.' }
+        $output = Invoke-ComparisonProcess $tracePath @('--dict', $fixture, '--input-method', $method, '--azik-keyboard', $keyboard, '--', $case.keys) @{} $caseRoot
         [IO.File]::WriteAllText((Join-Path $caseRoot 'trace.jsonl'), $output)
         $last = ($output.TrimEnd() -split "`n")[-1] | ConvertFrom-Json
         $actual = $last.document + $last.preedit
@@ -82,6 +85,8 @@ foreach ($case in $specification.cases) {
                 NSKKZIME_COMPARE_DICT = $fixture
                 NSKKZIME_COMPARE_KEYS = $case.keys
                 NSKKZIME_COMPARE_RESULT = $resultPath
+                NSKKZIME_COMPARE_INPUT_METHOD = $method
+                NSKKZIME_COMPARE_AZIK_KEYBOARD = $keyboard
             }
             $null = Invoke-ComparisonProcess $emacsPath @('--batch', '-Q', '-L', $source, '-l', (Join-Path $repository 'tests/ddskk_driver.el')) $variables $caseRoot
             $ddskkResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json

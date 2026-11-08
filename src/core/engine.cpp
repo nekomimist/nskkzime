@@ -1,6 +1,7 @@
 #include "nskkzime/engine.h"
 #include "nskkzime/numeric.h"
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <utility>
 
@@ -15,6 +16,19 @@ constexpr std::u32string_view fullwidth_latin_table =
     U"‘ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏ"
     U"ｐｑｒｓｔｕｖｗｘｙｚ｛｜｝〜";
 static_assert(fullwidth_latin_table.size() == 95);
+char okuri_prefix(std::u32string_view text, char fallback) {
+    if (text.empty()) return fallback;
+    const auto head = text.front() == U'っ' && text.size() > 1 ? text[1] : text.front();
+    constexpr auto groups = std::to_array<std::pair<std::u32string_view, char>>({
+        {U"あ", 'a'}, {U"い", 'i'}, {U"う", 'u'}, {U"え", 'e'}, {U"お", 'o'},
+        {U"かきくけこ", 'k'}, {U"がぎぐげご", 'g'}, {U"さしすせそ", 's'}, {U"ざずぜぞ", 'z'}, {U"じ", 'j'},
+        {U"たちっつてと", 't'}, {U"だぢづでど", 'd'}, {U"なにぬねのん", 'n'},
+        {U"はひふへほ", 'h'}, {U"ばびぶべぼ", 'b'}, {U"ぱぴぷぺぽ", 'p'}, {U"まみむめも", 'm'},
+        {U"やゆよ", 'y'}, {U"らりるれろ", 'r'}, {U"わを", 'w'}, {U"ぁぃぅぇぉゃゅょゎゐゑ", 'x'}
+    });
+    for (const auto& [kana, prefix] : groups) if (kana.find(head) != kana.npos) return prefix;
+    return fallback;
+}
 }
 std::vector<LookupCandidate> Dictionary::lookup_many(std::span<const LookupKey> keys, std::u32string_view okuri) const {
     std::vector<LookupCandidate> result;
@@ -39,9 +53,11 @@ std::shared_ptr<const Dictionary> demo_dictionary() {
     return dictionary;
 }
 Engine::Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled, std::shared_ptr<const RomajiRules> rules)
-    : dictionary_(std::move(dictionary)), rules_(std::move(rules)), registration_enabled_(registration_enabled) {
+    : Engine(std::move(dictionary), registration_enabled, InputProfile(std::move(rules))) {}
+Engine::Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled, InputProfile profile)
+    : dictionary_(std::move(dictionary)), profile_(std::move(profile)), registration_enabled_(registration_enabled) {
     if (!dictionary_) throw std::invalid_argument("dictionary must not be null");
-    input_.romaji = Romaji(rules_);
+    input_.romaji = Romaji(profile_.rules());
 }
 void Engine::clear_composition() {
     forget_.reset();
@@ -180,6 +196,7 @@ std::u32string Engine::composition_text() const {
     return display(input_.reading + input_.okuri) + ascii(input_.romaji.pending());
 }
 bool Engine::would_handle(Key key) const {
+    if (key.code == KeyCode::ForgetCandidate) return input_.stage == Stage::Selecting || forgetting();
     if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp || key.code == KeyCode::SelectCandidate)
         return input_.stage == Stage::Selecting;
     if (registering()) return key.code != KeyCode::Character || (key.character >= 0x20 && key.character <= 0x7e);
@@ -196,6 +213,8 @@ void Engine::append(std::u32string text, Result& result) {
 }
 void Engine::convert(Result& result) {
     append(input_.romaji.flush(), result);
+    if (profile_.method() == InputMethod::Azik && !input_.okuri.empty())
+        input_.okuri_letter = okuri_prefix(input_.okuri, input_.okuri_letter);
     if (input_.reading.empty()) return;
     if (!dictionary_->ready()) { result.dictionary_pending = true; return; }
     result.conversion_started = true;
@@ -297,7 +316,8 @@ Result Engine::handle(Key key) {
     ++revision_;
     registration_limit_ = false;
     if (forgetting()) return handle_forgetting(key);
-    if (input_.stage == Stage::Selecting && key.code == KeyCode::Character && key.character == 'X') {
+    if (input_.stage == Stage::Selecting && (key.code == KeyCode::ForgetCandidate ||
+        (profile_.method() == InputMethod::Skk && key.code == KeyCode::Character && key.character == 'X'))) {
         input_.candidates_touched = true;
         const auto& candidate = input_.candidates[input_.candidate_index];
         const auto lookup = candidate.origin ? candidate.origin->lookup_key : LookupKey{input_.reading, input_.okuri_letter};
@@ -331,7 +351,7 @@ void Engine::begin_registration(Result& result) {
     auto anchor = display(input_.reading + std::u32string(input_.visible_okuri()));
     registrations_.push_back({input_, {}, std::move(anchor)});
     input_ = {}; // Registration always starts with normal hiragana input.
-    input_.romaji = Romaji(rules_);
+    input_.romaji = Romaji(profile_.rules());
 }
 void Engine::cancel_registration() {
     input_ = std::move(registrations_.back().original); registrations_.pop_back();
@@ -368,6 +388,7 @@ std::u32string Engine::forget_answer() const { return forget_ ? forget_->answer 
 void Engine::cancel_forgetting() { if (forget_) { forget_.reset(); ++revision_; } }
 Result Engine::handle_forgetting(Key key) {
     Result result; result.consumed = true;
+    if (key.code == KeyCode::ForgetCandidate) return result;
     if (key.code == KeyCode::Cancel || key.code == KeyCode::Hiragana) { cancel_forgetting(); return result; }
     if (key.code == KeyCode::Enter) {
         if (forget_->target && forget_->answer == U"yes") {
@@ -502,19 +523,24 @@ Result Engine::handle_input(Key key) {
         input_.reading += static_cast<unsigned char>(ch);
         return result;
     }
-    if (ch == 'Q' && input_.stage == Stage::Direct) {
+    const bool azik = profile_.method() == InputMethod::Azik;
+    if (!azik && ch == 'Q' && input_.stage == Stage::Direct) {
         append(input_.romaji.flush(), result);
+        input_.stage = Stage::Reading;
+        return result;
+    }
+    if (azik && ch == profile_.reading_key() && !input_.romaji.accepts(ch) && input_.stage == Stage::Direct) {
         input_.stage = Stage::Reading;
         return result;
     }
     // Resolve a failed prefix before dispatching a command. Other characters,
     // including normalized shifted input, resolve it inside Romaji::push.
-    if (ch == '/' || ch == 'q' || ch == 'l' || ch == 'L') append(input_.romaji.resolve_pending(ch), result);
+    if (ch == '/' || ch == profile_.kana_key() || ch == 'l' || ch == 'L') append(input_.romaji.resolve_pending(ch), result);
     if (input_.stage == Stage::Direct && input_.romaji.pending().empty() && ch == '/') {
         input_.stage = Stage::Reading; input_.abbrev = true;
         return result;
     }
-    if (input_.romaji.pending().empty() && ch == 'q') {
+    if (input_.romaji.pending().empty() && ch == profile_.kana_key()) {
         if (input_.stage == Stage::Direct) input_.mode = input_.mode == Mode::Hiragana ? Mode::Katakana : Mode::Hiragana;
         else {
             auto text = input_.reading + input_.okuri;
@@ -529,10 +555,11 @@ Result Engine::handle_input(Key key) {
         return result;
     }
     // Case-sensitive continuations such as zL take precedence over Shift handling.
-    if (ch >= 'A' && ch <= 'Z' && !input_.romaji.accepts(ch)) {
-        ch = static_cast<char>(ch - 'A' + 'a');
+    const bool shifted_sokuon = azik && ch == profile_.shifted_sokuon_key();
+    if (((ch >= 'A' && ch <= 'Z') || shifted_sokuon) && !input_.romaji.accepts(ch)) {
+        ch = shifted_sokuon ? ';' : static_cast<char>(ch - 'A' + 'a');
         if (input_.stage == Stage::Direct) {
-            append(input_.romaji.flush(), result);
+            if (!azik) append(input_.romaji.flush(), result);
             input_.stage = Stage::Reading;
         } else if (input_.stage == Stage::Reading && !input_.reading.empty()) {
             append(input_.romaji.flush(), result);

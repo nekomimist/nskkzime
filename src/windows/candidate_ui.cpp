@@ -146,6 +146,7 @@ void CandidateList::cancel_pointer() noexcept {
 }
 HRESULT CandidateList::GetCurrentPage(UINT* value) { if (!value) return E_POINTER; *value = current_page(); return S_OK; }
 void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
+    input_method_ = engine.input_method();
     if (closed_) return;
     if (revision_ != engine.revision()) cancel_pointer();
     revision_ = engine.revision();
@@ -293,7 +294,8 @@ void CandidateList::render() noexcept {
 }
 std::wstring CandidateList::footer() const {
     return kind_ != PopupKind::Candidates ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
-        L"   " + (keys_ == CandidateKeys::Asdfjkl ? std::wstring(L"ASDFJKL") : std::wstring(L"1〜7")) + L": 選択  Space/x: 次/前  PgDn/PgUp: 7件  X: 削除";
+        L"   " + (keys_ == CandidateKeys::Asdfjkl ? std::wstring(L"ASDFJKL") : std::wstring(L"1〜7")) + L": 選択  Space/x: 次/前  PgDn/PgUp: 7件  " +
+        (input_method_ == InputMethod::Skk ? L"X/Ctrl+D/Del: 削除" : L"Ctrl+D/Del: 削除");
 }
 void CandidateList::paint(HDC dc) const {
     RECT area{}; GetClientRect(window_, &area);

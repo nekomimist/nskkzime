@@ -73,18 +73,20 @@ const RomajiRule* RomajiRules::find(std::string_view key) const {
 bool RomajiRules::prefix(std::string_view key) const {
     const auto it = rules_.lower_bound(key); return it != rules_.end() && it->first.starts_with(key);
 }
-std::shared_ptr<const RomajiRules> RomajiRules::parse(std::string_view bytes) {
+std::shared_ptr<const RomajiRules> RomajiRules::parse(std::string_view bytes, std::shared_ptr<const RomajiRules> base, std::string_view reserved_roots) {
+    if (!base) throw std::invalid_argument("base romaji rules must not be null");
     if (bytes.size() > 262144) throw std::invalid_argument("romaji rules exceed 256 KiB");
     from_utf8(bytes);
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("romaji rules contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    auto result = std::make_shared<RomajiRules>(*defaults()); std::map<std::string,std::size_t> seen;
+    auto result = std::make_shared<RomajiRules>(*base); std::map<std::string,std::size_t> seen;
     std::size_t line_number = 0; bool version = false;
     auto fail = [&](const char* reason) { throw std::invalid_argument("romaji line " + std::to_string(line_number) + ": " + reason); };
-    auto key_valid = [](std::string_view key) {
+    auto key_valid = [&](std::string_view key) {
         if (key.empty() || key.size() > 16) return false;
         for (const auto ch : key) if (ch < 0x20 || ch > 0x7e || (ch >= 'A' && ch <= 'Z')) return false;
-        return key.front() != ' ' && key.front() != 'q' && key.front() != 'l' && key.front() != '/';
+        return key.front() != ' ' && (key.front() != 'q' || base->find("q")) && key.front() != 'l' && key.front() != '/' &&
+            reserved_roots.find(key.front()) == reserved_roots.npos;
     };
     while (!bytes.empty()) {
         ++line_number;
@@ -120,14 +122,14 @@ std::shared_ptr<const RomajiRules> RomajiRules::parse(std::string_view bytes) {
     }
     result->custom_count_ = seen.size(); return result;
 }
-std::shared_ptr<const RomajiRules> RomajiRules::load(const std::filesystem::path& file) {
+std::shared_ptr<const RomajiRules> RomajiRules::load(const std::filesystem::path& file, std::shared_ptr<const RomajiRules> base, std::string_view reserved_roots) {
     std::ifstream stream(file,std::ios::binary | std::ios::ate);
     if (!stream) throw std::runtime_error("cannot open romaji rules");
     const auto size = stream.tellg();
     if (size < 0 || size > 262144) throw std::runtime_error("romaji rules exceed 256 KiB or cannot be read");
     std::string bytes(static_cast<std::size_t>(size),'\0'); stream.seekg(0);
     if (!stream.read(bytes.data(),static_cast<std::streamsize>(bytes.size()))) throw std::runtime_error("cannot read romaji rules");
-    return parse(bytes);
+    return parse(bytes, std::move(base), reserved_roots);
 }
 Romaji::Romaji(std::shared_ptr<const RomajiRules> rules) : rules_(std::move(rules)) {
     if (!rules_) throw std::invalid_argument("romaji rules must not be null");

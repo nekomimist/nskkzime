@@ -105,6 +105,17 @@ int main() {
         for (const auto& entry : std::filesystem::directory_iterator(cache)) files.files.push_back(entry.path());
         files.files.push_back(cache);
 
+        config.settings.input_method = InputMethod::Azik; config.settings.azik_keyboard = AzikKeyboard::Us101;
+        config.settings.romaji_rules.clear();
+        const auto azik = decode(build_broker_snapshot(config, dictionary_configuration_id(config)));
+        const auto azik_settings = parse_dictionary_settings(azik.settings);
+        const auto azik_profile = resolve_input_profile(azik_settings, azik.romaji);
+        check(azik_profile.method() == InputMethod::Azik && azik_profile.keyboard() == AzikKeyboard::Us101 &&
+            azik_profile.rules()->find("q")->output == U"ん" && azik_profile.rules()->find("'")->output == U"ー", "empty broker overlay lost AZIK profile");
+        config.settings.romaji_rules = files.root / "missing-azik.tsv";
+        const auto azik_fallback = decode(build_broker_snapshot(config, dictionary_configuration_id(config)));
+        check(!azik_fallback.complete && resolve_input_profile(parse_dictionary_settings(azik_fallback.settings), azik_fallback.romaji).method() == InputMethod::Azik,
+            "broker fallback switched input method");
         config.settings = {}; config.demo = true;
         const auto demo = decode(build_broker_snapshot(config, dictionary_configuration_id(config)));
         check(demo.demo && !lookup(demo).empty() && !demo.learning, "desktop/container demo mismatch");

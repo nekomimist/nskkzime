@@ -62,6 +62,7 @@ ComPtr<ITfContext> editing_context(ITfContext* context) {
 std::optional<Key> translate_key(WPARAM code, LPARAM parameter) {
     if (GetKeyState(VK_MENU) & 0x8000 || GetKeyState(VK_LWIN) & 0x8000 || GetKeyState(VK_RWIN) & 0x8000) return {};
     if (GetKeyState(VK_CONTROL) & 0x8000) {
+        if (code == 'D' && !(GetKeyState(VK_SHIFT) & 0x8000)) return Key{KeyCode::ForgetCandidate};
         if (code == 'J') return Key{KeyCode::Hiragana};
         if (code == 'G') return Key{KeyCode::Cancel};
         return {};
@@ -71,6 +72,9 @@ std::optional<Key> translate_key(WPARAM code, LPARAM parameter) {
     case VK_RETURN: return Key{KeyCode::Enter};
     case VK_BACK: return Key{KeyCode::Backspace};
     case VK_ESCAPE: return Key{KeyCode::Cancel};
+    case VK_DELETE:
+        if (!(GetKeyState(VK_SHIFT) & 0x8000)) return Key{KeyCode::ForgetCandidate};
+        return {};
     case VK_NEXT: case VK_PRIOR:
         if (GetKeyState(VK_SHIFT) & 0x8000) return {}; // Preserve application range-selection shortcuts.
         return Key{code == VK_NEXT ? KeyCode::PageDown : KeyCode::PageUp};
@@ -189,7 +193,7 @@ public:
             try {
                 configuration_ = capture_runtime_configuration();
                 dictionary_ = runtime_dictionary(configuration_);
-                engine_ = Engine(dictionary_, true, configuration_.broker ? RomajiRules::defaults() : runtime_romaji_rules(configuration_));
+                engine_ = Engine(dictionary_, true, configuration_.broker ? InputProfile{} : runtime_input_profile(configuration_));
                 engine_.set_numeric_candidate_keys(false);
                 if (!configuration_.broker) {
                     candidate_settings_ = configuration_.dictionaries.settings.candidates;
@@ -597,16 +601,21 @@ private:
     bool off_mode() const noexcept { return !engine_.registering() && engine_.outer_mode() == Mode::Latin; }
     void cancel_quote() noexcept { ++quote_generation_; quote_context_.Reset(); }
     std::optional<Key> service_key(WPARAM code, LPARAM parameter) const {
+        // Bootstrap publishes the profile and dictionaries together. Before it
+        // arrives, leave text to the host rather than guessing SKK commands.
+        if (configuration_.broker && !container_rules_configured_) return {};
         auto key = translate_key(code, parameter);
         if (off_mode() && !off_keys_enabled_ && key && key->code == KeyCode::Hiragana) return {};
         return key;
     }
     bool off_key_callback_needed(WPARAM code) const {
+        if (configuration_.broker && !container_rules_configured_) return false;
         return (code < quoted_keys_.size() && quoted_keys_.test(code)) ||
             (code == 'Q' && quote_prefix_down_) || quote_context_ ||
             (off_mode() && off_keys_enabled_ && plain_control_key(code, 'Q'));
     }
     std::optional<bool> handle_off_key(ITfContext* context, WPARAM code, LPARAM parameter) {
+        if (configuration_.broker && !container_rules_configured_) return {};
         const bool repeat = (parameter & (static_cast<LPARAM>(1) << 30)) != 0;
         if (code < quoted_keys_.size() && quoted_keys_.test(code)) {
             if (repeat) return false;
@@ -650,7 +659,7 @@ private:
             if (!remote || !dictionary_ || !dictionary_->ready()) return;
             if (!container_rules_configured_ && !composition_state_.composition && engine_.preedit().empty()) {
                 const auto mode = engine_.outer_mode();
-                engine_ = Engine(dictionary_, true, remote->romaji); engine_.set_mode(mode); engine_.set_numeric_candidate_keys(false);
+                engine_ = Engine(dictionary_, true, remote->input_profile); engine_.set_mode(mode); engine_.set_numeric_candidate_keys(false);
                 container_rules_configured_ = true;
             }
             if (container_configured_) return;

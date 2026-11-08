@@ -30,12 +30,15 @@ int main() {
         const auto captured = capture_runtime_configuration();
         auto changed = initial; changed.dictionaries = {second}; changed.romaji_rules = replacement; changed.candidates.show_after = 5;
         changed.ui.font = L"ＭＳ ゴシック";
+        changed.input_method = InputMethod::Azik; changed.azik_keyboard = AzikKeyboard::Us101;
         save_dictionary_settings(config, changed);
         const auto fresh = capture_runtime_configuration();
         const auto old_dictionary = runtime_dictionary(captured), new_dictionary = runtime_dictionary(fresh);
         wait_for_dictionary([&] { return old_dictionary->ready() && new_dictionary->ready(); });
         check(old_dictionary->lookup({U"かな", 0})[0].text == U"仮名" && new_dictionary->lookup({U"かな", 0})[0].text == U"加奈", "dictionary configuration reread");
         check(runtime_romaji_rules(captured)->find("wi")->output == U"ゐ" && runtime_romaji_rules(fresh)->find("wi")->output == U"ヰ", "romaji rules reread");
+        check(runtime_input_profile(captured).method() == InputMethod::Skk && runtime_input_profile(fresh).method() == InputMethod::Azik &&
+            runtime_input_profile(fresh).keyboard() == AzikKeyboard::Us101, "profile snapshot changed or reread");
         check(captured.dictionaries.settings.candidates.show_after == 2 && fresh.dictionaries.settings.candidates.show_after == 5, "candidate settings reread");
         check(captured.dictionaries.settings.ui.font == initial.ui.font && fresh.dictionaries.settings.ui.font == changed.ui.font, "UI font configuration reread");
         check(captured.user_file == root / "user-dictionary.nskkdb" && captured.tools[0].file == config &&

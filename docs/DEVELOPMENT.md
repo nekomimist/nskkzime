@@ -24,7 +24,7 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 
 | 範囲 | 主なテスト |
 |---|---|
-| 入力コア | `core`, `romaji`, `registration`, `forget`, `ddskk_contract`（DDSKKとの比較例） |
+| 入力コア | `core`, `romaji`, `azik`, `registration`, `forget`, `ddskk_contract`（DDSKKとの比較例） |
 | 辞書 | `dictionary`, `compiled_dictionary`, `dictionary_cache`, `runtime_dictionary` |
 | 学習 | `learning`, `user_dictionary`, `user_dictionary_cli`, `dictionary_manager`, `tsf_learning` |
 | 設定 | `settings`, `settings_editor`, `config_cli`, `runtime_configuration`, `tool_launcher` |
@@ -48,9 +48,10 @@ Scoop用の定義は、検証したZIPから生成する。
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
 デスクトップ用TSFテストは通常プロセスとして実行する。AppContainer内では辞書がbroker経由になり、
 テスト専用設定のローカル辞書を待つ試験が初期化タイムアウトになる。
-`app_container_startup_delay` はbrokerの生成を先行入力の後に6秒遅らせ、通知後に設定・辞書を待っても
-手動の入力モードと入力を保持することを検証する。AppContainerの準備待ちは本体の接続期限30秒に
-初期化・再試行の余裕を加えた35秒で打ち切る。性能の保証値ではない。
+`app_container_startup_delay` はbrokerの生成を先行入力の後に6秒遅らせる。
+入力方式が不明な間はキーをアプリへ渡し、取得後も本文と手動の入力モードを保持することを検証する。
+AppContainerの準備待ちは35秒で打ち切る。本体の接続期限30秒に、初期化・再試行の余裕を加えた値である。
+性能の保証値ではない。
 `app_container_startup_failures` は子の先行失敗、broker生成失敗、接続できず準備が終わらない場合を
 順に注入し、失敗理由・両方の子の終了状態・生成したプロセスの回収を検査する。
 失敗時は実行ファイル横の `container-test-*/` に `startup.jsonl`、子ごとの `startup-*.log` と
@@ -88,7 +89,7 @@ CIもこれらの診断をartifactに保存する。設定・辞書・モデル�
 
 | ツール | 用途 |
 |---|---|
-| `skk_trace.exe` | キー列を入力コアで再生し、未確定・確定の遷移をJSON Linesで出力（`--dict`、`--romaji`） |
+| `skk_trace.exe` | キー列を入力コアで再生し、未確定・確定の遷移をJSON Linesで出力（`--dict`、`--romaji`、`--input-method`、`--azik-keyboard`） |
 | `ime_probe.exe` | 登録済みのIMEで標準EDIT／RichEditの入力を試す。辞書・推論・学習の状態と、遅延計測（本文なし）を表示 |
 | `ime_probe_local.exe` | ビルド先のDLLを読み込む同じ検証アプリ（IMEの登録自体は必要） |
 | `scripts/probe-zenz.ps1` | 一時的な設定でzenzを有効にして `ime_probe_local` を起動 |

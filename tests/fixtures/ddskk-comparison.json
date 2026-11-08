@@ -84,6 +84,24 @@
     {"id":"numeric-kana", "keys":"Dai12kai<Space><Space><Space><C-j>", "nskkzime":"第十二回", "ddskk":"第十二回", "difference":""},
     {"id":"numeric-q-start", "keys":"Q99en<Space><C-j>", "nskkzime":"九十九円", "ddskk":"九十九円", "difference":""},
     {"id":"numeric-date", "keys":"/2m25d<Space><C-j>", "nskkzime":"2月25日", "ddskk":"2月25日", "difference":""},
-    {"id":"numeric-dot-date", "keys":"/2.25<Space><Space><C-j>", "nskkzime":"2月25日", "ddskk":"2月25日", "difference":""}
+    {"id":"numeric-dot-date", "keys":"/2.25<Space><Space><C-j>", "nskkzime":"2月25日", "ddskk":"2月25日", "difference":""},
+    {"id":"azik-extensions", "input_method":"azik", "keys":"kzkqkkkgpxtxxaxxixxuxxexxo", "nskkzime":"かんかいきんきょうしゅつぁぃぅぇぉ", "ddskk":"かんかいきんきょうしゅつぁぃぅぇぉ", "difference":""},
+    {"id":"azik-arrows", "input_method":"azik", "keys":"xxhxxjxxkxxl", "nskkzime":"←↓↑→", "ddskk":"←↓↑→", "difference":""},
+    {"id":"azik-q-start", "input_method":"azik", "keys":"Q", "nskkzime":"▽ん", "ddskk":"▽ん", "difference":""},
+    {"id":"azik-shift-prefix", "input_method":"azik", "keys":"kQ", "nskkzime":"▽かい", "ddskk":"▽かい", "difference":""},
+    {"id":"azik-x-after-candidate", "input_method":"azik", "keys":"Kzji<Space>Xa", "nskkzime":"漢字▽しゃ", "ddskk":"漢字▽しゃ", "difference":""},
+    {"id":"azik-c-okuri", "input_method":"azik", "keys":"TaCi<C-j>", "nskkzime":"立ち", "ddskk":"立ち", "difference":""},
+    {"id":"azik-x-okuri", "input_method":"azik", "keys":"HanaXi<C-j>", "nskkzime":"話し", "ddskk":"話し", "difference":""},
+    {"id":"azik-jis-sokuon", "input_method":"azik", "keys":"I+ta", "nskkzime":"行った", "ddskk":"行った", "difference":""},
+    {"id":"azik-us-sokuon", "input_method":"azik", "azik_keyboard":"us101", "keys":"I:ta", "nskkzime":"行った", "ddskk":"行った", "difference":""},
+    {"id":"azik-jis-kana", "input_method":"azik", "keys":"@vkvl@", "nskkzime":"ヴィンヴォン", "ddskk":"ヴィンヴォン", "difference":""},
+    {"id":"azik-us-kana", "input_method":"azik", "azik_keyboard":"us101", "keys":"[vkvl[", "nskkzime":"ヴィンヴォン", "ddskk":"ヴィンヴォン", "difference":""},
+    {"id":"azik-jis-numeric-start", "input_method":"azik", "keys":"`99eq<Space><C-j>", "nskkzime":"九十九円", "ddskk":"九十九円", "difference":""},
+    {"id":"azik-us-numeric-start", "input_method":"azik", "azik_keyboard":"us101", "keys":"{99eq<Space><C-j>", "nskkzime":"九十九円", "ddskk":"九十九円", "difference":""},
+    {"id":"azik-removed-standard-prefix", "input_method":"azik", "keys":"shi", "nskkzime":"すうい", "ddskk":"すうい", "difference":""},
+    {"id":"azik-uppercase-literals", "input_method":"azik", "keys":"kAkEwA", "nskkzime":"ヵヶゎ", "ddskk":"ヵヶゎ", "difference":""},
+    {"id":"azik-us-long-vowel", "input_method":"azik", "azik_keyboard":"us101", "keys":"ka'ki", "nskkzime":"かーき", "ddskk":"かーき", "difference":""},
+    {"id":"azik-reading-katakana", "input_method":"azik", "keys":"Kzji@", "nskkzime":"カンジ", "ddskk":"カンジ", "difference":""},
+    {"id":"azik-zi-okuri", "input_method":"azik", "keys":"RonZi<C-j>", "nskkzime":"論じ", "ddskk":"論じ", "difference":""}
   ]
 }

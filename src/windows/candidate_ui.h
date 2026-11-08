@@ -102,6 +102,7 @@ private:
     std::vector<UINT> pages_;
     const PopupKind kind_;
     const CandidateKeys keys_;
+    InputMethod input_method_ = InputMethod::Skk;
     const std::wstring font_face_;
     const bool show_input_mode_;
     std::wstring heading_, draft_, hint_;

@@ -36,11 +36,15 @@ IDD_ROMAJI DIALOGEX 0, 0, 388, 187
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Yu Gothic UI"
 BEGIN
-    AUTOCHECKBOX "独自のローマ字ルールを使う(&C)", IDC_CUSTOM_ROMAJI, 5, 5, 378, 15
-    LTEXT "ルールファイル（UTF-8）(&F)", -1, 5, 32, 378, 12
-    EDITTEXT IDC_ROMAJI_PATH, 5, 49, 303, 15, ES_AUTOHSCROLL
-    PUSHBUTTON "参照(&B)…", IDC_ROMAJI_BROWSE, 316, 49, 66, 16
-    LTEXT "オフの場合は内蔵ルールを使用します。\n独自ルールは内蔵ルールへの追加・上書きとして読み込みます。\n\n読み込めないルールは保存しません。下の「検査する」で確認できます。", -1, 5, 84, 378, 67
+    LTEXT "入力方式(&M)", -1, 5, 8, 93, 12
+    COMBOBOX IDC_INPUT_METHOD, 104, 5, 278, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "AZIKの配列(&K)", -1, 5, 34, 93, 12
+    COMBOBOX IDC_AZIK_KEYBOARD, 104, 31, 278, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX "独自のローマ字ルールを使う(&C)", IDC_CUSTOM_ROMAJI, 5, 59, 378, 15
+    LTEXT "ルールファイル（UTF-8）(&F)", -1, 5, 82, 378, 12
+    EDITTEXT IDC_ROMAJI_PATH, 5, 99, 303, 15, ES_AUTOHSCROLL
+    PUSHBUTTON "参照(&B)…", IDC_ROMAJI_BROWSE, 316, 99, 66, 16
+    LTEXT "独自ルールは、選んだ入力方式への追加・上書きです。\n読み込めないルールは保存しません。「検査する」で確認できます。\n\n保存後、IMEを使うアプリを起動し直してください。", -1, 5, 128, 378, 55
 END
 
 IDD_INFERENCE DIALOGEX 0, 0, 388, 187

@@ -26,6 +26,7 @@ nskkzime::Key token(std::string_view name) {
     if (name == "Enter") return {Enter};
     if (name == "BS") return {Backspace};
     if (name == "C-g" || name == "Esc") return {Cancel};
+    if (name == "C-d" || name == "Delete") return {ForgetCandidate};
     if (name == "C-j") return {Hiragana};
     if (name == "PageDown") return {PageDown};
     if (name == "PageUp") return {PageUp};
@@ -36,12 +37,27 @@ int run(const std::vector<std::string>& arguments) {
     try {
         std::vector<std::filesystem::path> paths;
         std::filesystem::path romaji_path;
+        auto input_method = nskkzime::InputMethod::Skk;
+        auto azik_keyboard = nskkzime::AzikKeyboard::Jp106;
+        bool has_input_method = false, has_keyboard = false;
         nskkzime::DictionaryEncoding encoding = nskkzime::DictionaryEncoding::Auto;
         std::string sequence;
         bool has_sequence = false;
         bool positional = false;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const auto& argument = arguments[i];
+            if (!positional && (argument == "--input-method" || argument == "--azik-keyboard")) {
+                if (++i == arguments.size()) throw std::invalid_argument("missing value for " + argument);
+                const auto& value = arguments[i];
+                if (argument == "--input-method") {
+                    if (has_input_method || (value != "skk" && value != "azik")) throw std::invalid_argument("input method must appear once and equal skk or azik");
+                    has_input_method = true; input_method = value == "azik" ? nskkzime::InputMethod::Azik : nskkzime::InputMethod::Skk;
+                } else {
+                    if (has_keyboard || (value != "jp106" && value != "us101")) throw std::invalid_argument("AZIK keyboard must appear once and equal jp106 or us101");
+                    has_keyboard = true; azik_keyboard = value == "us101" ? nskkzime::AzikKeyboard::Us101 : nskkzime::AzikKeyboard::Jp106;
+                }
+                continue;
+            }
             if (!positional && argument == "--") { positional = true; continue; }
             if (!positional && (argument == "--dict" || argument == "--encoding" || argument == "--romaji")) {
                 if (++i == arguments.size()) throw std::invalid_argument("missing value for " + argument);
@@ -62,7 +78,7 @@ int run(const std::vector<std::string>& arguments) {
                 sequence = argument; has_sequence = true;
             }
         }
-        if (!has_sequence) throw std::invalid_argument("usage: skk_trace [--dict PATH]... [--romaji PATH] [--encoding auto|utf-8|euc-jp] [--] \"Kanji<Space><Enter>\"");
+        if (!has_sequence) throw std::invalid_argument("usage: skk_trace [--dict PATH]... [--input-method skk|azik] [--azik-keyboard jp106|us101] [--romaji PATH] [--encoding auto|utf-8|euc-jp] [--] \"Kanji<Space><Enter>\"");
         std::shared_ptr<const nskkzime::Dictionary> dictionary;
         if (paths.empty()) dictionary = nskkzime::demo_dictionary();
         else {
@@ -82,7 +98,9 @@ int run(const std::vector<std::string>& arguments) {
             }
             dictionary = std::make_shared<nskkzime::DictionarySet>(std::move(dictionaries));
         }
-        nskkzime::Engine engine(std::move(dictionary),true,romaji_path.empty() ? nskkzime::RomajiRules::defaults() : nskkzime::RomajiRules::load(romaji_path));
+        auto profile = nskkzime::InputProfile::built_in(input_method, azik_keyboard);
+        if (!romaji_path.empty()) profile = profile.load_overlay(romaji_path);
+        nskkzime::Engine engine(std::move(dictionary),true,std::move(profile));
         std::u32string document;
         const std::string_view keys(sequence);
         for (std::size_t i = 0; i < keys.size(); ++i) {

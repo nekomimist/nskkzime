@@ -242,6 +242,25 @@ int main() {
             for(const auto text:{"version=1\nromaji=relative.tsv","version=1\nromaji=","version=1\nromaji=C:\\a\nromaji=C:\\b"})
                 rejects([&]{parse_dictionary_settings(text);});
         }},
+        {"settings/azik-profile-roundtrip-overlay-and-fallback", [&] {
+            DictionarySettings settings;
+            const auto standard = serialize_dictionary_settings(settings);
+            require(standard.find("input-method=") == std::string::npos && standard.find("azik-keyboard=") == std::string::npos, "default profile changed old settings");
+            settings.input_method = InputMethod::Azik; settings.azik_keyboard = AzikKeyboard::Us101;
+            auto parsed = parse_dictionary_settings(serialize_dictionary_settings(settings));
+            require(parsed.input_method == InputMethod::Azik && parsed.azik_keyboard == AzikKeyboard::Us101, "profile roundtrip");
+            DictionaryConfiguration config; config.settings = parsed;
+            auto loaded = load_romaji_rules(config);
+            require(!loaded.failed && loaded.profile.method() == InputMethod::Azik && loaded.rules->find("'")->output == U"ー", "US built-in rules missing");
+            config.settings.romaji_rules = files.write(L"azik.tsv", "version=1\nq\tんん\n");
+            loaded = load_romaji_rules(config);
+            require(!loaded.failed && loaded.rules->find("q")->output == U"んん", "AZIK overlay rejected");
+            config.settings.romaji_rules = files.path(L"missing-azik.tsv");
+            loaded = load_romaji_rules(config);
+            require(loaded.failed && loaded.profile.method() == InputMethod::Azik && loaded.rules->find("q")->output == U"ん", "fallback switched AZIK to SKK");
+            for (const auto text : {"input-method=other", "input-method=azik\ninput-method=skk", "azik-keyboard=auto", "azik-keyboard=us101\nazik-keyboard=jp106"})
+                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + text); });
+        }},
         {"runtime/romaji-independent-snapshots", [&] {
             const auto rules = files.write(L"snapshot.tsv","version=1\nwi\tゐ\n");
             const auto file = files.path(L"snapshot.ini"); save_dictionary_settings(file,{{first},false,rules});

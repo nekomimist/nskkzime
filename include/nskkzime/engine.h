@@ -1,5 +1,5 @@
 #pragma once
-#include "romaji.h"
+#include "input_profile.h"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -11,7 +11,7 @@
 namespace nskkzime {
 enum class Mode { Hiragana, Katakana, Latin, FullWidthLatin };
 enum class Stage { Direct, Reading, Okuri, Selecting, Registering };
-enum class KeyCode { Character, Space, Enter, Backspace, Cancel, Hiragana, PageDown, PageUp, SelectCandidate };
+enum class KeyCode { Character, Space, Enter, Backspace, Cancel, Hiragana, PageDown, PageUp, SelectCandidate, ForgetCandidate };
 inline constexpr std::size_t candidate_page_size = 7;
 struct Key {
     KeyCode code = KeyCode::Character;
@@ -103,6 +103,8 @@ class Engine {
 public:
     explicit Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled = true,
         std::shared_ptr<const RomajiRules> rules = RomajiRules::defaults());
+    Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_enabled, InputProfile profile);
+    InputMethod input_method() const { return profile_.method(); }
     bool would_handle(Key key) const;
     // GUI hosts can map visible rows to SelectCandidate themselves.
     void set_numeric_candidate_keys(bool enabled) { numeric_candidate_keys_ = enabled; }
@@ -189,7 +191,7 @@ private:
     static void learn_rerank_choice(const Input&, LearningEvent&);
     std::u32string display(std::u32string_view text) const;
     std::shared_ptr<const Dictionary> dictionary_;
-    std::shared_ptr<const RomajiRules> rules_;
+    InputProfile profile_;
     Input input_;
     std::vector<Registration> registrations_;
     std::vector<LearningEvent> registered_;

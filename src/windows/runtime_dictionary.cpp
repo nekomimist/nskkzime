@@ -16,8 +16,9 @@ std::map<std::wstring, std::weak_ptr<const RuntimeDictionary>> cache;
 std::weak_ptr<const RuntimeDictionary> latest;
 bool requested = false;
 int module_anchor = 0;
-RuntimeDictionarySnapshot failed_snapshot() {
+RuntimeDictionarySnapshot failed_snapshot(bool broker = false) {
     return {std::make_shared<MemoryDictionary>(),
+        broker ? L"入力設定の取得待ちです。準備ができるまでキーをアプリへ渡します。" :
         L"辞書設定を読み込めません。nskkzime_config --check で設定を確認してください。かな入力は利用できます。",false,{}};
 }
 void append_key(std::wstring& key, std::wstring_view value) {
@@ -31,7 +32,8 @@ void append_key(std::wstring& key, std::wstring_view value) {
 #pragma warning(disable: 4324)
 #endif
 struct RuntimeDictionary::State {
-    const std::shared_ptr<const RuntimeDictionarySnapshot> failure = std::make_shared<const RuntimeDictionarySnapshot>(failed_snapshot());
+    explicit State(bool broker = false) : failure(std::make_shared<const RuntimeDictionarySnapshot>(failed_snapshot(broker))) {}
+    const std::shared_ptr<const RuntimeDictionarySnapshot> failure;
     std::atomic<std::shared_ptr<const RuntimeDictionarySnapshot>> snapshot;
     std::atomic<bool> abandoned{false};
     struct Work { std::shared_ptr<State> state; std::function<RuntimeDictionarySnapshot()> loader; HMODULE module; bool retry; };
@@ -60,7 +62,7 @@ struct RuntimeDictionary::State {
 #if defined(_MSC_VER) && defined(_M_ARM64)
 #pragma warning(pop)
 #endif
-RuntimeDictionary::RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader, bool retry) : state_(std::make_shared<State>()) {
+RuntimeDictionary::RuntimeDictionary(std::function<RuntimeDictionarySnapshot()> loader, bool retry) : state_(std::make_shared<State>(retry)) {
     auto work = std::make_unique<State::Work>(); work->state = state_; work->loader = std::move(loader); work->retry = retry;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&module_anchor),&work->module))
         throw std::runtime_error("cannot pin dictionary loader module");

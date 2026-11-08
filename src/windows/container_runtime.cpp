@@ -2,6 +2,7 @@
 #include "app_container.h"
 #include "learning_client.h"
 #include "broker_snapshot.h"
+#include "romaji_settings.h"
 #include "nskkzime/compiled_dictionary.h"
 #include <mutex>
 
@@ -63,7 +64,7 @@ RuntimeDictionarySnapshot bootstrap() {
     if (config->generation.size() != 64 || config->generation.find_first_not_of("0123456789abcdef") != std::string::npos)
         throw std::runtime_error("invalid AppContainer generation");
     config->complete = response.complete;
-    config->romaji = response.romaji.empty() ? RomajiRules::defaults() : RomajiRules::parse(response.romaji);
+    config->input_profile = resolve_input_profile(config->configuration.settings, response.romaji);
     std::vector<std::shared_ptr<const Dictionary>> bases;
     for (auto& image : response.images) {
         const auto owner = std::make_shared<const std::string>(std::move(image));

@@ -294,7 +294,23 @@ int startup_mode_test(HANDLE gate = nullptr, HANDLE broker_created = nullptr, bo
         keys->OnTestKeyDown(context.Get(), code, 0, &eaten);
         check(eaten && host->open->value == 1 && context->doc->text.empty(), "early startup preflight changed mode/text");
         keys->OnKeyDown(context.Get(), code, 0, &eaten);
-        check(eaten && host->open->value == 1, "early startup input failed");
+        check((eaten != FALSE) == !early_input && host->open->value == 1, "early startup input failed");
+        if (early_input) {
+            // Model the application's normal processing of unconsumed keys.
+            context->doc->text += L"k";
+            for (const auto ch : std::string_view("qXka")) {
+                const auto vk = VkKeyScanExW(ch, GetKeyboardLayout(0));
+                BYTE pending_state[256]{};
+                if (HIBYTE(vk) & 1) pending_state[VK_SHIFT] = pending_state[VK_LSHIFT] = 0x80;
+                SetKeyboardState(pending_state);
+                keys->OnTestKeyDown(context.Get(), LOBYTE(vk), 0, &eaten);
+                check(!eaten, "unknown profile guessed an input command");
+                keys->OnKeyDown(context.Get(), LOBYTE(vk), 0, &eaten);
+                check(!eaten, "unknown profile consumed application input");
+                context->doc->text += static_cast<wchar_t>(ch);
+            }
+            SetKeyboardState(state);
+        }
         if (fail_choice) { child_trace("injected_choice_failure"); throw std::runtime_error("injected startup child failure"); }
         check(SetEvent(gate) != FALSE, "signal startup gate");
         child_trace("choice_completed", {{"elapsed_ms", GetTickCount64() - started}});
@@ -326,7 +342,7 @@ int startup_mode_test(HANDLE gate = nullptr, HANDLE broker_created = nullptr, bo
     check(container_configuration()->configuration.settings.startup_ime_off, "broker startup setting missing");
     if (gate) {
         keys->OnSetFocus(TRUE);
-        check(host->open->value == 1 && context->doc->text == (early_input ? L"k" : L""),
+        check(host->open->value == 1 && context->doc->text == (early_input ? L"kqXka" : L""),
             "late startup settings overwrote manual mode/input");
         child_trace("state_preserved");
         service->Deactivate(); context->pump(); return 0;
@@ -492,7 +508,21 @@ int wmain(int argc, wchar_t** argv) {
             const auto words = dictionary->lookup({U"かんじ", 0});
             check(!words.empty() && words.front().text == U"新字", "broker retained same-size/time dictionary");
             const auto config = container_configuration();
-            check(config && config->romaji->find("wi")->output == U"ヰ", "broker retained same-time rules");
+            check(config && config->input_profile.rules()->find("wi")->output == U"ヰ", "broker retained same-time rules");
+            return 0;
+        }
+        if (argc == 2 && (std::wstring_view(argv[1]) == L"--azik-jis" || std::wstring_view(argv[1]) == L"--azik-us")) {
+            check(in_app_container(), "AZIK child is not AppContainer");
+            check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "AZIK COM initialization");
+            const bool jis = std::wstring_view(argv[1]) == L"--azik-jis";
+            Session session;
+            const auto config = container_configuration();
+            check(config && config->input_profile.method() == InputMethod::Azik &&
+                config->input_profile.keyboard() == (jis ? AzikKeyboard::Jp106 : AzikKeyboard::Us101), "broker lost AZIK method/layout");
+            session.type("qxxhxxjxxkxxl");
+            check(session.context->doc->text == L"ん←↓↑→", "broker profile mixed standard commands with AZIK rules");
+            session.type(jis ? "@vkvl@" : "[vkvl[");
+            check(session.context->doc->text == L"ん←↓↑→ヴィンヴォン", "broker AZIK kana/layout mismatch");
             return 0;
         }
         if (argc == 2 && std::wstring_view(argv[1]) == L"--degraded") {
@@ -501,7 +531,7 @@ int wmain(int argc, wchar_t** argv) {
             check(!dictionary->lookup({U"かんじ", 0}).empty(), "degraded broker lost valid dictionary");
             check(!dictionary->registration_allowed(), "degraded broker enabled learning");
             const auto config = container_configuration();
-            check(config && config->romaji->find("wi")->output == U"うぃ", "degraded broker lost built-in rules");
+            check(config && config->input_profile.rules()->find("wi")->output == U"うぃ", "degraded broker lost built-in rules");
             const auto runtime = std::dynamic_pointer_cast<const RuntimeDictionary>(dictionary);
             check(runtime->status().find(L"読み込み失敗") != std::wstring::npos &&
                 runtime->status().find(L"内蔵ルールで継続") != std::wstring::npos, "degraded broker lost diagnostics");
@@ -604,6 +634,14 @@ int wmain(int argc, wchar_t** argv) {
             auto client = launch(executable, real_model ? L"--real-client" : L"--client", allowed.sid); const auto code = wait_child(client.get());
             std::cout << "allowed child=" << code << std::endl; check(code == 0, "container client failed");
             check(!private_seen.load(), "broker received protected text");
+            for (const auto keyboard : {AzikKeyboard::Jp106, AzikKeyboard::Us101}) {
+                auto azik_settings = settings;
+                azik_settings.input_method = InputMethod::Azik; azik_settings.azik_keyboard = keyboard;
+                save_dictionary_settings(config, azik_settings);
+                const auto azik = launch(executable, keyboard == AzikKeyboard::Jp106 ? L"--azik-jis" : L"--azik-us", allowed.sid);
+                check(wait_child(azik.get()) == 0, "AZIK container client failed");
+            }
+            save_dictionary_settings(config, settings);
             if (!real_model) {
                 // The fixture answers generation after 160 ms; this client stops waiting first.
                 NativeHandle abandon(CreateEventW(nullptr, TRUE, FALSE, nullptr));

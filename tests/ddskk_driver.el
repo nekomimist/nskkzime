@@ -12,6 +12,9 @@
   (unless (file-exists-p generated)
     (loaddefs-generate (getenv "NSKKZIME_DDSKK_SOURCE") generated))
   (load generated nil t))
+(when (equal (getenv "NSKKZIME_COMPARE_INPUT_METHOD") "azik")
+  (setq skk-use-azik t
+        skk-azik-keyboard-type (if (equal (getenv "NSKKZIME_COMPARE_AZIK_KEYBOARD") "us101") 'us101 'jp106)))
 (require 'skk)
 (require 'json)
 (setq skk-jisyo-code 'utf-8

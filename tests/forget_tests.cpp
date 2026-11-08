@@ -58,6 +58,20 @@ int main() {
             type(engine, "Xyes"); engine.reset();
             check(!engine.forgetting() && !engine.handle({KeyCode::Enter}).forgetting, "reset retained deletion");
         }},
+        {"forget/command-key-shares-confirmation-and-canonical-target", [] {
+            for (const auto method : {InputMethod::Skk, InputMethod::Azik}) {
+                auto dictionary = fixture(); Engine engine(dictionary, true, InputProfile::built_in(method));
+                type(engine, "KaKu");
+                engine.handle({KeyCode::ForgetCandidate});
+                check(engine.forgetting() && engine.forget_target()->okuri == U"く", "command key lost exact target");
+                check(dictionary->lookup_scope({U"か", 'k'}, U"く").size() == 1, "opening prompt deleted learning");
+                const auto event = approve(engine);
+                check(event.forgetting && event.forgetting->key == LookupKey{U"か", 'k'} && !event.learning, "command deletion event differs");
+                dictionary->apply(LearningRequest{std::string(32, 'f'), 1, *event.forgetting, DictionaryAction::Forget});
+                check(dictionary->lookup_scope({U"か", 'k'}, U"く").empty() && dictionary->lookup_scope({U"か", 'k'}, U"け").size() == 1,
+                    "command key deleted another okuri scope");
+            }
+        }},
         {"forget/frozen-target-and-inference-isolation", [] {
             auto dictionary = fixture(); Engine engine(dictionary); type(engine, "KaKuX");
             check(engine.inference_reading(true).empty() && !engine.can_reorder_candidates() && !engine.promote_candidate(1), "confirmation allowed inference");
