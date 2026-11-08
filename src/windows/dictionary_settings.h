@@ -30,6 +30,8 @@ struct DictionarySettings {
     std::vector<std::wstring> off_key_exclusions;
     bool startup_ime_off = false; // Initial TSF activation only; later mode choices remain available.
     UiSettings ui;
+    InputMethod input_method = InputMethod::Skk;
+    AzikKeyboard azik_keyboard = AzikKeyboard::Jp106;
 };
 struct DictionaryConfiguration {
     DictionarySettings settings;

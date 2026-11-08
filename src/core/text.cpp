@@ -27,8 +27,17 @@ std::u32string from_utf8(std::string_view text) {
     return result;
 }
 std::u32string katakana(std::u32string_view text) {
-    std::u32string result(text);
-    for (auto& ch : result) if (ch >= U'ぁ' && ch <= U'ゖ') ch += 0x60;
+    std::u32string result;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        auto ch = text[i];
+        if (ch == U'う' && i + 1 < text.size() && text[i + 1] == U'゛') {
+            result += U'ヴ';
+            ++i;
+        } else {
+            if (ch >= U'ぁ' && ch <= U'ゖ') ch += 0x60;
+            result += ch;
+        }
+    }
     return result;
 }
 std::u32string ascii(std::string_view text) {

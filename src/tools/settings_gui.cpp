@@ -14,6 +14,8 @@
 
 using Microsoft::WRL::ComPtr;
 using namespace nskkzime::windows;
+using nskkzime::InputMethod;
+using nskkzime::AzikKeyboard;
 namespace {
 struct Work {
     DictionarySettings draft;
@@ -61,6 +63,7 @@ void update_enabled(Editor& editor) {
     enabled(editor.window, IDC_CHECK, ready);
     enabled(editor.window, IDC_RELOAD, !editor.work);
     const auto romaji = editor.pages[1], inference = editor.pages[2];
+    enabled(romaji, IDC_AZIK_KEYBOARD, SendDlgItemMessageW(romaji, IDC_INPUT_METHOD, CB_GETCURSEL, 0, 0) == 1);
     enabled(romaji, IDC_ROMAJI_PATH, checked(romaji, IDC_CUSTOM_ROMAJI));
     enabled(romaji, IDC_ROMAJI_BROWSE, checked(romaji, IDC_CUSTOM_ROMAJI));
     for (const auto id : {IDC_MODEL, IDC_MODEL_BROWSE, IDC_RERANK, IDC_RERANK_LEARN, IDC_LEARN_GENERATED})
@@ -139,6 +142,8 @@ void reload(Editor& editor) {
         check(editor.pages[0], IDC_LEARNING, settings.learning);
         check(editor.pages[7], IDC_STARTUP_IME_OFF, settings.startup_ime_off);
         check(editor.pages[1], IDC_CUSTOM_ROMAJI, !settings.romaji_rules.empty());
+        SendDlgItemMessageW(editor.pages[1], IDC_INPUT_METHOD, CB_SETCURSEL, settings.input_method == InputMethod::Azik ? 1 : 0, 0);
+        SendDlgItemMessageW(editor.pages[1], IDC_AZIK_KEYBOARD, CB_SETCURSEL, settings.azik_keyboard == AzikKeyboard::Us101 ? 1 : 0, 0);
         set(editor.pages[1], IDC_ROMAJI_PATH, settings.romaji_rules.native());
         set(editor.pages[6], IDC_CANDIDATE_SHOW_AFTER, std::to_wstring(settings.candidates.show_after));
         SendDlgItemMessageW(editor.pages[6], IDC_CANDIDATE_KEYS, CB_SETCURSEL,
@@ -208,6 +213,12 @@ DictionarySettings draft(Editor& editor) {
     result.ui.input_mode_duration_ms = number<unsigned>(editor.pages[6], IDC_INPUT_MODE_DURATION, L"入力モードの表示時間", 1, 60000);
     validate_ui_settings(result.ui);
     result.romaji_rules = checked(editor.pages[1], IDC_CUSTOM_ROMAJI) ? get(editor.pages[1], IDC_ROMAJI_PATH) : L"";
+    const auto method = SendDlgItemMessageW(editor.pages[1], IDC_INPUT_METHOD, CB_GETCURSEL, 0, 0);
+    const auto keyboard = SendDlgItemMessageW(editor.pages[1], IDC_AZIK_KEYBOARD, CB_GETCURSEL, 0, 0);
+    if ((method != 0 && method != 1) || (keyboard != 0 && keyboard != 1))
+        throw std::invalid_argument("入力方式とAZIKの配列を選んでください。");
+    result.input_method = method == 1 ? InputMethod::Azik : InputMethod::Skk;
+    result.azik_keyboard = keyboard == 1 ? AzikKeyboard::Us101 : AzikKeyboard::Jp106;
     if (checked(editor.pages[1], IDC_CUSTOM_ROMAJI) && result.romaji_rules.empty())
         throw std::invalid_argument("ローマ字ルールのファイルを指定してください。");
     auto& zenz = result.zenz;
@@ -437,6 +448,10 @@ INT_PTR CALLBACK dialog_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
             for (const auto label : {L"1–7", L"ASDFJKL"})
                 SendDlgItemMessageW(editor->pages[6], IDC_CANDIDATE_KEYS, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+            for (const auto label : {L"SKK標準", L"AZIK（DDSKK方式）"})
+                SendDlgItemMessageW(editor->pages[1], IDC_INPUT_METHOD, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+            for (const auto label : {L"日本語JIS（106/109）", L"英語US（101/104）"})
+                SendDlgItemMessageW(editor->pages[1], IDC_AZIK_KEYBOARD, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
             const auto font_combo = GetDlgItem(editor->pages[6], IDC_UI_FONT);
             if (const auto dc = GetDC(window)) {
                 LOGFONTW font{}; font.lfCharSet = DEFAULT_CHARSET;

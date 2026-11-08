@@ -6,6 +6,8 @@
 #include <iostream>
 
 using namespace nskkzime::windows;
+using nskkzime::InputMethod;
+using nskkzime::AzikKeyboard;
 namespace {
 void show(std::wstring_view value) {
     // stdout is in Windows text mode; do not translate CRLF into CRCRLF.
@@ -21,6 +23,8 @@ void help() {
         "  --disable-dictionaries    Save an empty list (kana input only)\n"
         "  --set-learning on|off     Enable or disable persistent candidate learning\n"
         "  --set-startup-ime-off on|off  Start applications with the IME off\n"
+        "  --set-input-method skk|azik  Select built-in SKK or DDSKK-style AZIK\n"
+        "  --set-azik-keyboard jp106|us101  Select AZIK punctuation keys\n"
         "  --set-romaji PATH         Validate and save a custom UTF-8 romaji rules file\n"
         "  --reset-romaji            Use built-in romaji rules\n"
         "  --set-candidate-show-after N  Show the list on conversion step N (1..99)\n"
@@ -66,14 +70,15 @@ int wmain(int argc, wchar_t** argv) {
         const bool candidates = action == L"--set-candidate-show-after" || action == L"--set-candidate-keys";
         const bool off_keys = action == L"--set-off-key-exclusions";
         const bool startup = action == L"--set-startup-ime-off";
-        if (!startup && !off_keys && !candidates && !policy && !enable_log && !disable_log && !enable_tsf_log && !disable_tsf_log && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
+        const bool input = action == L"--set-input-method" || action == L"--set-azik-keyboard";
+        if (!input && !startup && !off_keys && !candidates && !policy && !enable_log && !disable_log && !enable_tsf_log && !disable_tsf_log && action != L"--show" && action != L"--check" && action != L"--set-dictionaries" && action != L"--disable-dictionaries" && action != L"--set-learning" && action != L"--set-romaji" && action != L"--reset-romaji" && action != L"--set-zenz" && action != L"--disable-inference") {
             help(); return 2;
         }
         const bool set = action == L"--set-dictionaries", disable = action == L"--disable-dictionaries";
         const bool learning = action == L"--set-learning";
         const bool romaji = action == L"--set-romaji", reset_romaji = action == L"--reset-romaji";
         const bool zenz = action == L"--set-zenz", disable_inference = action == L"--disable-inference";
-        if ((!startup && !off_keys && !candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && !enable_tsf_log && index != argc) || (set && index == argc) || ((startup || candidates || learning || romaji || policy || enable_log || enable_tsf_log) && index + 1 != argc) || (zenz && index + 1 != argc && index + 2 != argc)) { help(); return 2; }
+        if ((!input && !startup && !off_keys && !candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && !enable_tsf_log && index != argc) || (set && index == argc) || ((input || startup || candidates || learning || romaji || policy || enable_log || enable_tsf_log) && index + 1 != argc) || (zenz && index + 1 != argc && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
             const auto configuration = current_dictionary_configuration();
@@ -142,10 +147,19 @@ int wmain(int argc, wchar_t** argv) {
             show(zenz_settings_status(settings.zenz));
             show(L"保存しました。利用するアプリを起動し直すと反映されます。モデルの実行確認にはサーバーの --convert を使ってください。"); return 0;
         }
-        if (romaji || reset_romaji) {
+        if (input || romaji || reset_romaji) {
             DictionaryConfiguration proposed; proposed.file = file;
             if (std::filesystem::exists(file)) proposed.settings = read_dictionary_settings(file);
-            proposed.settings.romaji_rules = romaji ? std::filesystem::path(argv[index]) : std::filesystem::path{};
+            if (input) {
+                const auto value = std::wstring_view(argv[index]);
+                if (action == L"--set-input-method") {
+                    if (value != L"skk" && value != L"azik") throw std::invalid_argument("input method must equal skk or azik");
+                    proposed.settings.input_method = value == L"azik" ? InputMethod::Azik : InputMethod::Skk;
+                } else {
+                    if (value != L"jp106" && value != L"us101") throw std::invalid_argument("AZIK keyboard must equal jp106 or us101");
+                    proposed.settings.azik_keyboard = value == L"us101" ? AzikKeyboard::Us101 : AzikKeyboard::Jp106;
+                }
+            } else proposed.settings.romaji_rules = romaji ? std::filesystem::path(argv[index]) : std::filesystem::path{};
             if (romaji && proposed.settings.romaji_rules.empty()) throw std::invalid_argument("--set-romaji requires an absolute path");
             const auto loaded = load_romaji_rules(proposed); show(loaded.status);
             if (loaded.failed) { std::cerr << "Not saved: invalid romaji rules.\n"; return 2; }
@@ -185,6 +199,7 @@ int wmain(int argc, wchar_t** argv) {
             else {
                 show(configuration.settings.learning ? L"学習: on" : L"学習: off");
                 show(configuration.settings.startup_ime_off ? L"アプリ起動時にIMEをオフ: on" : L"アプリ起動時にIMEをオフ: off");
+                show(input_profile_status(configuration.settings));
                 show(candidate_settings_status(configuration.settings.candidates));
                 show(ui_settings_status(configuration.settings.ui));
                 show(configuration.settings.romaji_rules.empty() ? L"ローマ字: 内蔵ルール" : L"ローマ字: " + configuration.settings.romaji_rules.native());

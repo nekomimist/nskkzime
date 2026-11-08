@@ -30,6 +30,12 @@ std::string serialize(const DictionarySettings& settings) {
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
     bytes += settings.learning ? "learning=on\n" : "learning=off\n";
     if (settings.startup_ime_off) bytes += "startup-ime-off=on\n";
+    if (settings.input_method != InputMethod::Skk && settings.input_method != InputMethod::Azik)
+        throw std::invalid_argument("invalid input method");
+    if (settings.azik_keyboard != AzikKeyboard::Jp106 && settings.azik_keyboard != AzikKeyboard::Us101)
+        throw std::invalid_argument("invalid AZIK keyboard");
+    if (settings.input_method == InputMethod::Azik) bytes += "input-method=azik\n";
+    if (settings.azik_keyboard == AzikKeyboard::Us101) bytes += "azik-keyboard=us101\n";
     validate_ui_settings(settings.ui);
     if (settings.ui.font != default_ui_font) bytes += "ui-font=" + utf8_message(settings.ui.font) + "\n";
     if (settings.ui.show_input_mode) bytes += "show-input-mode=on\n";
@@ -231,7 +237,7 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
     DictionarySettings settings; bool version = false, learning = false, romaji = false, startup_ime_off = false, ui_font = false;
-    std::set<std::string_view> inference_keys, candidate_options, diagnostic_options, mode_options;
+    std::set<std::string_view> inference_keys, candidate_options, diagnostic_options, mode_options, input_options;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -285,6 +291,15 @@ DictionarySettings parse_dictionary_settings(std::string_view bytes) {
                 if (value != "on" && value != "off") throw std::invalid_argument("tsf-log must equal on or off");
                 settings.tsf_log.enabled = value == "on";
             } else settings.tsf_log.directory = std::filesystem::path(wide_message(value));
+        } else if (key == "input-method" || key == "azik-keyboard") {
+            if (!input_options.insert(key).second) throw std::invalid_argument("duplicate input profile setting");
+            if (key == "input-method") {
+                if (value != "skk" && value != "azik") throw std::invalid_argument("input-method must equal skk or azik");
+                settings.input_method = value == "azik" ? InputMethod::Azik : InputMethod::Skk;
+            } else {
+                if (value != "jp106" && value != "us101") throw std::invalid_argument("azik-keyboard must equal jp106 or us101");
+                settings.azik_keyboard = value == "us101" ? AzikKeyboard::Us101 : AzikKeyboard::Jp106;
+            }
         } else if (key == "romaji") {
             if (romaji) throw std::invalid_argument("romaji must appear at most once");
             romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_path(settings.romaji_rules);

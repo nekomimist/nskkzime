@@ -5,7 +5,7 @@
 namespace nskkzime::windows {
 struct ContainerConfiguration {
     DictionaryConfiguration configuration;
-    std::shared_ptr<const RomajiRules> romaji;
+    InputProfile input_profile;
     std::string generation;
     bool complete = false; // Every configured source loaded; only these snapshots are retained.
 };

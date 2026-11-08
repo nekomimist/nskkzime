@@ -53,6 +53,8 @@ int wmain(int argc, wchar_t** argv) {
              settings.learning = false;
              settings.startup_ime_off = true;
              settings.romaji_rules = romaji;
+             settings.input_method = nskkzime::InputMethod::Azik;
+             settings.azik_keyboard = nskkzime::AzikKeyboard::Us101;
              settings.candidates = {5, CandidateKeys::Asdfjkl};
              settings.ui.font = L"ＭＳ ゴシック";
              settings.ui.show_input_mode = true; settings.ui.input_mode_duration_ms = 1250;
@@ -63,6 +65,7 @@ int wmain(int argc, wchar_t** argv) {
              const auto loaded = open_settings_document(path);
              check(loaded.original == document.original && loaded.settings.dictionaries == settings.dictionaries &&
                        !loaded.settings.learning && loaded.settings.startup_ime_off && loaded.settings.romaji_rules == romaji &&
+                       loaded.settings.input_method == settings.input_method && loaded.settings.azik_keyboard == settings.azik_keyboard &&
                        loaded.settings.candidates.show_after == 5 && loaded.settings.candidates.keys == CandidateKeys::Asdfjkl &&
                        loaded.settings.ui.font == settings.ui.font &&
                        loaded.settings.ui.show_input_mode && loaded.settings.ui.input_mode_duration_ms == 1250 &&

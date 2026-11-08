@@ -10,9 +10,12 @@ struct RomajiRule { std::u32string output; std::string carry; };
 class RomajiRules {
 public:
     static std::shared_ptr<const RomajiRules> defaults();
+    static std::shared_ptr<const RomajiRules> azik(bool japanese_keyboard = true);
     // UTF-8 TSV overlay: version=1, then input<TAB>output[<TAB>carry].
-    static std::shared_ptr<const RomajiRules> parse(std::string_view);
-    static std::shared_ptr<const RomajiRules> load(const std::filesystem::path&);
+    static std::shared_ptr<const RomajiRules> parse(std::string_view,
+        std::shared_ptr<const RomajiRules> base = defaults(), std::string_view reserved_roots = {});
+    static std::shared_ptr<const RomajiRules> load(const std::filesystem::path&,
+        std::shared_ptr<const RomajiRules> base = defaults(), std::string_view reserved_roots = {});
     const RomajiRule* find(std::string_view) const;
     bool prefix(std::string_view) const;
     std::size_t custom_count() const { return custom_count_; }

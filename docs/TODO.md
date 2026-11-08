@@ -3,9 +3,9 @@
 ## 入力
 
 - [ ] DDSKKの未対応機能: 読みの途中での `Q` による変換開始位置の変更、半角カナ（C-q）、数値変換の `#4` `#5` `#9`、
-  接頭辞・接尾辞（`>`）、Tab補完、再変換、AZIK。必要なものから追加する。
+  接頭辞・接尾辞（`>`）、Tab補完、再変換。必要なものから追加する。
 - [ ] `Kanji SPC RET` などDDSKKと動作が異なる操作を、合わせるかどうか決める（[USAGE.md](USAGE.md#ddskkとの違い)）。
-- [ ] Ctrl付きのキーはC-j・C-gだけ。C-h（Backspace）やC-m（Enter）などのEmacs風キーの要否を決める。
+- [ ] C-h（Backspace）やC-m（Enter）など、Emacs風キーの要否を決める。現在はC-j・C-gと候補選択中のC-dに対応。
 
 ## zenz
 
