@@ -30,7 +30,7 @@ if(TARGET nskkzime_llama_arm64)
   add_dependencies(nskkzime_build_metadata nskkzime_llama_arm64)
 endif()
 foreach(_target nskkzime_tsf nskkzime_settings nskkzime_dictionary_gui
-    nskkzime_config nskkzime_user_dictionary ime_probe nkkz-ime-server nskkzime_broker)
+    nskkzime_config nskkzime_user_dictionary ime_probe nkkz-ime-server nskkzime_broker nskkzime_setup)
   if(NOT TARGET ${_target})
     continue()
   endif()

@@ -8,35 +8,41 @@ Windows x64用のSKK風IME。zenzによる推論サーバーを同梱した開�
 - `bin/`: IME DLL、推論サーバー（`nkkz-ime-server.exe`）、AppContainer用broker、
   設定GUI、学習辞書の管理GUI、設定CLI、辞書管理CLI、入力検証アプリ
 - `bin/x86/`: 32bitアプリ用のIME DLLと入力検証アプリ（推論・GUIはx64版を共用）
-- `tools/`: 導入スクリプトとZIP検査スクリプト、`manifest.json`: 各ファイルのSHA-256とビルド情報
-- `tools/scoop.ps1`: Scoopから同じユーザーの管理者承認を受けて導入・登録解除するための呼び出し処理
+- `bin/nskkzime_setup.exe`: 導入・検証・更新・復旧・登録解除を行う専用CLI
+- `tools/`: 開発用のPowerShell入口とZIP検査スクリプト
+- `manifest.json`: 各ファイルのSHA-256とビルド情報
+- `tools/scoop.ps1`: Scoopから専用CLIを通常権限で起動する処理
 - Visual C++ v14 Redistributable のx64とx86が必要（同梱しない）。
 - zenzにはAVX2/FMA/F16C/BMI2に対応したCPUが必要。`.\bin\nskkzime_config.exe --check-cpu` で確認できる。
 - モデルは zenz-v3.2-small の `ggml-model-Q5_K_M.gguf`
   （SHA-256 `29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673`）を想定している。
 
 ```powershell
-.\tools\package.ps1 -Verify 'C:\Downloads\nskkzime.zip'   # ZIPの検査
-.\tools\package.ps1 -VerifyDirectory .                    # 展開したファイルの検査
+.\bin\nskkzime_setup.exe --action Verify # 展開したファイルの検査（PowerShell 7は不要）
 ```
 
 ## 導入・更新・解除
 
-使用中のアプリを閉じ、展開したフォルダーで**管理者のPowerShell 7**（スタートメニューから起動したもの）を使う。
-非パッケージ版のPowerShellを使用する。アプリの内蔵端末などから実行してデータの仮想化を
-検出すると、起動登録を別の場所へ保存しないよう変更前に停止する。起動方法だけで
-仮想化の有無が保証されるわけではなく、停止した場合は表示された理由を確認する。
+使用中のアプリを閉じ、展開したフォルダーで通常権限の端末を使う。PowerShell 7は不要。
+変更操作では専用CLIがUACを要求するので、同じ本人のアカウントで承認する。
+パッケージ化されたアプリの内蔵端末など、データの仮想化を検出した場合は変更前に停止する。
+その場合はExplorerから通常の端末を開き、表示された理由を確認する。
 
 ```powershell
-.\tools\install.ps1 -Action Install      # 導入・更新（旧版のファイルは残す）
-.\tools\install.ps1 -Action Status       # 登録中の版と、残っている版の一覧
-.\tools\install.ps1 -Action Rollback -Version '<Statusで確認した版ID>'
-.\tools\install.ps1 -Action Recover      # 失敗・中断した更新を元に戻す
-.\tools\install.ps1 -Action Unregister   # 登録の解除（ファイルと設定は残す）
+.\bin\nskkzime_setup.exe --action Install    # 導入・更新（旧版のファイルは残す）
+.\bin\nskkzime_setup.exe --action Status     # 登録中の版と、残っている版の一覧
+.\bin\nskkzime_setup.exe --action Rollback --version '<Statusで確認した版ID>'
+.\bin\nskkzime_setup.exe --action Recover    # 失敗・中断した更新を元に戻す
+.\bin\nskkzime_setup.exe --action Unregister # 登録の解除（ファイルと設定は残す）
 ```
 
 `%ProgramFiles%\nskkzime\versions\<版ID>` に配置して登録し、brokerをサインイン時に起動するよう登録する。
 起動中のアプリは古いDLLを使い続けるので、起動し直すかサインアウト・サインインする。
+管理者として直接CLIを起動した場合、brokerは次のサインイン時に起動する。
+検証とStatusは昇格しない。旧版の登録と更新記録も、新しいCLIで検証・復旧する。
+導入ログは、保護された配置先を確認した後に `%ProgramFiles%\nskkzime\setup.log` へ保存する。
+配布物は無署名。ハッシュ検証はファイルの整合性を検査し、発行元の身元は保証しない。
+EXE形式でも、会社のEDRや実行ポリシーで停止する場合がある。
 
 導入後は入力モード「あ／ア／A」の右クリックメニューの「設定…」（`bin/nskkzime_settings.exe`）で
 SKK辞書とzenzのモデルを指定し、`bin/ime_probe.exe` で入力を確認する。推論サーバーは同梱版を自動で使う。
@@ -54,7 +60,7 @@ nlohmann/jsonはMIT、Unicode対応表はUnicode License v3、skk-zenzとazooKey
 サインアウト・サインインする。ほかにサインイン中のユーザーがいれば、そのアプリも終了する。
 使用中のDLLを残したまま削除しない。
 
-その後、管理者のPowerShell 7で本体の保存先を確認して削除する。
+その後、管理者のWindows PowerShellで本体の保存先を確認して削除する。
 
 ```powershell
 $installRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'nskkzime'

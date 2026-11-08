@@ -31,7 +31,19 @@ PowerShell 7、Visual Studio 2022 Build Tools（C++、Windows SDK、C++ CMake to
 | TSF | `tsf_smoke`, `tsf_candidate_click`, `input_mode`, `mode_indicator`, `context_text`, `candidate_ui`, `tsf_romaji`, `tsf_diagnostics`, `tsf_dictionary_startup` |
 | 推論 | `inference`, `inference_policy`, `tsf_inference`, `tsf_inference_policy`, `zenz_backend`, `tsf_zenz` |
 | AppContainer | `app_container`（一時的なAppContainerプロファイルで実際に子プロセスを起動）, `broker_snapshot` |
-| 配布 | `package`（梱包と検査）, `installation`（登録は模擬。導入・更新・復帰・解除）, `scoop` / `scoop_windows_powershell`（昇格プロセスは模擬） |
+| 配布 | `package`（梱包と両検証器の比較）, `native_setup`（登録は模擬。旧版・更新・復旧・解除）, `installation`（PowerShellの状態遷移）, `scoop` / `scoop_windows_powershell`（EXE起動は模擬） |
+
+配布用x64の導入処理は `src/setup/` の専用CLIにまとめる。ビルド・梱包には引き続きPowerShell 7を使う。
+ARM64実験版は従来のPowerShell入口を使う。
+`native_setup` は一時フォルダーと模擬の登録処理を使い、OSのIME登録を変更しない。
+実UACと登録、旧版からの実機更新、EDRでの実行確認は別途必要。
+
+Scoop用の定義は、検証したZIPから生成する。
+公開用CIもこの定義をartifactへ保存する。別リポジトリのbucketへの反映はリリース時に行う。
+
+```powershell
+.\scripts\write-scoop-manifest.ps1 -PackageArchive out/packages/nskkzime-v0.2.0-windows-x64.zip -Output out/packages/nskkzime.json
+```
 
 TSFのテストは自作のテスト用ホスト（`tests/tsf_test_host.h`）で動かす。実アプリのキー配送や描画の再現ではない。
 デスクトップ用TSFテストは通常プロセスとして実行する。AppContainer内では辞書がbroker経由になり、

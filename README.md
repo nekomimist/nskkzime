@@ -32,8 +32,8 @@ scoop bucket add nekomimist https://github.com/nekomimist/scoop-bucket
 scoop install nekomimist/nskkzime
 ```
 
-PowerShell 7とVisual C++ランタイム（x64・x86）も導入する。IME登録時のUACは同じ本人の
-アカウントで承認する。
+Visual C++ランタイム（x64・x86）も導入する。IME登録は専用EXEが行い、PowerShell 7の追加導入は不要。
+登録時のUACは同じ本人のアカウントで承認する。配布物は無署名で、EDRでの許可は保証しない。
 
 IME本体は `%ProgramFiles%\nskkzime` に配置し、Scoopのフォルダーにも
 取得したパッケージを保持する。初版は一人の管理ユーザーが管理し、Scoopのglobal installには対応しない。

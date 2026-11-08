@@ -101,7 +101,7 @@ function Assert-NskkzimeProtectedPath([string]$Path) {
 }
 function Get-NskkzimeBundle([string]$Directory, [string]$Verifier) {
     $result = & $Verifier -VerifyDirectory $Directory
-    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6, 7) -or $result.Variant -cne 'zenz-cpu') {
+    if (-not $result.Verified -or $result.FormatVersion -notin @(2, 3, 4, 5, 6, 7, 8) -or $result.Variant -cne 'zenz-cpu') {
         throw '選択した検証入口に対応するzenz入りパッケージが必要です。'
     }
     if ($result.FormatVersion -eq 7 -and ($result.Architecture -cne 'arm64' -or $result.Channel -cne 'experimental' -or

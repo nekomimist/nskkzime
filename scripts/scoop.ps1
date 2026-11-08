@@ -3,7 +3,7 @@
 param(
     [Parameter(Mandatory)][ValidateSet('Install', 'Unregister')][string]$Action,
     [string]$PackageDirectory = (Join-Path $PSScriptRoot '..'),
-    [Parameter(Mandatory)][string]$PowerShellPath
+    [string]$PowerShellPath # Ignored for compatibility with the previous bucket manifest.
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -12,29 +12,23 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
     throw 'nskkzime requires Windows x64.'
 }
 $directory = [IO.Path]::GetFullPath($PackageDirectory)
-$installer = Join-Path $directory 'tools/install.ps1'
+$installer = Join-Path $directory 'bin/nskkzime_setup.exe'
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer not found: $installer" }
 $manifest=Get-Content -LiteralPath (Join-Path $directory 'manifest.json') -Raw | ConvertFrom-Json
-if ($manifest.format_version -notin @(2,3,4,5,6) -or $manifest.architecture -cne 'x64' -or $manifest.variant -cne 'zenz-cpu') {
+if ($manifest.format_version -ne 8 -or $manifest.architecture -cne 'x64' -or $manifest.variant -cne 'zenz-cpu') {
     throw 'Scoop requires an x64 release package; experimental ARM64 packages are not supported.'
 }
-if (-not (Test-Path -LiteralPath $PowerShellPath -PathType Leaf)) { throw "PowerShell 7 not found: $PowerShellPath" }
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
 # Start-Process joins ArgumentList into one Windows command line. File paths
 # cannot contain double quotes; quote each path to preserve spaces and Unicode.
-$arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $installer + '"'),
-    '-Action', $Action, '-PackageDirectory', ('"' + $directory.TrimEnd('\', '/') + '"'),
-    '-ExpectedUserSid', $identity.User.Value)
+$arguments = @('--action', $Action, '--package-directory', ('"' + $directory.TrimEnd('\', '/') + '"'))
 $start = @{
-    FilePath = $PowerShellPath; ArgumentList = $arguments
-    Wait = $true; PassThru = $true; WindowStyle = 'Hidden'
+    FilePath = $installer; ArgumentList = $arguments
+    Wait = $true; PassThru = $true; WindowStyle = 'Normal'
 }
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $start.Verb = 'RunAs' }
 try { $child = Start-Process @start }
 catch { throw "nskkzime $Action could not start. Approve UAC as the same user and retry. $($_.Exception.Message)" }
 try {
     if ($child.ExitCode -ne 0) {
-        throw "nskkzime $Action failed (exit $($child.ExitCode)). Data virtualization in a packaged application or its terminal may prevent installation. Retry from a non-packaged PowerShell 7 launched directly from Explorer or the Start menu. Run tools/install.ps1 -Action Status there; use Recover if a transaction is pending."
+        throw "nskkzime $Action failed (exit $($child.ExitCode)). Run bin/nskkzime_setup.exe --action Status from Explorer or a normal terminal; use Recover if a transaction is pending. See %ProgramFiles%/nskkzime/setup.log if present."
     }
 } finally { $child.Dispose() }

@@ -101,7 +101,7 @@ function Get-MetadataIdentity($Metadata) {
     } else { throw 'マニフェストのビルド情報が一致しません。' }
     ConvertTo-Json -InputObject $ordered -Compress -Depth 4
 }
-function Get-PackageNames([bool]$WithZenz, [int]$Format = 6) {
+function Get-PackageNames([bool]$WithZenz, [int]$Format = 8) {
     # Read-only compatibility with previously generated SKK archives. New
     # packages always pass true; no separate SKK build or release is produced.
     $names = @($binaries | ForEach-Object { 'bin/' + $_ }) + $baseLicenses + @('README.md', 'tools/package.ps1')
@@ -112,7 +112,8 @@ function Get-PackageNames([bool]$WithZenz, [int]$Format = 6) {
     # Format 5 writes the user dictionary from the IME itself, without a helper.
     if ($Format -le 4) { $names += 'bin/nskkzime_dictionary_server.exe' }
     if ($Format -ge 6) { $names += 'LICENSE' }
-    if ($Format -eq 6) { $names += 'tools/scoop.ps1' }
+    if ($Format -in @(6,8)) { $names += 'tools/scoop.ps1' }
+    if ($Format -eq 8) { $names += 'bin/nskkzime_setup.exe' }
     if ($Format -eq 7) {
         $names = @($names | Where-Object { $_ -cne 'bin/ime_probe.exe' }) +
             @('bin/ime_probe-arm64.exe','tools/package-arm64x.ps1','tools/arm64-package.psm1','tools/install-arm64x.ps1')
@@ -123,7 +124,7 @@ function Test-PackageContents($Contents) {
     if (-not $Contents.ContainsKey('manifest.json')) { throw 'manifest.jsonがありません。' }
     if ($Contents['manifest.json'].Length -gt 1MB) { throw 'manifest.jsonが大きすぎます。' }
     $manifest = [Text.Encoding]::UTF8.GetString($Contents['manifest.json']) | ConvertFrom-Json
-    $formats = if ($ExperimentalArm64) { @(7) } else { @(1,2,3,4,5,6) }
+    $formats = if ($ExperimentalArm64) { @(7) } else { @(1,2,3,4,5,6,8) }
     if ($manifest.format_version -notin $formats -or $manifest.product -cne 'nskkzime' -or
         $manifest.architecture -cne $(if($ExperimentalArm64){'arm64'}else{'x64'}) -or $manifest.configuration -cne 'Release' -or
         $manifest.variant -cnotin @('skk', 'zenz-cpu') -or
@@ -222,7 +223,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Directory') {
     }
     # Installed folders of earlier versions remain verifiable for rollback.
     $names = if ($ExperimentalArm64) { @(Get-PackageNames $true 7) + @('manifest.json') } else {
-        @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @(Get-PackageNames $true 6) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
+        @(Get-PackageNames $true 4) + @(Get-PackageNames $true 5) + @(Get-PackageNames $true 6) + @(Get-PackageNames $true 8) + @('manifest.json') | Sort-Object -Unique -CaseSensitive
     }
     $contents = [Collections.Generic.Dictionary[string, byte[]]]::new([StringComparer]::Ordinal)
     $folders = [Collections.Generic.Queue[string]]::new()
@@ -269,7 +270,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     $path = [IO.Path]::GetFullPath($Verify)
     $manifest = Read-Package $path
     [pscustomobject]@{ Path = $path; Version = $manifest.version; Variant = $manifest.variant; Files = $manifest.files.Count;
-        SHA256 = (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant(); Verified = $true }
+        SHA256 = (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant(); FormatVersion = $manifest.format_version; Verified = $true }
     return
 }
 if (-not $SourceDirectory) {
@@ -305,6 +306,7 @@ $sources['bin/x86/nskkzime_tsf.dll'] = Join-Path $source 'x86/nskkzime_tsf.dll'
 $sources['bin/x86/ime_probe.exe'] = Join-Path $source 'x86/ime_probe.exe'
 $sources['bin/nkkz-ime-server.exe'] = Join-Path $source 'nkkz-ime-server.exe'
 $sources['bin/nskkzime_broker.exe'] = Join-Path $source 'nskkzime_broker.exe'
+$sources['bin/nskkzime_setup.exe'] = Join-Path $source 'nskkzime_setup.exe'
 $sources['README.md'] = Join-Path $repository 'docs/PACKAGE_README.md'
 $sources['LICENSE'] = Join-Path $repository 'LICENSE'
 $sources['tools/package.ps1'] = $PSCommandPath
@@ -328,7 +330,7 @@ $files = @()
 $buildMetadata = $null
 $x86Metadata = $null
 $armGroups = @{}
-$format = if($ExperimentalArm64){7}else{6}
+$format = if($ExperimentalArm64){7}else{8}
 foreach ($name in @(Get-PackageNames $true $format)) {
     $path = $sources[$name]
     $bytes = [IO.File]::ReadAllBytes($path)

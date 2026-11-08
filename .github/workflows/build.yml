@@ -45,6 +45,7 @@ jobs:
             throw "Tag does not match the built version $($package.Version)."
           }
           .\scripts\package.ps1 -Verify $package.Path
+          .\scripts\write-scoop-manifest.ps1 -PackageArchive $package.Path -Output out/packages/nskkzime.json
       - name: Upload package and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -52,6 +53,7 @@ jobs:
           path: |
             out/packages/nskkzime-v*-windows-x64.zip
             out/packages/nskkzime-v*-windows-x64.zip.sha256
+            out/packages/nskkzime.json
           if-no-files-found: error
           retention-days: 7
 
@@ -77,7 +79,7 @@ jobs:
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
           Development-stage Windows x64 SKK-style IME with a CPU zenz server and x86 companion DLL.
 
-          Install and update require administrator approval by the same user. PowerShell 7 and both x64 and x86 Visual C++ v14 Redistributables are required. Model and SKK dictionary files are downloaded and configured separately. See the packaged README for installation, recovery, and complete removal.
+          Install and update use native setup and require administrator approval by the same user. Both x64 and x86 Visual C++ v14 Redistributables are required; PowerShell 7 is only needed for development. Model and SKK dictionary files are downloaded and configured separately. See the packaged README for installation, recovery, and complete removal.
 
           Binaries are unsigned. SHA-256 checksums are provided beside the ZIP. Automated tests run on Windows; tests requiring the separate inference model are skipped in CI. Clean-machine interactive installation must be checked separately.
           NOTES

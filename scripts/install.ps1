@@ -10,6 +10,21 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Keep the development entry point, with one production implementation on x64.
+if (-not $ExperimentalArm64) {
+    if ($PSBoundParameters.ContainsKey('BrokerConfig') -or $Action -eq 'Plan') { throw 'BrokerConfig and Plan are ARM64 experimental options.' }
+    $setup = Join-Path $PackageDirectory 'bin/nskkzime_setup.exe'
+    if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
+        $setup = Join-Path $PSScriptRoot '../out/build/windows-x64-zenz/Release/nskkzime_setup.exe'
+    }
+    if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Native setup is missing. Build/package the current x64 Release first.' }
+    $arguments = @('--action', $Action, '--package-directory', ([IO.Path]::GetFullPath($PackageDirectory)))
+    if ($Version) { $arguments += @('--version', $Version) }
+    if ($ExpectedUserSid) { $arguments += @('--expected-user-sid', $ExpectedUserSid) }
+    & $setup @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Native setup failed (exit $LASTEXITCODE)." }
+    return
+}
 if ($PSBoundParameters.ContainsKey('BrokerConfig') -and -not $ExperimentalArm64) { throw 'BrokerConfigはARM64実験版の専用入口で使用してください。' }
 if ($Action -eq 'Plan' -and -not $ExperimentalArm64) { throw 'PlanはARM64実験版の専用入口で使用してください。' }
 if ($ExperimentalArm64) {

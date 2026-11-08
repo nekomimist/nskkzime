@@ -87,6 +87,13 @@ if(NSKKZIME_TSF_COMPANION)
 endif()
 
 if(WIN32)
+  # Deployment is independent of inference and never invokes a scripting host.
+  add_library(nskkzime_setup_core STATIC src/setup/package.cpp src/setup/installation.cpp src/setup/windows.cpp)
+  target_include_directories(nskkzime_setup_core PUBLIC src/setup)
+  target_include_directories(nskkzime_setup_core SYSTEM PUBLIC third_party)
+  target_link_libraries(nskkzime_setup_core PUBLIC project_options bcrypt advapi32 shell32 ole32)
+  add_executable(nskkzime_setup src/setup/main.cpp src/setup/setup.manifest)
+  target_link_libraries(nskkzime_setup PRIVATE nskkzime_setup_core)
   include(cmake/windows_runtime.cmake)
   add_executable(nskkzime_broker WIN32 src/tools/container_broker.cpp src/windows/broker_diagnostics.cpp)
   target_link_libraries(nskkzime_broker PRIVATE nskkzime_inference)
@@ -134,6 +141,10 @@ if(WIN32)
   target_compile_definitions(ime_probe_local PRIVATE NSKKZIME_LOCAL_PROBE)
   add_dependencies(ime_probe_local nskkzime_tsf)
   if(BUILD_TESTING)
+    add_executable(native_setup_tests tests/native_setup_tests.cpp)
+    target_link_libraries(native_setup_tests PRIVATE nskkzime_setup_core)
+    add_test(NAME native_setup COMMAND native_setup_tests)
+    set_tests_properties(native_setup PROPERTIES TIMEOUT 60)
     # Manual, registration-free standby checkpoint. CI does not infer sleep from a timer gap.
     add_executable(broker_continuity_probe tests/broker_continuity_probe.cpp)
     target_include_directories(broker_continuity_probe SYSTEM PRIVATE third_party)
@@ -181,7 +192,7 @@ if(WIN32)
     find_program(NSKKZIME_PWSH NAMES pwsh REQUIRED)
     add_test(NAME scoop COMMAND ${NSKKZIME_PWSH} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/scoop_tests.ps1
       -ScoopScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scoop.ps1 -BuildDirectory ${CMAKE_CURRENT_BINARY_DIR}
-      -InstallScript ${CMAKE_CURRENT_SOURCE_DIR}/scripts/install.ps1)
+      -NativeSetup $<TARGET_FILE:nskkzime_setup>)
     find_program(NSKKZIME_WINDOWS_POWERSHELL NAMES powershell)
     if(NSKKZIME_WINDOWS_POWERSHELL)
       add_test(NAME scoop_windows_powershell COMMAND ${NSKKZIME_WINDOWS_POWERSHELL} -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/scoop_tests.ps1
