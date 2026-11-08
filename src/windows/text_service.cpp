@@ -575,9 +575,11 @@ public:
         const auto indicator_request = mode_indicator_request_;
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPush, diagnostic_state(context));
-        const auto parent = editing_context(context); context = parent.Get();
-        update_tsf_trace(diagnostic_state(context));
-        if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
+        if (composition_state_.context) {
+            const auto parent = editing_context(context); context = parent.Get();
+            update_tsf_trace(diagnostic_state(context));
+            if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
+        }
         if (indicator_request == mode_indicator_request_) show_focus_mode_indicator();
         return S_OK;
     }
@@ -759,8 +761,13 @@ private:
         if (request == mode_indicator_request_) mode_publish_context_ = previous;
     }
     void show_focus_mode_indicator() noexcept {
-        if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || connecting_mode_) return;
+        if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || connecting_mode_ || showing_focus_mode_) return;
         const ComPtr<TextService> self(this);
+        // Resolving a transitory parent can initialize a file-dialog text store
+        // and synchronously call OnPushContext. Do not restart that query from
+        // the nested notification, including while show_mode_indicator runs.
+        showing_focus_mode_ = true;
+        struct Reset { bool& value; ~Reset() { value = false; } } reset{showing_focus_mode_};
         const auto request = mode_indicator_request_, generation = focus_generation_;
         try {
             const auto thread = manager_;
@@ -1116,6 +1123,7 @@ private:
     ComPtr<ITfDocumentMgr> mode_focus_document_;
     ComPtr<ITfContext> mode_focus_context_;
     std::uint64_t mode_indicator_request_ = 0;
+    bool showing_focus_mode_ = false;
     bool key_foreground_ = true;
     CandidateVisibility candidate_visibility_;
     ComPtr<InputMode> input_mode_;

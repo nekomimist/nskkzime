@@ -241,11 +241,15 @@ public:
     ITfContext* top = nullptr;
     HRESULT top_status = S_OK;
     std::function<void()> top_query;
+    std::function<void()> document_query;
     ComPtr<ITfCompartment> transitory_parent;
     TEST_REFS(DocumentManager);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         *out = nullptr;
-        if (iid == IID_IUnknown || iid == IID_ITfDocumentMgr) *out = static_cast<ITfDocumentMgr*>(this);
+        if (iid == IID_IUnknown || iid == IID_ITfDocumentMgr) {
+            if (iid == IID_ITfDocumentMgr && document_query) document_query();
+            *out = static_cast<ITfDocumentMgr*>(this);
+        }
         else if (iid == IID_ITfCompartmentMgr) *out = static_cast<ITfCompartmentMgr*>(this);
         else return E_NOINTERFACE;
         AddRef(); return S_OK;

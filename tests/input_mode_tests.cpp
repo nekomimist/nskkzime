@@ -109,6 +109,44 @@ struct Session {
         const std::wstring result(value, SysStringLen(value)); SysFreeString(value); return result;
     }
 };
+void focus_mode_parent_reentry(bool indicator_enabled) {
+    for (unsigned entry = 0; entry != 3; ++entry) for (const bool composing : {false, true}) {
+        Session s; s.indicator_host();
+        if (composing) s.type("Kan");
+        const auto parent = s.context;
+        const auto origin = test_host::transitory_context(parent.Get());
+        s.host->focused_document = origin->document_manager;
+        auto* document = static_cast<test_host::DocumentManager*>(parent->document_manager.Get());
+        const auto text = parent->doc->text;
+        const auto selection_writes = parent->selection_writes;
+        const auto composition = parent->composition;
+        unsigned depth = 0, maximum_depth = 0;
+        // File-dialog text stores can push a context while their transitory
+        // parent is being queried. Keep notifying on every query, with a cap
+        // so a regression fails here instead of overflowing the test stack.
+        document->document_query = [&] {
+            maximum_depth = std::max(maximum_depth, ++depth);
+            if (depth < 8) s.host->events->OnPushContext(parent.Get());
+            --depth;
+        };
+        if (entry == 0) s.keys->OnSetFocus(TRUE);
+        else if (entry == 1) s.host->events->OnSetFocus(origin->document_manager.Get(), nullptr);
+        else s.host->events->OnPushContext(parent.Get());
+        document->document_query = {};
+        check(maximum_depth <= 2 && (!indicator_enabled || maximum_depth > 0),
+            "transitory parent query recursively restarted focus mode display");
+        check(parent->doc->text == text && origin->doc->text.empty() &&
+            parent->selection_writes == selection_writes && !origin->selection_writes, "reentrant focus display edited file-dialog text");
+        check(parent->composition == composition && (!composition || !composition->ended),
+            "reentrant parent initialization ended the active composition");
+        s.keys->OnSetFocus(TRUE); parent->pump(); origin->pump();
+        check(s.indicator() == (indicator_enabled && !composing), "focus mode display did not recover after parent-query reentry");
+        if (composing) {
+            s.key(VK_RETURN);
+            check(parent->doc->text == L"かん", "parent-query reentry lost the active composition text");
+        }
+    }
+}
 void focus_mode_indicator() {
     for (const auto mode : {Mode::Hiragana, Mode::Katakana, Mode::Latin, Mode::FullWidthLatin}) {
         Session s(mode == Mode::Latin, false, mode == Mode::Katakana || mode == Mode::FullWidthLatin, mode);
@@ -517,8 +555,10 @@ int wmain(int argc, wchar_t** argv) {
             s.host->events->OnSetFocus(s.context->document_manager.Get(), nullptr); s.keys->OnSetFocus(TRUE);
             check(!s.host->ui, "disabled mode display appeared on focus");
         }
+        focus_mode_parent_reentry(false);
         use_isolated_settings(root / "indicator", "learning=on\ndictionary=" + settings_path(argv[1]) +
             "\nshow-input-mode=on\ninput-mode-duration-ms=3000\n");
+        focus_mode_parent_reentry(true);
         focus_mode_indicator();
         for (const bool same_document : {false, true}) {
             Session s(true); s.indicator_host(); s.host->show_ui = TRUE;
