@@ -42,5 +42,12 @@ public:
     void end(TfEditCookie) noexcept;
     HRESULT apply(ITfContext*, TfEditCookie, std::u32string_view committed, Engine& next,
         CompositionOwner&, const CompositionSinks&, TfGuidAtom input, TfGuidAtom converted);
+private:
+    HRESULT start_composition(ITfContext*, TfEditCookie, CompositionOwner&, const CompositionSinks&,
+        Microsoft::WRL::ComPtr<ITfRange>&);
+    HRESULT write_text(TfEditCookie, ITfRange*, std::wstring_view, bool created, CompositionOwner&);
+    HRESULT update_composition_range(TfEditCookie, ITfRange*, std::u32string_view committed,
+        bool needs_composition, CompositionOwner&);
+    void update_display_attribute(ITfContext*, TfEditCookie, TfGuidAtom);
 };
 } // namespace nskkzime::windows

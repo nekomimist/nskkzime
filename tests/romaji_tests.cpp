@@ -46,6 +46,20 @@ int main() {
             type(e,"dldqd/nlkk",output); equal(output,U"でるどくどなるくく");
             check(e.mode()==Mode::Hiragana&&!e.abbrev(),"explicit rule became a command");
         }},
+        {"engine/candidate-confirmation-preserves-command-continuations",[] {
+            const auto table = RomajiRules::parse("version=1\ndl\tでる\ndq\tどく\nd/\tど\n");
+            for (const auto& [keys, expected] : {std::pair{"dl", U"漢字でる"}, {"dq", U"漢字どく"}, {"d/", U"漢字ど"}}) {
+                Engine engine(demo_dictionary(), false, table); std::u32string output;
+                type(engine, "Kanji", output); engine.handle({KeyCode::Space});
+                const auto confirmed = engine.handle({KeyCode::Character, keys[0]});
+                check(confirmed.learning && confirmed.learning->candidate.text == U"漢字", "reprocessed key lost candidate learning");
+                output += confirmed.committed;
+                output += engine.handle({KeyCode::Character, keys[1]}).committed;
+                equal(output, expected);
+                check(engine.mode() == Mode::Hiragana && engine.stage() == Stage::Direct && !engine.abbrev(),
+                    "continuation after candidate confirmation became a mode command");
+            }
+        }},
         {"engine/failed-carry-and-custom-n-before-mode-commands",[] {
             const auto table=RomajiRules::parse("version=1\njj\tっ\tj\nnn\tん\n");
             for(const auto input:{"jjl","nnl","jjL","nnL"}) {

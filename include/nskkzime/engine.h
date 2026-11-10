@@ -176,6 +176,14 @@ private:
     };
     struct Registration { Input original; std::u32string draft, anchor; };
     Result handle_input(Key);
+    bool handle_candidate_key(Key, Result&);
+    void handle_backspace(Result&);
+    void handle_space(Result&);
+    void handle_character(char, Result&);
+    bool handle_mode_command(char, Result&);
+    void handle_kana_command(Result&);
+    char normalize_shifted_character(char, Result&);
+    void push_romaji(char, Result&);
     Result handle_registration(Key);
     Result handle_forgetting(Key);
     void begin_registration(Result&);

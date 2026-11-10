@@ -204,6 +204,7 @@ public:
     ComPtr<Range> range;
     ComPtr<ITfCompositionSink> sink;
     bool ended = false;
+    HRESULT end_status = S_OK;
     TEST_REFS(Composition);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         *out = nullptr;
@@ -212,7 +213,10 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetRange(ITfRange** out) override { return range.CopyTo(out); }
     HRESULT STDMETHODCALLTYPE ShiftStart(TfEditCookie, ITfRange* value) override { range->start = static_cast<Range*>(value)->start; return S_OK; }
-    HRESULT STDMETHODCALLTYPE EndComposition(TfEditCookie) override { ended = true; sink.Reset(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE EndComposition(TfEditCookie) override {
+        if (FAILED(end_status)) return end_status;
+        ended = true; sink.Reset(); return end_status;
+    }
     void terminate() { auto keep_sink = sink; if (keep_sink) keep_sink->OnCompositionTerminated(1, this); ended = true; sink.Reset(); }
     UNUSED_METHOD(ShiftEnd, TfEditCookie, ITfRange*)
 };

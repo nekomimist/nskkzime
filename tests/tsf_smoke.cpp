@@ -383,6 +383,52 @@ void transitory_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     succeeded(service->Deactivate(), "transitory deactivate failed");
     check(!host->keys && !host->events && !host->ui && !underline(), "transitory test leaked subscriptions or underline");
 }
+void composition_failure_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
+    KeyboardState keyboard;
+    ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
+    succeeded(service->ActivateEx(host.Get(), 1, 0), "composition failure-test activate failed"); wait_for_dictionary();
+    auto fresh = [] { ComPtr<test_host::Context> value; value.Attach(new test_host::Context); return value; };
+    {
+        auto context = fresh(); context->doc->reject_write = true;
+        check(!key(keys, context.Get(), 'K', true), "failed first composition write consumed a key");
+        check(context->doc->text.empty() && context->composition && context->composition->ended && !context->edits && !context->layout,
+            "failed first write retained text, composition or subscriptions");
+        context->doc->reject_write = false;
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"あ", "failed first write changed the engine");
+    }
+    {
+        auto context = fresh(); context->doc->text = L"前後"; context->doc->caret = 1;
+        context->doc->move_selection_on_write = false; context->reject_selection_write = true;
+        check(key(keys, context.Get(), 'A'), "caret failure replayed a successful direct insertion");
+        check(context->doc->text == L"前あ後" && !context->composition, "direct insertion failure damaged text or started a composition");
+        context->reject_selection_write = false; context->doc->caret = 2;
+        type(keys, context.Get(), "u");
+        check(context->doc->text == L"前あう後", "direct insertion retry duplicated text");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Ka");
+        context->doc->move_selection_on_write = false; context->reject_selection_write = true;
+        check(key(keys, context.Get(), 'D'), "caret failure replayed a successful composition write");
+        check(context->doc->text == L"かd" && context->composition->ended && !context->edits && !context->layout,
+            "caret failure lost applied text or retained the composition");
+        context->reject_selection_write = false; context->doc->caret = 2;
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"かdあ", "caret failure retained a pending romaji prefix");
+    }
+    {
+        auto context = fresh(); type(keys, context.Get(), "Kanji"); key(keys, context.Get(), VK_SPACE);
+        const auto writes = context->doc->writes;
+        context->composition->end_status = E_FAIL;
+        check(key(keys, context.Get(), VK_RETURN), "failed composition end replayed a confirmed candidate");
+        check(context->doc->text == L"漢字" && context->doc->writes == writes && !context->edits && !context->layout && !host->ui,
+            "failed composition end rewrote text or retained subscriptions/UI");
+        context->composition->end_status = S_OK; context->composition->EndComposition(1);
+        type(keys, context.Get(), "a");
+        check(context->doc->text == L"漢字あ", "failed composition end leaked old text into the next key");
+    }
+    succeeded(service->Deactivate(), "composition failure-test deactivate failed");
+}
 void selection_tests(ITfTextInputProcessorEx* service, ITfKeyEventSink* keys) {
     KeyboardState keyboard;
     ComPtr<test_host::Manager> host; host.Attach(new test_host::Manager);
@@ -833,7 +879,7 @@ int wmain(int argc, wchar_t** argv) {
             succeeded(manager->Deactivate(), "TSF manager deactivate failed");
             attribute_tests(service.Get());
             if (empty) missing_dictionary_tests(service.Get(), keys.Get());
-            else { adapter_tests(service.Get(), keys.Get(), true); focus_transition_tests(service.Get(), keys.Get()); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
+            else { adapter_tests(service.Get(), keys.Get(), true); focus_transition_tests(service.Get(), keys.Get()); transitory_tests(service.Get(), keys.Get()); selection_tests(service.Get(), keys.Get()); composition_failure_tests(service.Get(), keys.Get()); candidate_ui_tests(service.Get(), keys.Get()); }
             const auto status = status_text();
             check(status.find(L"まだ読み込んでいません") == status.npos, "activation failed to update status");
             if (!empty) check(status.find(L"読み込み済み") != status.npos && status.find(config.native()) != status.npos, "loaded configuration invisible");

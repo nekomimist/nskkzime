@@ -26,6 +26,33 @@ bool printable(std::u32string_view text) {
 void issue(DictionaryReport& report, std::size_t line, const char* reason) {
     if (report.diagnostics.size() < 32) report.diagnostics.push_back("line " + std::to_string(line) + ": " + reason);
 }
+void malformed_entry(DictionaryReport& report) {
+    ++report.malformed_lines;
+    issue(report, report.lines, "malformed dictionary entry");
+}
+enum class Section { Unspecified, Ari, Nasi };
+struct EntryHeader {
+    LookupKey key;
+    std::u32string_view values;
+};
+std::optional<EntryHeader> parse_entry_header(std::u32string_view line, Section section) {
+    if (line.size() > max_line_chars) return {};
+    const auto divider = line.find_first_of(U" \t");
+    if (divider == std::u32string_view::npos || divider == 0) return {};
+    auto reading = line.substr(0, divider);
+    if (!printable(reading)) return {};
+    auto values = trim(line.substr(divider));
+    if (values.size() < 2 || values.front() != U'/' || values.back() != U'/') return {};
+    char okuri_letter = 0;
+    const bool last_letter = reading.back() >= U'a' && reading.back() <= U'z';
+    const bool has_kana = std::any_of(reading.begin(), reading.end(), [](char32_t ch) { return ch >= U'ぁ' && ch <= U'ゖ'; });
+    if (section == Section::Ari || (section == Section::Unspecified && last_letter && has_kana)) {
+        if (!last_letter || reading.size() < 2) return {};
+        okuri_letter = static_cast<char>(reading.back()); reading.remove_suffix(1);
+    }
+    values.remove_prefix(1);
+    return EntryHeader{{std::u32string(reading), okuri_letter}, values};
+}
 
 // Interpret only concat of quoted literals. No Lisp code is evaluated.
 bool literal(std::u32string_view input, std::u32string& output) {
@@ -215,10 +242,37 @@ std::shared_ptr<const SkkDictionary> SkkDictionary::parse_bytes(std::string_view
 }
 std::shared_ptr<const SkkDictionary> SkkDictionary::parse(std::u32string_view text) { return parse_impl(text); }
 
+bool SkkDictionary::parse_candidates(std::u32string_view values, const LookupKey& key, Entry& entry, DictionaryReport& report) {
+    std::u32string block;
+    while (!values.empty()) {
+        const auto slash = values.find(U'/');
+        if (slash == std::u32string_view::npos) return false;
+        const auto raw = values.substr(0, slash);
+        values.remove_prefix(slash + 1);
+        if (key.okuri && raw.starts_with(U"[")) {
+            if (!block.empty() || raw.size() < 2 || !printable(raw.substr(1))) return false;
+            block = raw.substr(1);
+            continue;
+        }
+        if (key.okuri && raw == U"]") {
+            if (block.empty()) return false;
+            block.clear();
+            continue;
+        }
+        Candidate item;
+        if (!candidate(raw, key, item)) {
+            ++report.unsupported_candidates;
+            issue(report, report.lines, "unsupported or empty candidate");
+            continue;
+        }
+        auto& destination = block.empty() ? entry.candidates : entry.okuri[block];
+        destination.push_back(std::move(item));
+    }
+    return block.empty();
+}
 std::shared_ptr<SkkDictionary> SkkDictionary::parse_impl(std::u32string_view text) {
     auto dictionary = std::shared_ptr<SkkDictionary>(new SkkDictionary);
     auto& report = dictionary->report_;
-    enum class Section { Unspecified, Ari, Nasi };
     Section section = Section::Unspecified;
     if (text.starts_with(U"\ufeff")) text.remove_prefix(1);
     while (!text.empty()) {
@@ -230,51 +284,14 @@ std::shared_ptr<SkkDictionary> SkkDictionary::parse_impl(std::u32string_view tex
         if (line == U";; okuri-ari entries.") { section = Section::Ari; continue; }
         if (line == U";; okuri-nasi entries.") { section = Section::Nasi; continue; }
         if (line.empty() || line.starts_with(U";")) continue;
-        auto invalid = [&] { ++report.malformed_lines; issue(report, report.lines, "malformed dictionary entry"); };
-        if (line.size() > max_line_chars) { invalid(); continue; }
-        const auto divider = line.find_first_of(U" \t");
-        if (divider == std::u32string_view::npos || divider == 0) { invalid(); continue; }
-        auto reading = line.substr(0, divider);
-        if (!printable(reading)) { invalid(); continue; }
-        auto values = trim(line.substr(divider));
-        if (values.size() < 2 || values.front() != U'/' || values.back() != U'/') { invalid(); continue; }
-        char okuri_letter = 0;
-        const bool last_letter = reading.back() >= U'a' && reading.back() <= U'z';
-        const bool has_kana = std::any_of(reading.begin(), reading.end(), [](char32_t ch) { return ch >= U'ぁ' && ch <= U'ゖ'; });
-        if (section == Section::Ari || (section == Section::Unspecified && last_letter && has_kana)) {
-            if (!last_letter || reading.size() < 2) { invalid(); continue; }
-            okuri_letter = static_cast<char>(reading.back()); reading.remove_suffix(1);
-        }
-        const LookupKey key{std::u32string(reading), okuri_letter};
+        const auto header = parse_entry_header(line, section);
+        if (!header) { malformed_entry(report); continue; }
         Entry entry;
-        std::u32string block;
-        bool broken = false;
-        values.remove_prefix(1);
-        while (!values.empty()) {
-            const auto slash = values.find(U'/');
-            if (slash == std::u32string_view::npos) { broken = true; break; }
-            const auto raw = values.substr(0, slash);
-            values.remove_prefix(slash + 1);
-            if (okuri_letter && raw.starts_with(U"[")) {
-                if (!block.empty() || raw.size() < 2 || !printable(raw.substr(1))) { broken = true; break; }
-                block = raw.substr(1);
-            } else if (okuri_letter && raw == U"]") {
-                if (block.empty()) { broken = true; break; }
-                block.clear();
-            } else {
-                Candidate item;
-                if (!candidate(raw, key, item)) {
-                    ++report.unsupported_candidates;
-                    issue(report, report.lines, "unsupported or empty candidate");
-                    continue;
-                }
-                auto& destination = block.empty() ? entry.candidates : entry.okuri[block];
-                destination.push_back(std::move(item));
-            }
-        }
-        if (broken || !block.empty()) { invalid(); continue; }
+        // Merge only a complete line; diagnostics for rejected candidates are
+        // retained even when a later broken okuri block rejects the whole line.
+        if (!parse_candidates(header->values, header->key, entry, report)) { malformed_entry(report); continue; }
         if (entry.candidates.empty() && entry.okuri.empty()) continue;
-        auto& destination = dictionary->entries_[key];
+        auto& destination = dictionary->entries_[header->key];
         report.candidates += merge_unique(destination.candidates, entry.candidates);
         for (const auto& [okuri, candidates] : entry.okuri) report.candidates += merge_unique(destination.okuri[okuri], candidates);
     }

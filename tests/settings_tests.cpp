@@ -280,6 +280,46 @@ int main() {
             for (const auto bytes : {"", "dictionary=C:\\x", "version=2", "version=1\nversion=1", "version=1\nunknown=x", "version=1\ngarbage"})
                 rejects([&] { parse_settings(bytes); });
         }},
+        {"settings/duplicate-diagnostics-precede-value-validation", [] {
+            const std::pair<const char*, const char*> cases[] = {
+                {"version=1\nversion=bad", "settings version must appear once and equal 1"},
+                {"learning=on\nlearning=bad", "learning must appear at most once and equal on or off"},
+                {"startup-ime-off=on\nstartup-ime-off=bad", "startup-ime-off must appear at most once and equal on or off"},
+                {"ui-font=Meiryo\nui-font=", "ui-font must appear at most once"},
+                {"show-input-mode=off\nshow-input-mode=bad", "duplicate input mode setting"},
+                {"candidate-show-after=3\ncandidate-show-after=bad", "duplicate candidate setting"},
+                {"tsf-log=off\ntsf-log=bad", "duplicate TSF log setting"},
+                {"input-method=azik\ninput-method=bad", "duplicate input profile setting"},
+                {"romaji=C:\\rules.tsv\nromaji=relative", "romaji must appear at most once"},
+                {"inference-threads=4\ninference-threads=bad", "duplicate inference setting"},
+                {"zenz-promote-threshold=1\nzenz-promote-threshold=bad", "duplicate inference setting"},
+                {"zenz-rerank=on\nzenz-rerank=bad", "duplicate inference setting"}
+            };
+            for (const auto& [text, expected] : cases) {
+                try { parse_settings(text); throw std::runtime_error("duplicate was accepted"); }
+                catch (const std::invalid_argument& error) {
+                    require(std::string_view(error.what()) == expected, "duplicate diagnostic or validation order changed");
+                }
+            }
+        }},
+        {"settings/numeric-tokens-require-complete-conversion", [] {
+            for (const auto key : {"input-mode-duration-ms", "candidate-show-after", "inference-threads", "inference-timeout-ms",
+                    "zenz-min-length", "zenz-rerank-limit", "zenz-rerank-wait-ms", "zenz-idle-seconds", "zenz-score-timeout-ms"})
+                for (const auto value : {"", "+1", "-1", "1x", "1.5", "4294967296"})
+                    rejects([&] { parse_settings(std::string("version=1\n") + key + "=" + value); });
+            for (const auto key : {"zenz-promote-threshold", "zenz-max-score-gap"})
+                for (const auto value : {"", "+1", "1.5x", "1e9999", "nan", "inf"})
+                    rejects([&] { parse_settings(std::string("version=1\n") + key + "=" + value); });
+        }},
+        {"settings/version-position-and-repeatable-key-order", [] {
+            const auto settings = parse_settings("dictionary=C:\\first.skk\noff-key-exclude=Code.exe\nlearning=off\n"
+                "dictionary=C:\\second.skk\noff-key-exclude=Terminal.exe\ndictionary=C:\\first.skk\nversion=1");
+            require(!settings.learning, "setting before version ignored");
+            require(settings.dictionaries == std::vector<std::filesystem::path>{L"C:\\first.skk", L"C:\\second.skk", L"C:\\first.skk"},
+                "repeatable dictionary keys reordered or deduplicated");
+            require(settings.off_key_exclusions == std::vector<std::wstring>{L"Code.exe", L"Terminal.exe"}, "repeatable exclusions lost");
+            require(parse_settings("version=1\ntsf-log-directory=").tsf_log.directory.empty(), "empty disabled TSF log path rejected");
+        }},
         {"settings/learning-default-toggle-and-invalid-values", [&] {
             require(parse_settings("version=1").learning, "old settings did not enable learning");
             require(parse_settings("version=1\nlearning=on").learning, "learning on ignored");

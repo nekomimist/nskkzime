@@ -111,6 +111,27 @@ int main(int argc, char** argv) {
             texts(d->lookup({U"か", 'k'}, U"く"), {}); texts(d->lookup({U"かな"}), {U"仮名"});
             require(d->report().malformed_lines == 1, "broken block not counted");
         }},
+        {"parser/broken-line-preserves-existing-scopes-and-diagnostics", [] {
+            auto d = SkkDictionary::parse(U"かk /書;先/[く/描;先/]/\n"
+                U"かk /消える/(unsupported)/[く/消える送り/\n"
+                U"かk /書;後/[く/描;後/掻/]/\n");
+            auto list = d->lookup({U"か", 'k'}, U"く");
+            texts(list, {U"描", U"掻", U"書"});
+            require(list[0].annotation == U"先" && list[2].annotation == U"先", "broken or duplicate entry replaced annotations");
+            const auto& report = d->report();
+            require(report.lines == 3 && report.entries == 1 && report.candidates == 3 &&
+                report.malformed_lines == 1 && report.unsupported_candidates == 1, "rejected line changed import counts");
+            require(report.diagnostics == std::vector<std::string>{"line 2: unsupported or empty candidate", "line 2: malformed dictionary entry"},
+                "candidate and line diagnostic order changed");
+        }},
+        {"parser/empty-and-nested-okuri-blocks", [] {
+            auto d = SkkDictionary::parse(U"かk /[く/]/\nかk /[く/(unsupported)/]/\n"
+                U"かk /書/[く/描/[け/掻/]/]/\nかな /仮名/\n");
+            texts(d->lookup({U"か", 'k'}, U"く"), {});
+            texts(d->lookup({U"かな"}), {U"仮名"});
+            require(d->report().entries == 1 && d->report().candidates == 1 && d->report().malformed_lines == 1 &&
+                d->report().unsupported_candidates == 1, "empty or broken block created an entry");
+        }},
         {"parser/malformed-lines-do-not-poison-others", [] {
             auto d = SkkDictionary::parse(U"broken\n /空/\nかな 仮名/\nかな /仮名\nかな /仮名/\n");
             texts(d->lookup({U"かな"}), {U"仮名"}); require(d->report().malformed_lines == 4, "invalid line counts differ");

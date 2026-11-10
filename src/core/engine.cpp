@@ -438,9 +438,7 @@ Result Engine::handle_registration(Key key) {
     result.committed.clear(); result.learning.reset(); result.rerank_learning.reset(); // Inner conversions are tentative.
     return result;
 }
-Result Engine::handle_input(Key key) {
-    Result result; result.consumed = true;
-    if (input_.stage == Stage::Selecting) input_.candidates_touched = true;
+bool Engine::handle_candidate_key(Key key, Result& result) {
     if (key.code == KeyCode::SelectCandidate || (numeric_candidate_keys_ && input_.stage == Stage::Selecting &&
         key.code == KeyCode::Character && key.character >= '1' && key.character <= '7')) {
         const auto index = key.code == KeyCode::SelectCandidate ? key.candidate_index :
@@ -448,112 +446,89 @@ Result Engine::handle_input(Key key) {
         // A missing row on the last page must not confirm a different word or
         // leak the shortcut into the document. Registration keeps the word in its draft.
         if (index < input_.candidates.size()) { input_.candidate_index = index; confirm(result); }
-        return result;
+        return true;
     }
     if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) {
         if (key.code == KeyCode::PageDown)
             input_.candidate_index += std::min(candidate_page_size, input_.candidates.size() - 1 - input_.candidate_index);
         else input_.candidate_index -= std::min(candidate_page_size, input_.candidate_index);
-        return result; // Reaching either edge never confirms or starts registration.
+        return true; // Reaching either edge never confirms or starts registration.
     }
-    if (key.code == KeyCode::Hiragana) {
-        confirm(result);
-        input_.mode = Mode::Hiragana;
-        return result;
-    }
-    if (input_.mode == Mode::FullWidthLatin && (key.code == KeyCode::Character || key.code == KeyCode::Space)) {
-        const auto ch = key.code == KeyCode::Space ? ' ' : key.character;
-        result.committed += fullwidth_latin_table[static_cast<std::size_t>(ch - ' ')];
-        return result;
-    }
-    if (key.code == KeyCode::Cancel) {
-        if (input_.stage == Stage::Selecting) {
-            restore_reading();
-        } else clear_composition();
-        return result;
-    }
-    if (key.code == KeyCode::Enter) { confirm(result); return result; }
-    if (key.code == KeyCode::Backspace) {
-        if (input_.stage == Stage::Selecting) {
-            if (!input_.visible_okuri().empty()) {
-                ++input_.deleted_okuri;
-                if (input_.visible_okuri().empty()) confirm(result);
-            } else {
-                confirm(result);
-                if (!result.committed.empty()) result.committed.pop_back();
-            }
-        } else if (input_.romaji.backspace()) {
-            if (input_.stage == Stage::Okuri) {
-                input_.reading += input_.okuri; input_.okuri.clear();
-                input_.okuri_letter = 0; input_.stage = Stage::Reading;
-            }
-        } else {
-            if (!input_.okuri.empty()) input_.okuri.pop_back();
-            else if (input_.okuri_letter) { input_.okuri_letter = 0; input_.stage = Stage::Reading; }
-            else if (!input_.reading.empty()) input_.reading.pop_back();
-            else clear_composition();
-        }
-        return result;
-    }
-    if (key.code == KeyCode::Space) {
-        if (!input_.abbrev && input_.stage != Stage::Selecting && !input_.romaji.pending().empty() && input_.romaji.accepts(' ')) {
-            append(input_.romaji.push(' '),result);
-            if (input_.stage == Stage::Okuri && !input_.okuri.empty() && input_.romaji.pending().empty()) convert(result);
-            return result;
-        }
-        if (input_.stage == Stage::Selecting) {
-            if (input_.candidate_index + 1 < input_.candidates.size()) ++input_.candidate_index;
-            else { result.candidates_exhausted = true; begin_registration(result); }
-        } else if (input_.stage == Stage::Direct) {
-            append(input_.romaji.flush(), result); result.committed += U" ";
-        } else convert(result);
-        return result;
-    }
-    char ch = key.character;
+    return false;
+}
+void Engine::handle_backspace(Result& result) {
     if (input_.stage == Stage::Selecting) {
-        if (ch == 'x') {
-            if (input_.candidate_index > 0) --input_.candidate_index;
-            else restore_reading();
-            return result;
+        if (!input_.visible_okuri().empty()) {
+            ++input_.deleted_okuri;
+            if (input_.visible_okuri().empty()) confirm(result);
+        } else {
+            confirm(result);
+            if (!result.committed.empty()) result.committed.pop_back();
         }
-        confirm(result); // Reprocess this key after committing the selected word.
+    } else if (input_.romaji.backspace()) {
+        if (input_.stage == Stage::Okuri) {
+            input_.reading += input_.okuri; input_.okuri.clear();
+            input_.okuri_letter = 0; input_.stage = Stage::Reading;
+        }
+    } else {
+        if (!input_.okuri.empty()) input_.okuri.pop_back();
+        else if (input_.okuri_letter) { input_.okuri_letter = 0; input_.stage = Stage::Reading; }
+        else if (!input_.reading.empty()) input_.reading.pop_back();
+        else clear_composition();
     }
-    if (input_.abbrev) {
-        // ASCII spelling and case are the dictionary key; q/l are ordinary letters.
-        input_.reading += static_cast<unsigned char>(ch);
-        return result;
+}
+void Engine::handle_space(Result& result) {
+    if (!input_.abbrev && input_.stage != Stage::Selecting && !input_.romaji.pending().empty() && input_.romaji.accepts(' ')) {
+        push_romaji(' ', result);
+        return;
     }
+    if (input_.stage == Stage::Selecting) {
+        if (input_.candidate_index + 1 < input_.candidates.size()) ++input_.candidate_index;
+        else { result.candidates_exhausted = true; begin_registration(result); }
+    } else if (input_.stage == Stage::Direct) {
+        append(input_.romaji.flush(), result); result.committed += U" ";
+    } else convert(result);
+}
+bool Engine::handle_mode_command(char ch, Result& result) {
     const bool azik = profile_.method() == InputMethod::Azik;
     if (!azik && ch == 'Q' && input_.stage == Stage::Direct) {
         append(input_.romaji.flush(), result);
         input_.stage = Stage::Reading;
-        return result;
+        return true;
     }
     if (azik && ch == profile_.reading_key() && !input_.romaji.accepts(ch) && input_.stage == Stage::Direct) {
         input_.stage = Stage::Reading;
-        return result;
+        return true;
     }
     // Resolve a failed prefix before dispatching a command. Other characters,
     // including normalized shifted input, resolve it inside Romaji::push.
     if (ch == '/' || ch == profile_.kana_key() || ch == 'l' || ch == 'L') append(input_.romaji.resolve_pending(ch), result);
-    if (input_.stage == Stage::Direct && input_.romaji.pending().empty() && ch == '/') {
+    if (!input_.romaji.pending().empty()) return false;
+    if (input_.stage == Stage::Direct && ch == '/') {
         input_.stage = Stage::Reading; input_.abbrev = true;
-        return result;
+        return true;
     }
-    if (input_.romaji.pending().empty() && ch == profile_.kana_key()) {
-        if (input_.stage == Stage::Direct) input_.mode = input_.mode == Mode::Hiragana ? Mode::Katakana : Mode::Hiragana;
-        else {
-            auto text = input_.reading + input_.okuri;
-            result.committed += input_.mode == Mode::Hiragana ? katakana(text) : text;
-            clear_composition();
-        }
-        return result;
+    if (ch == profile_.kana_key()) {
+        handle_kana_command(result);
+        return true;
     }
-    if (input_.romaji.pending().empty() && (ch == 'l' || ch == 'L')) {
+    if (ch == 'l' || ch == 'L') {
         confirm(result);
         input_.mode = ch == 'L' ? Mode::FullWidthLatin : Mode::Latin;
-        return result;
+        return true;
     }
+    return false;
+}
+void Engine::handle_kana_command(Result& result) {
+    if (input_.stage == Stage::Direct) input_.mode = input_.mode == Mode::Hiragana ? Mode::Katakana : Mode::Hiragana;
+    else {
+        auto text = input_.reading + input_.okuri;
+        result.committed += input_.mode == Mode::Hiragana ? katakana(text) : text;
+        clear_composition();
+    }
+}
+char Engine::normalize_shifted_character(char ch, Result& result) {
+    const bool azik = profile_.method() == InputMethod::Azik;
     // Case-sensitive continuations such as zL take precedence over Shift handling.
     const bool shifted_sokuon = azik && ch == profile_.shifted_sokuon_key();
     if (((ch >= 'A' && ch <= 'Z') || shifted_sokuon) && !input_.romaji.accepts(ch)) {
@@ -568,8 +543,53 @@ Result Engine::handle_input(Key key) {
         // While forming the first kana or an established okuri, an extra
         // shifted letter continues the romaji (KAnji, KYOu, KaKU, KOroNDe).
     }
+    return ch;
+}
+void Engine::push_romaji(char ch, Result& result) {
     append(input_.romaji.push(ch), result);
     if (input_.stage == Stage::Okuri && !input_.okuri.empty() && input_.romaji.pending().empty()) convert(result);
+}
+void Engine::handle_character(char ch, Result& result) {
+    if (input_.stage == Stage::Selecting) {
+        if (ch == 'x') {
+            if (input_.candidate_index > 0) --input_.candidate_index;
+            else restore_reading();
+            return;
+        }
+        confirm(result); // Reprocess this key after committing the selected word.
+    }
+    if (input_.abbrev) {
+        // ASCII spelling and case are the dictionary key; q/l are ordinary letters.
+        input_.reading += static_cast<unsigned char>(ch);
+        return;
+    }
+    if (handle_mode_command(ch, result)) return;
+    push_romaji(normalize_shifted_character(ch, result), result);
+}
+Result Engine::handle_input(Key key) {
+    Result result; result.consumed = true;
+    if (input_.stage == Stage::Selecting) input_.candidates_touched = true;
+    if (handle_candidate_key(key, result)) return result;
+    if (key.code == KeyCode::Hiragana) {
+        confirm(result);
+        input_.mode = Mode::Hiragana;
+        return result;
+    }
+    if (input_.mode == Mode::FullWidthLatin && (key.code == KeyCode::Character || key.code == KeyCode::Space)) {
+        const auto ch = key.code == KeyCode::Space ? ' ' : key.character;
+        result.committed += fullwidth_latin_table[static_cast<std::size_t>(ch - ' ')];
+        return result;
+    }
+    switch (key.code) {
+    case KeyCode::Cancel:
+        if (input_.stage == Stage::Selecting) restore_reading();
+        else clear_composition();
+        break;
+    case KeyCode::Enter: confirm(result); break;
+    case KeyCode::Backspace: handle_backspace(result); break;
+    case KeyCode::Space: handle_space(result); break;
+    default: handle_character(key.character, result); break;
+    }
     return result;
 }
 } // namespace nskkzime

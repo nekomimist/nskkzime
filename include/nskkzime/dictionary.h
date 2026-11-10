@@ -36,6 +36,7 @@ private:
         std::map<std::u32string, std::vector<Candidate>, std::less<>> okuri;
     };
     static std::shared_ptr<SkkDictionary> parse_impl(std::u32string_view text);
+    static bool parse_candidates(std::u32string_view, const LookupKey&, Entry&, DictionaryReport&);
     std::map<LookupKey, Entry> entries_;
     DictionaryReport report_;
 };

@@ -727,123 +727,155 @@ private:
         if (notify && !connecting_mode_ && revision == engine_.revision() && request == mode_notice_.request())
             show_mode_indicator(context);
     }
-    HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied, ITfContext* origin = nullptr) {
+    bool prepare_key_editor(ITfContext* target, TfEditCookie cookie) {
         const auto before_notice = input_checkpoint();
         candidates_.dismiss_notice();
-        if (!input_unchanged(before_notice)) return S_OK;
+        if (!input_unchanged(before_notice)) return false;
         // A destroyed or clipped view must not keep capturing registration
         // input while its own editor is hidden.
         if ((engine_.registering() || engine_.forgetting()) && !candidates_.presentation_available()) {
             const auto checkpoint = input_checkpoint();
             candidates_.locate(target, checkpoint.composition.Get(), cookie, checkpoint.session, true);
-            if (!input_unchanged(checkpoint)) return S_OK;
+            if (!input_unchanged(checkpoint)) return false;
             cancel_unshown_editor();
         }
+        return true;
+    }
+    struct KeyPersistence {
+        bool starting_registration = false, starting_forget = false;
+        bool allowed = false, protected_registration = false;
+        std::wstring reason;
+    };
+    std::optional<KeyPersistence> prepare_key_persistence(ITfContext* target, TfEditCookie cookie,
+            const InputCheckpoint& checkpoint, const Result& result, Engine& next) {
+        KeyPersistence persistence;
+        persistence.starting_registration = next.registration_depth() > engine_.registration_depth();
+        persistence.starting_forget = next.forgetting() && !engine_.forgetting() && next.forget_target().has_value();
+        const bool needs_permission = result.learning || result.rerank_learning || result.forgetting ||
+            persistence.starting_registration || persistence.starting_forget;
+        const auto permission = needs_permission ? learning_permission(target, checkpoint.composition.Get(), cookie, persistence.reason) :
+            LearningPermission::Unavailable;
+        persistence.allowed = permission == LearningPermission::Allowed;
+        persistence.protected_registration = persistence.starting_registration && permission == LearningPermission::Protected;
+        // Property callbacks can end or replace the composition while answering.
+        if (!input_unchanged(checkpoint)) return {};
+        if (persistence.starting_registration && !persistence.allowed) next.abandon_registration();
+        if (persistence.starting_forget && !persistence.allowed) next.cancel_forgetting();
+        return persistence;
+    }
+    struct KeyInference {
+        std::optional<PlannedInference> plan;
+        std::optional<SurroundingText> text;
+        std::optional<std::pair<InferenceRequest, InferenceResponse>> scored;
+        bool promoted = false, log_scored = false;
+    };
+    bool prepare_key_inference(ITfContext* target, TfEditCookie cookie, const InputCheckpoint& checkpoint,
+            bool was_pending, const Result& result, Engine& next, KeyInference& inference) {
+        inference.plan = inference_state_.client && !was_pending ? plan_inference(engine_, next, result, inference_state_.policy) : std::nullopt;
+        if (!inference.plan) return true;
+        ComPtr<ITfRange> range;
+        if (checkpoint.composition && SUCCEEDED(checkpoint.composition->GetRange(&range)) && range) {
+            auto text = surrounding_text(target, range.Get(), cookie, inference_state_.allow_unknown_context);
+            // Some hosts (including Office) expose no usable input scope.
+            // Context requires a separate opt-in for unknown scopes.
+            // Actual permission remains Unknown, so local inference never
+            // grants learning, registration or input-log permission.
+            if (text.permission != InputPermission::Restricted) {
+                inference.text = std::move(text); next.defer_registration();
+                if (inference.plan->purpose != InferencePurpose::Rerank) next.note_generation_attempt();
+            } else set_inference_status(this, L"推論: 保護された入力欄のため送信しません");
+        }
+        return input_unchanged(checkpoint);
+    }
+    void score_key_inference(Engine& next, KeyInference& inference) {
+        // Like skk-zenz, score before the first candidate is shown so the list
+        // never reorders under the user. Too slow: fall back to the async path.
+        if (!inference.plan || !inference.text) return;
+        auto response = inference_state_.score_now(*inference.plan, *inference.text);
+        if (!response) return;
+        inference.promoted = apply_inference_result(next, *inference.plan, *response, inference_state_.policy);
+        inference.log_scored = inference.text->permission == InputPermission::Allowed && !inference.text->contains_unknown_scope;
+        inference.scored.emplace(std::move(inference.plan->request), std::move(*response));
+        inference.plan.reset(); inference.text.reset();
+    }
+    void persist_key_result(const Result& result, KeyPersistence& persistence) {
+        if (result.forgetting && persistence.allowed && dictionary_ && dictionary_->forget(*result.forgetting))
+            engine_.forget_registration(*result.forgetting);
+        if (result.learning && persistence.allowed) {
+            if (dictionary_) dictionary_->learn(*result.learning);
+            if (result.registration) engine_.remember_registration(*result.learning);
+        } else if (result.learning || ((result.forgetting || persistence.starting_registration || persistence.starting_forget) && !persistence.allowed)) {
+            if (dictionary_) dictionary_->skipped(std::move(persistence.reason));
+        }
+        if (result.rerank_learning && dictionary_) {
+            if (persistence.allowed) dictionary_->learn_rerank(*result.rerank_learning);
+            else dictionary_->skipped(std::move(persistence.reason));
+        }
+    }
+    void report_key_score(const KeyInference& inference) {
+        if (!inference.scored) return;
+        set_inference_status(this, inference.promoted ? L"推論: 表示前の採点で最良の辞書候補を先頭へ移動" : L"推論: 表示前に採点し、辞書候補の順位を維持");
+        try {
+            if (inference.log_scored && inference_state_.client && inference_state_.client->input_log_enabled())
+                inference_state_.client->record_input(inference.scored->first, &inference.scored->second, InferenceStatus::Ok);
+        } catch (...) {}
+    }
+    void publish_key_mode(ITfContext* target, bool mode_changed, std::uint64_t accepted_revision, std::uint64_t indicator_request) {
+        // Inner registration input has its own modes. Keep Windows open
+        // until the outer editor is completed or explicitly abandoned.
+        if (input_mode_ && !engine_.registering()) {
+            const InputPhaseTiming mode(InputTimingPhase::ModeSync);
+            publish_mode(target);
+        }
+        if (mode_changed && engine_.revision() == accepted_revision && mode_notice_.request() == indicator_request)
+            show_mode_indicator(target);
+    }
+    void submit_key_inference(KeyInference& inference) {
+        if (!inference.text || !inference_state_.client || !composition_state_.composition || engine_.registering()) return;
+        try {
+            inference_state_.submit(std::move(*inference.plan), std::move(*inference.text), input_checkpoint());
+            set_inference_status(this, inference_state_.pending->text.before.empty() && inference_state_.pending->text.after.empty()
+                ? L"推論: 応答待ち（周辺本文なし）" : L"推論: 応答待ち（周辺本文あり）");
+        } catch (...) { set_inference_status(this, L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
+    }
+    HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied, ITfContext* origin = nullptr) {
+        if (!prepare_key_editor(target, cookie)) return S_OK;
         InputPhaseTiming core(InputTimingPhase::Core);
         auto next = engine_;
         const auto result = next.handle(key);
         core.finish();
         if (!result.consumed) return S_OK;
         const auto checkpoint = input_checkpoint();
-        const auto& current = checkpoint.composition;
-        const auto session = checkpoint.session;
         const bool was_pending = inference_state_.pending.has_value();
-        std::wstring learning_reason;
-        const bool starting_registration = next.registration_depth() > engine_.registration_depth();
-        const bool starting_forget = next.forgetting() && !engine_.forgetting() && next.forget_target().has_value();
-        const auto permission = (result.learning || result.rerank_learning || result.forgetting || starting_registration || starting_forget) ?
-            learning_permission(target, current.Get(), cookie, learning_reason) : LearningPermission::Unavailable;
-        const bool persistence_allowed = permission == LearningPermission::Allowed;
-        const bool protected_registration = starting_registration && permission == LearningPermission::Protected;
-        // Property callbacks can end or replace the composition while answering.
-        if (!input_unchanged(checkpoint)) return S_OK;
-        if (starting_registration && !persistence_allowed) next.abandon_registration();
-        if (starting_forget && !persistence_allowed) next.cancel_forgetting();
-        std::optional<SurroundingText> inference_text;
-        auto plan = inference_state_.client && !was_pending ? plan_inference(engine_,next,result,inference_state_.policy) : std::nullopt;
-        if (plan) {
-            ComPtr<ITfRange> range;
-            if (current && SUCCEEDED(current->GetRange(&range)) && range) {
-                auto text = surrounding_text(target,range.Get(),cookie,inference_state_.allow_unknown_context);
-                // Some hosts (including Office) expose no usable input scope.
-                // Context requires a separate opt-in for unknown scopes.
-                // Actual permission remains Unknown, so local inference never
-                // grants learning, registration or input-log permission.
-                if (text.permission != InputPermission::Restricted) {
-                    inference_text = std::move(text); next.defer_registration();
-                    if (plan->purpose != InferencePurpose::Rerank) next.note_generation_attempt();
-                }
-                else set_inference_status(this,L"推論: 保護された入力欄のため送信しません");
-            }
-            if (!input_unchanged(checkpoint)) return S_OK;
-        }
-        // Like skk-zenz, score before the first candidate is shown so the list
-        // never reorders under the user. Too slow: fall back to the async path.
-        std::optional<std::pair<InferenceRequest, InferenceResponse>> scored;
-        bool promoted = false, log_scored = false;
-        if (plan && inference_text) {
-            if (auto response = inference_state_.score_now(*plan, *inference_text)) {
-                promoted = apply_inference_result(next, *plan, *response, inference_state_.policy);
-                log_scored = inference_text->permission == InputPermission::Allowed && !inference_text->contains_unknown_scope;
-                scored.emplace(std::move(plan->request), std::move(*response));
-                plan.reset(); inference_text.reset();
-            }
-        }
+        auto persistence = prepare_key_persistence(target, cookie, checkpoint, result, next);
+        if (!persistence) return S_OK;
+        KeyInference inference;
+        if (!prepare_key_inference(target, cookie, checkpoint, was_pending, result, next, inference)) return S_OK;
+        score_key_inference(next, inference);
         auto visibility = candidate_visibility_;
-        if (next.registering() || next.forgetting() || protected_registration) {
+        if (next.registering() || next.forgetting() || persistence->protected_registration) {
             // Capture layout before changing a candidate back into the reading.
             // This also works with a delayed candidate list or a dictionary miss.
-            candidates_.locate(target, current.Get(), cookie, session, true);
+            candidates_.locate(target, checkpoint.composition.Get(), cookie, checkpoint.session, true);
             if (!input_unchanged(checkpoint) || composition_state_.context.Get() != target) return S_OK;
         }
         const auto status = apply(target, cookie, result.committed, next);
-        if (SUCCEEDED(status)) {
-            const bool mode_changed = engine_.mode() != next.mode();
-            cancel_inference();
-            visibility.advance(key, result, next);
-            candidate_visibility_ = visibility;
-            engine_ = std::move(next); applied = true;
-            const auto accepted_revision = engine_.revision();
-            const auto indicator_request = mode_notice_.request();
-            if (origin && composition_state_.composition && composition_state_.context.Get() == target) composition_state_.origin = origin;
-            update_tsf_trace(diagnostic_state(target, origin));
-            trace_tsf(TsfEvent::StateAccepted);
-            if (result.forgetting && persistence_allowed && dictionary_ && dictionary_->forget(*result.forgetting))
-                engine_.forget_registration(*result.forgetting);
-            if (result.learning && persistence_allowed) {
-                if (dictionary_) dictionary_->learn(*result.learning);
-                if (result.registration) engine_.remember_registration(*result.learning);
-            } else if (result.learning || ((result.forgetting || starting_registration || starting_forget) && !persistence_allowed)) {
-                if (dictionary_) dictionary_->skipped(std::move(learning_reason));
-            }
-            if (result.rerank_learning) {
-                if (dictionary_) {
-                    if (persistence_allowed) dictionary_->learn_rerank(*result.rerank_learning);
-                    else dictionary_->skipped(std::move(learning_reason));
-                }
-            }
-            refresh_candidates(cookie, protected_registration ? L"保護された入力欄のため、単語登録を行いません。" : L"");
-            if (scored) {
-                set_inference_status(this, promoted ? L"推論: 表示前の採点で最良の辞書候補を先頭へ移動" : L"推論: 表示前に採点し、辞書候補の順位を維持");
-                try { if (log_scored && inference_state_.client && inference_state_.client->input_log_enabled())
-                    inference_state_.client->record_input(scored->first, &scored->second, InferenceStatus::Ok); } catch (...) {}
-            }
-            // Inner registration input has its own modes. Keep Windows open
-            // until the outer editor is completed or explicitly abandoned.
-            if (input_mode_ && !engine_.registering()) {
-                const InputPhaseTiming mode(InputTimingPhase::ModeSync);
-                publish_mode(target);
-            }
-            if (mode_changed && engine_.revision() == accepted_revision && mode_notice_.request() == indicator_request)
-                show_mode_indicator(target);
-            if (inference_text && inference_state_.client && composition_state_.composition && !engine_.registering()) {
-                try {
-                    inference_state_.submit(std::move(*plan), std::move(*inference_text), input_checkpoint());
-                    set_inference_status(this,inference_state_.pending->text.before.empty() && inference_state_.pending->text.after.empty()
-                        ? L"推論: 応答待ち（周辺本文なし）" : L"推論: 応答待ち（周辺本文あり）");
-                } catch (...) { set_inference_status(this,L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
-            }
-        }
+        if (FAILED(status)) return status;
+        const bool mode_changed = engine_.mode() != next.mode();
+        cancel_inference();
+        visibility.advance(key, result, next);
+        candidate_visibility_ = visibility;
+        engine_ = std::move(next); applied = true;
+        const auto accepted_revision = engine_.revision();
+        const auto indicator_request = mode_notice_.request();
+        if (origin && composition_state_.composition && composition_state_.context.Get() == target) composition_state_.origin = origin;
+        update_tsf_trace(diagnostic_state(target, origin));
+        trace_tsf(TsfEvent::StateAccepted);
+        persist_key_result(result, *persistence);
+        refresh_candidates(cookie, persistence->protected_registration ? L"保護された入力欄のため、単語登録を行いません。" : L"");
+        report_key_score(inference);
+        publish_key_mode(target, mode_changed, accepted_revision, indicator_request);
+        submit_key_inference(inference);
         return status;
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {

@@ -3,8 +3,10 @@
 #include "windows_text.h"
 #include <windows.h>
 #include <shlobj.h>
+#include <algorithm>
 #include <charconv>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 
@@ -16,6 +18,143 @@ std::string_view trim(std::string_view value) {
     if (first == value.npos) return {};
     return value.substr(first, value.find_last_not_of(" \t\r") - first + 1);
 }
+template<typename Number>
+Number parse_number(std::string_view value, const char* error) {
+    Number number{};
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument(error);
+    return number;
+}
+template<typename Value>
+Value parse_choice(std::string_view value, std::string_view first, Value first_value,
+        std::string_view second, Value second_value, const char* error) {
+    if (value == first) return first_value;
+    if (value == second) return second_value;
+    throw std::invalid_argument(error);
+}
+bool parse_toggle(std::string_view value, const char* error) {
+    return parse_choice(value, "on", true, "off", false, error);
+}
+std::filesystem::path parse_storage_path(std::string_view value) {
+    std::filesystem::path path(wide_message(value));
+    validate_storage_path(path);
+    return path;
+}
+struct SettingField {
+    std::string_view key;
+    const char* duplicate_error; // Null for repeatable keys.
+    void (*assign)(AppSettings&, std::string_view);
+};
+constexpr const char* learning_error = "learning must appear at most once and equal on or off";
+constexpr const char* startup_error = "startup-ime-off must appear at most once and equal on or off";
+constexpr const char* version_error = "settings version must appear once and equal 1";
+const SettingField setting_fields[] = {
+    {"version", version_error, [](AppSettings&, std::string_view value) {
+        if (value != "1") throw std::invalid_argument(version_error);
+    }},
+    {"learning", learning_error, [](AppSettings& s, std::string_view value) {
+        s.learning = parse_toggle(value, learning_error);
+    }},
+    {"startup-ime-off", startup_error, [](AppSettings& s, std::string_view value) {
+        s.startup_ime_off = parse_toggle(value, startup_error);
+    }},
+    {"ui-font", "ui-font must appear at most once", [](AppSettings& s, std::string_view value) {
+        s.ui.font = wide_message(value);
+    }},
+    {"show-input-mode", "duplicate input mode setting", [](AppSettings& s, std::string_view value) {
+        s.ui.show_input_mode = parse_toggle(value, "show-input-mode must equal on or off");
+    }},
+    {"input-mode-duration-ms", "duplicate input mode setting", [](AppSettings& s, std::string_view value) {
+        s.ui.input_mode_duration_ms = parse_number<unsigned int>(value, "invalid input-mode-duration-ms");
+    }},
+    {"off-key-exclude", nullptr, [](AppSettings& s, std::string_view value) {
+        s.off_key_exclusions.push_back(wide_message(value));
+        validate_off_key_exclusions(s.off_key_exclusions);
+    }},
+    {"candidate-show-after", "duplicate candidate setting", [](AppSettings& s, std::string_view value) {
+        s.candidates.show_after = parse_number<unsigned int>(value, "invalid candidate-show-after");
+    }},
+    {"candidate-keys", "duplicate candidate setting", [](AppSettings& s, std::string_view value) {
+        s.candidates.keys = parse_choice(value, "numbers", CandidateKeys::Numbers, "asdfjkl", CandidateKeys::Asdfjkl,
+            "candidate-keys must equal numbers or asdfjkl");
+    }},
+    {"tsf-log", "duplicate TSF log setting", [](AppSettings& s, std::string_view value) {
+        s.tsf_log.enabled = parse_toggle(value, "tsf-log must equal on or off");
+    }},
+    {"tsf-log-directory", "duplicate TSF log setting", [](AppSettings& s, std::string_view value) {
+        s.tsf_log.directory = wide_message(value);
+    }},
+    {"input-method", "duplicate input profile setting", [](AppSettings& s, std::string_view value) {
+        s.input_method = parse_choice(value, "skk", InputMethod::Skk, "azik", InputMethod::Azik,
+            "input-method must equal skk or azik");
+    }},
+    {"azik-keyboard", "duplicate input profile setting", [](AppSettings& s, std::string_view value) {
+        s.azik_keyboard = parse_choice(value, "jp106", AzikKeyboard::Jp106, "us101", AzikKeyboard::Us101,
+            "azik-keyboard must equal jp106 or us101");
+    }},
+    {"romaji", "romaji must appear at most once", [](AppSettings& s, std::string_view value) {
+        s.romaji_rules = parse_storage_path(value);
+    }},
+    {"inference", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.enabled = parse_choice(value, "zenz", true, "off", false, "inference must equal zenz or off");
+    }},
+    {"zenz-unknown-context", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.allow_unknown_context = parse_toggle(value, "zenz-unknown-context must equal on or off");
+    }},
+    {"input-log", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.log_input = parse_toggle(value, "input-log must equal on or off");
+    }},
+    {"input-log-directory", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.log_directory = parse_storage_path(value);
+    }},
+    {"zenz-model", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.model = parse_storage_path(value);
+    }},
+    {"zenz-server", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.server = parse_storage_path(value);
+    }},
+    {"zenz-rerank", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.rerank = parse_toggle(value, "zenz toggle must equal on or off");
+    }},
+    {"zenz-rerank-learn", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.rerank_learn = parse_toggle(value, "zenz toggle must equal on or off");
+    }},
+    {"zenz-learn-fallback", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.learn_fallback = parse_toggle(value, "zenz toggle must equal on or off");
+    }},
+    {"zenz-promote-threshold", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.promote_threshold = parse_number<float>(value, "invalid zenz score limit");
+    }},
+    {"zenz-max-score-gap", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.max_score_gap = parse_number<float>(value, "invalid zenz score limit");
+    }},
+    {"inference-threads", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.threads = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"inference-timeout-ms", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.timeout_ms = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"zenz-min-length", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.long_min_length = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"zenz-rerank-limit", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.rerank_limit = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"zenz-rerank-wait-ms", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.rerank_wait_ms = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"zenz-idle-seconds", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.idle_seconds = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"zenz-score-timeout-ms", "duplicate inference setting", [](AppSettings& s, std::string_view value) {
+        s.zenz.policy.score_timeout_ms = parse_number<unsigned int>(value, "invalid inference number");
+    }},
+    {"dictionary", nullptr, [](AppSettings& s, std::string_view value) {
+        s.dictionaries.push_back(parse_storage_path(value));
+        if (s.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
+    }}
+};
+
 std::string serialize(const AppSettings& settings) {
     if (settings.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
     std::string bytes = "# nskkzime settings (UTF-8); dictionary order is priority order.\nversion=1\n";
@@ -106,8 +245,8 @@ AppSettings parse_settings(std::string_view bytes) {
     from_utf8(bytes); // Validate before interpreting keys or paths.
     if (bytes.find('\0') != bytes.npos) throw std::invalid_argument("settings contain a null character");
     if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-    AppSettings settings; bool version = false, learning = false, romaji = false, startup_ime_off = false, ui_font = false;
-    std::set<std::string_view> inference_keys, candidate_options, diagnostic_options, mode_options, input_options;
+    AppSettings settings;
+    std::set<std::string_view> seen;
     while (!bytes.empty()) {
         const auto newline = bytes.find('\n');
         auto line = trim(bytes.substr(0, newline));
@@ -116,110 +255,13 @@ AppSettings parse_settings(std::string_view bytes) {
         const auto separator = line.find('=');
         if (separator == line.npos) throw std::invalid_argument("expected key=value in settings");
         const auto key = trim(line.substr(0, separator)), value = trim(line.substr(separator + 1));
-        if (key == "version") {
-            if (version || value != "1") throw std::invalid_argument("settings version must appear once and equal 1");
-            version = true;
-        } else if (key == "learning") {
-            if (learning || (value != "on" && value != "off")) throw std::invalid_argument("learning must appear at most once and equal on or off");
-            learning = true; settings.learning = value == "on";
-        } else if (key == "startup-ime-off") {
-            if (startup_ime_off || (value != "on" && value != "off"))
-                throw std::invalid_argument("startup-ime-off must appear at most once and equal on or off");
-            startup_ime_off = true; settings.startup_ime_off = value == "on";
-        } else if (key == "ui-font") {
-            if (ui_font) throw std::invalid_argument("ui-font must appear at most once");
-            ui_font = true; settings.ui.font = wide_message(value);
-        } else if (key == "show-input-mode" || key == "input-mode-duration-ms") {
-            if (!mode_options.insert(key).second) throw std::invalid_argument("duplicate input mode setting");
-            if (key == "show-input-mode") {
-                if (value != "on" && value != "off") throw std::invalid_argument("show-input-mode must equal on or off");
-                settings.ui.show_input_mode = value == "on";
-            } else {
-                unsigned int number = 0;
-                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
-                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
-                    throw std::invalid_argument("invalid input-mode-duration-ms");
-                settings.ui.input_mode_duration_ms = number;
-            }
-        } else if (key == "off-key-exclude") {
-            settings.off_key_exclusions.push_back(wide_message(value));
-            validate_off_key_exclusions(settings.off_key_exclusions);
-        } else if (key == "candidate-show-after" || key == "candidate-keys") {
-            if (!candidate_options.insert(key).second) throw std::invalid_argument("duplicate candidate setting");
-            if (key == "candidate-keys") {
-                if (value != "numbers" && value != "asdfjkl") throw std::invalid_argument("candidate-keys must equal numbers or asdfjkl");
-                settings.candidates.keys = value == "asdfjkl" ? CandidateKeys::Asdfjkl : CandidateKeys::Numbers;
-            } else {
-                unsigned int number = 0;
-                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
-                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("invalid candidate-show-after");
-                settings.candidates.show_after = number;
-            }
-        } else if (key == "tsf-log" || key == "tsf-log-directory") {
-            if (!diagnostic_options.insert(key).second) throw std::invalid_argument("duplicate TSF log setting");
-            if (key == "tsf-log") {
-                if (value != "on" && value != "off") throw std::invalid_argument("tsf-log must equal on or off");
-                settings.tsf_log.enabled = value == "on";
-            } else settings.tsf_log.directory = std::filesystem::path(wide_message(value));
-        } else if (key == "input-method" || key == "azik-keyboard") {
-            if (!input_options.insert(key).second) throw std::invalid_argument("duplicate input profile setting");
-            if (key == "input-method") {
-                if (value != "skk" && value != "azik") throw std::invalid_argument("input-method must equal skk or azik");
-                settings.input_method = value == "azik" ? InputMethod::Azik : InputMethod::Skk;
-            } else {
-                if (value != "jp106" && value != "us101") throw std::invalid_argument("azik-keyboard must equal jp106 or us101");
-                settings.azik_keyboard = value == "us101" ? AzikKeyboard::Us101 : AzikKeyboard::Jp106;
-            }
-        } else if (key == "romaji") {
-            if (romaji) throw std::invalid_argument("romaji must appear at most once");
-            romaji = true; settings.romaji_rules = std::filesystem::path(wide_message(value)); validate_storage_path(settings.romaji_rules);
-        } else if (key == "inference" || key == "zenz-model" || key == "zenz-server" || key == "inference-threads" || key == "inference-timeout-ms" ||
-            key == "zenz-min-length" || key == "zenz-rerank" || key == "zenz-rerank-learn" || key == "zenz-learn-fallback" || key == "zenz-rerank-limit" || key == "zenz-score-timeout-ms" ||
-            key == "zenz-rerank-wait-ms" || key == "zenz-idle-seconds" || key == "zenz-promote-threshold" || key == "zenz-max-score-gap" || key == "input-log" || key == "input-log-directory" ||
-            key == "zenz-unknown-context") {
-            if (!inference_keys.insert(key).second) throw std::invalid_argument("duplicate inference setting");
-            if (key == "inference") {
-                if (value != "zenz" && value != "off") throw std::invalid_argument("inference must equal zenz or off");
-                settings.zenz.enabled = value == "zenz";
-            } else if (key == "zenz-unknown-context") {
-                if (value != "on" && value != "off") throw std::invalid_argument("zenz-unknown-context must equal on or off");
-                settings.zenz.allow_unknown_context = value == "on";
-            } else if (key == "input-log") {
-                if (value != "on" && value != "off") throw std::invalid_argument("input-log must equal on or off");
-                settings.zenz.log_input = value == "on";
-            } else if (key == "input-log-directory") {
-                settings.zenz.log_directory = std::filesystem::path(wide_message(value));
-                validate_storage_path(settings.zenz.log_directory);
-            } else if (key == "zenz-model" || key == "zenz-server") {
-                auto& path = key == "zenz-model" ? settings.zenz.model : settings.zenz.server;
-                path = std::filesystem::path(wide_message(value)); validate_storage_path(path);
-            } else if (key == "zenz-rerank" || key == "zenz-rerank-learn" || key == "zenz-learn-fallback") {
-                if (value != "on" && value != "off") throw std::invalid_argument("zenz toggle must equal on or off");
-                (key == "zenz-rerank" ? settings.zenz.policy.rerank : key == "zenz-rerank-learn" ? settings.zenz.policy.rerank_learn : settings.zenz.policy.learn_fallback) = value == "on";
-            } else if (key == "zenz-promote-threshold" || key == "zenz-max-score-gap") {
-                float number = 0;
-                const auto parsed = std::from_chars(value.data(),value.data()+value.size(),number);
-                if (parsed.ec != std::errc{} || parsed.ptr != value.data()+value.size()) throw std::invalid_argument("invalid zenz score limit");
-                (key == "zenz-promote-threshold" ? settings.zenz.policy.promote_threshold : settings.zenz.policy.max_score_gap) = number;
-            } else {
-                unsigned int number = 0;
-                const auto parsed = std::from_chars(value.data(),value.data()+value.size(),number);
-                if (parsed.ec != std::errc{} || parsed.ptr != value.data()+value.size()) throw std::invalid_argument("invalid inference number");
-                if (key == "inference-threads") settings.zenz.threads = number;
-                else if (key == "inference-timeout-ms") settings.zenz.timeout_ms = number;
-                else if (key == "zenz-min-length") settings.zenz.policy.long_min_length = number;
-                else if (key == "zenz-rerank-limit") settings.zenz.policy.rerank_limit = number;
-                else if (key == "zenz-rerank-wait-ms") settings.zenz.policy.rerank_wait_ms = number;
-                else if (key == "zenz-idle-seconds") settings.zenz.idle_seconds = number;
-                else settings.zenz.policy.score_timeout_ms = number;
-            }
-        } else if (key == "dictionary") {
-            auto path = std::filesystem::path(wide_message(value)); validate_storage_path(path);
-            settings.dictionaries.push_back(std::move(path));
-            if (settings.dictionaries.size() > max_dictionaries) throw std::invalid_argument("at most 32 dictionaries are supported");
-        } else throw std::invalid_argument("unknown settings key");
+        const auto field = std::find_if(std::begin(setting_fields), std::end(setting_fields),
+            [key](const auto& entry) { return entry.key == key; });
+        if (field == std::end(setting_fields)) throw std::invalid_argument("unknown settings key");
+        if (field->duplicate_error && !seen.insert(key).second) throw std::invalid_argument(field->duplicate_error);
+        field->assign(settings, value);
     }
-    if (!version) throw std::invalid_argument("settings version is missing");
+    if (!seen.contains("version")) throw std::invalid_argument("settings version is missing");
     validate_ui_settings(settings.ui);
     validate_candidate_settings(settings.candidates);
     validate_zenz_settings(settings.zenz);

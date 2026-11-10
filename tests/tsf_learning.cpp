@@ -336,7 +336,26 @@ int wmain(int argc, wchar_t** argv) {
         reentrant->text_query = [&](ITfRange*) { if (!deactivated) { deactivated = true; service->Deactivate(); } return S_OK; };
         check(!key(keys.Get(), context.Get(), VK_SPACE), "stale registration applied after reentrant deactivation"); context->pump();
         check(!host->ui && context->doc->text == previous_text, "reentrant layout capture restored stale UI or rewrote text");
-        check(read_user_dictionary(file).revision() == 13, "UI recovery or protected notices persisted input");
+        // Permission queries also re-enter the host, before a proposed commit
+        // or registration may be applied or persisted.
+        for (const bool registration : {false, true}) {
+            check(SUCCEEDED(service->ActivateEx(host.Get(), 1, 0)), "scope reentry activation failed"); wait_for_dictionary();
+            context.Attach(new test_host::Context);
+            if (registration) type(keys.Get(), context.Get(), "/scope-reentry");
+            else { type(keys.Get(), context.Get(), "Kanji"); key(keys.Get(), context.Get(), VK_SPACE); }
+            const auto text_before_scope = context->doc->text;
+            bool scope_deactivated = false;
+            context->scope_query = [&](ITfRange*, InputScope&) {
+                if (!scope_deactivated) { scope_deactivated = true; service->Deactivate(); }
+                return S_OK;
+            };
+            check(!key(keys.Get(), context.Get(), registration ? VK_SPACE : VK_RETURN), "stale key accepted after permission reentry");
+            context->pump();
+            check(scope_deactivated && !host->ui && context->doc->text == text_before_scope,
+                "permission reentry changed text or restored stale UI");
+            context->scope_query = {};
+        }
+        check(read_user_dictionary(file).revision() == 13, "UI recovery, protected notices or permission reentry persisted input");
         service->Deactivate(); keys.Reset(); service.Reset(); factory.Reset(); host.Reset(); context.Reset();
         std::cout << "PASS cached TSF learning, transactional registration, immediate reuse, recursive cancel, private and unknown scopes, focus/UI failure\n";
         result = 0;
