@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "romaji_settings.h"
 #include "runtime_configuration.h"
 #include <fstream>
@@ -7,15 +8,15 @@ namespace {
 std::mutex mutex;
 std::wstring status = L"ローマ字: 内蔵ルール";
 }
-InputProfile resolve_input_profile(const DictionarySettings& settings, std::string_view overlay) {
+InputProfile resolve_input_profile(const AppSettings& settings, std::string_view overlay) {
     auto profile = InputProfile::built_in(settings.input_method, settings.azik_keyboard);
     return overlay.empty() ? profile : profile.overlay(overlay);
 }
-std::wstring input_profile_status(const DictionarySettings& settings) {
+std::wstring input_profile_status(const AppSettings& settings) {
     if (settings.input_method == InputMethod::Skk) return L"入力方式: SKK標準";
     return settings.azik_keyboard == AzikKeyboard::Jp106 ? L"入力方式: AZIK（DDSKK方式・日本語JIS）" : L"入力方式: AZIK（DDSKK方式・英語US）";
 }
-LoadedRomajiRules load_romaji_rules(const DictionaryConfiguration& configuration) {
+LoadedRomajiRules load_romaji_rules(const SettingsConfiguration& configuration) {
     const auto profile = resolve_input_profile(configuration.settings);
     LoadedRomajiRules loaded{profile.rules(),input_profile_status(configuration.settings) + L"\r\nローマ字: 内蔵ルール",false,{},profile};
     const auto& path = configuration.settings.romaji_rules;

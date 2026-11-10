@@ -1,5 +1,5 @@
 #pragma once
-#include "dictionary_settings.h"
+#include "settings_file.h"
 namespace nskkzime::windows {
 struct RuntimeConfiguration;
 struct LoadedRomajiRules {
@@ -9,10 +9,10 @@ struct LoadedRomajiRules {
     std::string bytes; // The exact validated file; empty selects built-in rules.
     InputProfile profile;
 };
-InputProfile resolve_input_profile(const DictionarySettings&, std::string_view overlay = {});
-std::wstring input_profile_status(const DictionarySettings&);
+InputProfile resolve_input_profile(const AppSettings&, std::string_view overlay = {});
+std::wstring input_profile_status(const AppSettings&);
 InputProfile runtime_input_profile(const RuntimeConfiguration&);
-LoadedRomajiRules load_romaji_rules(const DictionaryConfiguration&);
+LoadedRomajiRules load_romaji_rules(const SettingsConfiguration&);
 std::shared_ptr<const RomajiRules> runtime_romaji_rules(); // Activation only, never in key handling.
 std::shared_ptr<const RomajiRules> runtime_romaji_rules(const RuntimeConfiguration&);
 std::wstring runtime_romaji_status();

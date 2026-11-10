@@ -13,7 +13,7 @@
 #include "candidate_ui.h"
 #include "composition_underline.h"
 #include "input_mode.h"
-#include "mode_indicator.h"
+#include "mode_notice.h"
 #include "context_text.h"
 #include "inference_client.h"
 #include "romaji_settings.h"
@@ -35,28 +35,6 @@ HRESULT activation_identity_allowed() noexcept {
     // Detect the real token rather than the immersive/XAML flag. Containers
     // use only the broker path; an unreadable identity is never a desktop fallback.
     try { (void)in_app_container(); return S_OK; } catch (...) { return E_ACCESSDENIED; }
-}
-
-// Common controls can expose their full text store through a transitory
-// extension's parent document. Composing there keeps edits and selection
-// notifications on the same document, without queued IMM result characters.
-// A transitory flag alone is insufficient: native TSF hosts can set it too.
-ComPtr<ITfContext> editing_context(ITfContext* context) {
-    ComPtr<ITfContext> result(context);
-    TF_STATUS flags{};
-    if (!context || FAILED(context->GetStatus(&flags)) || !(flags.dwStaticFlags & TF_SS_TRANSITORY)) return result;
-    ComPtr<ITfDocumentMgr> document; ComPtr<ITfCompartmentMgr> compartments;
-    ComPtr<ITfCompartment> compartment;
-    if (FAILED(context->GetDocumentMgr(&document)) || !document || FAILED(document.As(&compartments)) ||
-        FAILED(compartments->GetCompartment(GUID_COMPARTMENT_TRANSITORYEXTENSION_PARENT, &compartment)) || !compartment) return result;
-    VARIANT value; VariantInit(&value);
-    if (compartment->GetValue(&value) == S_OK && value.vt == VT_UNKNOWN && value.punkVal) {
-        ComPtr<ITfDocumentMgr> parent; ComPtr<ITfContext> top;
-        if (SUCCEEDED(value.punkVal->QueryInterface(IID_PPV_ARGS(&parent))) && SUCCEEDED(parent->GetTop(&top)) && top &&
-            SUCCEEDED(top->GetStatus(&flags)) && !(flags.dwStaticFlags & TF_SS_TRANSITORY)) result = top;
-    }
-    VariantClear(&value);
-    return result;
 }
 
 std::optional<Key> translate_key(WPARAM code, LPARAM parameter) {
@@ -90,31 +68,6 @@ std::optional<Key> translate_key(WPARAM code, LPARAM parameter) {
     return Key{KeyCode::Character, static_cast<char>(text[0])};
 }
 
-bool editable(ITfContext* context) {
-    if (!context) return false;
-    TF_STATUS status{};
-    if (FAILED(context->GetStatus(&status)) || (status.dwDynamicFlags & TF_SD_READONLY)) return false;
-    ComPtr<ITfCompartmentMgr> compartments;
-    if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&compartments)))) {
-        for (const auto* id : {&GUID_COMPARTMENT_KEYBOARD_DISABLED, &GUID_COMPARTMENT_EMPTYCONTEXT}) {
-            ComPtr<ITfCompartment> compartment;
-            if (SUCCEEDED(compartments->GetCompartment(*id, &compartment))) {
-                VARIANT value; VariantInit(&value);
-                const auto hr = compartment->GetValue(&value);
-                const bool disabled = SUCCEEDED(hr) && value.vt == VT_I4 && value.lVal != 0;
-                VariantClear(&value);
-                if (disabled) return false;
-            }
-        }
-    }
-    const auto focus = GetFocus();
-    if (focus) {
-        wchar_t name[32]{};
-        GetClassNameW(focus, name, ARRAYSIZE(name));
-        if (_wcsicmp(name, L"Edit") == 0 && (GetWindowLongPtrW(focus, GWL_STYLE) & ES_PASSWORD)) return false;
-    }
-    return true;
-}
 std::optional<Mode> mode_key(WPARAM code, Mode current) {
     if (GetKeyState(VK_MENU) & 0x8000 || GetKeyState(VK_LWIN) & 0x8000 || GetKeyState(VK_RWIN) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) return {};
     const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -162,7 +115,7 @@ bool plain_control_key(WPARAM code, WPARAM expected) {
 
 class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink,
                           public ITfCompositionSink, public ITfThreadMgrEventSink,
-                          public ITfTextEditSink, public ITfTextLayoutSink, public ITfDisplayAttributeProvider, public CompositionOwner {
+                          public ITfTextEditSink, public ITfTextLayoutSink, public ITfDisplayAttributeProvider, public CompositionOwner, public ModeNoticeOwner {
 public:
     TextService() : engine_(std::make_shared<MemoryDictionary>()) { ++module_objects; }
     ~TextService() { --module_objects; }
@@ -266,7 +219,7 @@ public:
     HRESULT STDMETHODCALLTYPE Deactivate() override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::Deactivate, diagnostic_state());
         startup_mode_pending_ = false;
-        mode_focus_document_.Reset(); mode_focus_context_.Reset();
+        mode_notice_.clear_focus();
         dismiss_mode_indicator();
         if (tool_launcher_) { tool_launcher_->close(); tool_launcher_.reset(); }
         mode_actions_.reset();
@@ -300,7 +253,7 @@ public:
         trace_tsf(TsfEvent::KeyFocus, TsfReason::None, S_OK, foreground);
         key_foreground_ = foreground != FALSE;
         if (!foreground) {
-            mode_focus_document_.Reset(); mode_focus_context_.Reset();
+            mode_notice_.clear_focus();
             dismiss_mode_indicator(); cancel_quote(); finish_composition(TsfReason::FocusLost);
         } else { apply_startup_mode(); configure_container(); show_focus_mode_indicator(); }
         return S_OK;
@@ -457,15 +410,15 @@ public:
             if (!composition_valid(cookie)) finish_composition(TsfReason::InvalidAfterEdit);
             else if (!composition_state_.reading_context) {
                 composition_state_.reading_context = true;
-                const auto current = composition_state_.composition; const auto revision = engine_.revision();
+                const auto checkpoint = input_checkpoint();
                 ComPtr<ITfRange> range;
                 const auto pending = inference_state_.pending;
                 const bool preview = context_preview_enabled() && (engine_.stage() == Stage::Selecting || engine_.registering());
                 clear_context_preview(this);
-                if ((pending || preview) && SUCCEEDED(current->GetRange(&range)) && range) {
+                if ((pending || preview) && SUCCEEDED(checkpoint.composition->GetRange(&range)) && range) {
                     auto text = surrounding_text(context, range.Get(), cookie, inference_state_.allow_unknown_context);
                     // Property callbacks may deactivate or replace the composition.
-                    if (composition_state_.composition.Get() == current.Get() && composition_state_.context.Get() == context && engine_.revision() == revision) {
+                    if (input_unchanged(checkpoint)) {
                         if (pending && inference_state_.pending && pending->id == inference_state_.pending->id && text != pending->text) cancel_inference();
                         if (preview) publish_context_preview(this, std::move(text));
                     }
@@ -496,17 +449,10 @@ public:
                     update_tsf_trace(self->diagnostic_state());
                     if (self->layout_generation_ != generation) return S_OK;
                     self->layout_pending_ = false;
-                    const auto context = self->composition_state_.context;
-                    const auto current = self->composition_state_.composition;
-                    const auto session = self->composition_state_.session;
-                    const auto revision = self->engine_.revision();
-                    const auto unchanged = [&] {
-                        return self->composition_state_.context.Get() == context.Get() && self->composition_state_.composition.Get() == current.Get() &&
-                            self->composition_state_.session == session && self->engine_.revision() == revision;
-                    };
-                    if (current) self->candidates_.locate(context.Get(), current.Get(), cookie, session);
-                    if (current && unchanged()) self->locate_underline(cookie);
-                    if (unchanged()) self->cancel_unshown_editor();
+                    const auto checkpoint = self->input_checkpoint();
+                    if (checkpoint.composition) self->candidates_.locate(checkpoint.context.Get(), checkpoint.composition.Get(), cookie, checkpoint.session);
+                    if (checkpoint.composition && self->input_unchanged(checkpoint)) self->locate_underline(cookie);
+                    if (self->input_unchanged(checkpoint)) self->cancel_unshown_editor();
                     return S_OK;
                 });
             if (FAILED(status)) layout_pending_ = false;
@@ -521,7 +467,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr*) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr* document) override {
-        if (mode_focus_document_.Get() == document) { mode_focus_document_.Reset(); mode_focus_context_.Reset(); }
+        mode_notice_.remove_document(document);
         dismiss_mode_indicator();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentUninit, diagnostic_state());
         for (const auto& context : {composition_state_.context, composition_state_.origin}) {
@@ -534,7 +480,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* document, ITfDocumentMgr* previous) override {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::DocumentFocus, diagnostic_state());
         const ComPtr<TextService> self(this);
-        const auto indicator_request = mode_indicator_request_;
+        const auto indicator_request = mode_notice_.request();
         const auto generation = ++focus_generation_;
         const auto quote_generation = quote_generation_;
         const auto current = composition_state_.composition;
@@ -555,14 +501,11 @@ public:
         if (generation != focus_generation_ || current.Get() != composition_state_.composition.Get() || session != composition_state_.session) {
             trace_tsf(TsfEvent::FocusResolved, TsfReason::Inactive, status, 0, 0, 0, document != nullptr); return S_OK;
         }
-        const bool focus_notice = indicator_request == mode_indicator_request_;
+        const bool focus_notice = indicator_request == mode_notice_.request();
         if (focus_notice) {
-            const bool same_target = context && ((mode_indicator_ && mode_indicator_->matches_focus(document, top.Get())) ||
-                mode_publish_context_.Get() == context.Get() ||
-                (mode_focus_document_.Get() == document && mode_focus_context_ == top));
-            if (!same_target) dismiss_mode_indicator();
+            mode_notice_.observe_focus(document, top.Get(), context.Get());
         }
-        const auto focus_indicator_request = mode_indicator_request_;
+        const auto focus_indicator_request = mode_notice_.request();
         if (quote_generation == quote_generation_ && quote_context_.Get() != context.Get()) cancel_quote();
         trace_tsf(TsfEvent::FocusResolved, context ? TsfReason::None : TsfReason::FocusUnavailable, status, 0, 0, 0, document != nullptr);
         if (composition_state_.context) {
@@ -570,13 +513,13 @@ public:
             else if (composition_state_.context.Get() != context.Get()) finish_composition(TsfReason::ContextChanged);
             else cancel_focus_finish(TsfReason::FocusRestored);
         }
-        if (!context) { mode_focus_document_.Reset(); mode_focus_context_.Reset(); }
-        else if (focus_notice && focus_indicator_request == mode_indicator_request_) show_focus_mode_indicator();
+        if (!context) { mode_notice_.clear_focus(); }
+        else if (focus_notice && focus_indicator_request == mode_notice_.request()) show_focus_mode_indicator();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override {
         dismiss_mode_indicator();
-        const auto indicator_request = mode_indicator_request_;
+        const auto indicator_request = mode_notice_.request();
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPush, diagnostic_state(context));
         if (composition_state_.context) {
@@ -584,17 +527,17 @@ public:
             update_tsf_trace(diagnostic_state(context));
             if (composition_state_.context && composition_state_.context.Get() != context) finish_composition(TsfReason::ContextChanged);
         }
-        if (indicator_request == mode_indicator_request_) show_focus_mode_indicator();
+        if (indicator_request == mode_notice_.request()) show_focus_mode_indicator();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override {
         dismiss_mode_indicator();
-        const auto indicator_request = mode_indicator_request_;
+        const auto indicator_request = mode_notice_.request();
         cancel_quote();
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::ContextPop, diagnostic_state(context));
         // The parent compartment can already be gone when the origin is popped.
         if (composition_state_.context.Get() == context || composition_state_.origin.Get() == context) finish_composition(TsfReason::ContextPopped);
-        if (indicator_request == mode_indicator_request_) show_focus_mode_indicator();
+        if (indicator_request == mode_notice_.request()) show_focus_mode_indicator();
         return S_OK;
     }
 private:
@@ -689,8 +632,7 @@ private:
         if (inference_state_.cancel()) set_inference_status(this,L"推論: 入力状態が変わったため応答を破棄");
     }
     bool matches(const PendingInference& pending) const {
-        return manager_ && inference_state_.matches(pending, engine_.revision(), composition_state_.session,
-            composition_state_.context.Get(), composition_state_.composition.Get());
+        return manager_ && inference_state_.matches(pending, input_checkpoint());
     }
     void receive_inference(InferenceCompletion result) noexcept {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::InferenceResult, diagnostic_state());
@@ -698,14 +640,14 @@ private:
         const auto id = result.id;
         try {
             const ComPtr<TextService> self(this); const auto pending = *inference_state_.pending;
-            const auto hr = request_edit(pending.context.Get(),client_,TF_ES_ASYNC | TF_ES_READWRITE,
+            const auto hr = request_edit(pending.input.context.Get(),client_,TF_ES_ASYNC | TF_ES_READWRITE,
                 [self,pending,result=std::move(result)](TfEditCookie cookie) {
-                    update_tsf_trace(self->diagnostic_state(pending.context.Get()));
+                    update_tsf_trace(self->diagnostic_state(pending.input.context.Get()));
                     if (!self->matches(pending)) return S_OK;
-                    if (!editable(pending.context.Get()) || !self->composition_valid(cookie)) { self->cancel_inference(); return S_OK; }
+                    if (!editable(pending.input.context.Get()) || !self->composition_valid(cookie)) { self->cancel_inference(); return S_OK; }
                     ComPtr<ITfRange> range;
-                    if (FAILED(pending.composition->GetRange(&range)) || !range) { self->cancel_inference(); return S_OK; }
-                    const auto text = surrounding_text(pending.context.Get(),range.Get(),cookie,self->inference_state_.allow_unknown_context);
+                    if (FAILED(pending.input.composition->GetRange(&range)) || !range) { self->cancel_inference(); return S_OK; }
+                    const auto text = surrounding_text(pending.input.context.Get(),range.Get(),cookie,self->inference_state_.allow_unknown_context);
                     if (!self->matches(pending)) return S_OK;
                     if (text != pending.text || text.permission == InputPermission::Restricted) { self->cancel_inference(); return S_OK; }
                     auto next = self->engine_; bool adjusted = false;
@@ -718,28 +660,25 @@ private:
                         (pending.plan.purpose == InferencePurpose::LongReading && next.candidates().empty());
                     // Valid scores also retain evidence for learning when the
                     // threshold keeps the displayed order unchanged.
-                    const bool changed = next.revision() != pending.revision || (fallback && next.resume_registration());
+                    const bool changed = next.revision() != pending.input.revision || (fallback && next.resume_registration());
                     if (changed && next.registering()) {
-                        self->candidates_.locate(pending.context.Get(), pending.composition.Get(), cookie, pending.session, true);
-                        if (!self->manager_ || self->engine_.revision() != pending.revision ||
-                            self->composition_state_.composition.Get() != pending.composition.Get() ||
-                            self->composition_state_.context.Get() != pending.context.Get() || self->composition_state_.session != pending.session) return S_OK;
+                        self->candidates_.locate(pending.input.context.Get(), pending.input.composition.Get(), cookie, pending.input.session, true);
+                        if (!self->input_unchanged(pending.input)) return S_OK;
                     }
-                    if (changed && FAILED(self->apply(pending.context.Get(),cookie,U"",next))) {
+                    if (changed && FAILED(self->apply(pending.input.context.Get(),cookie,U"",next))) {
                         set_inference_status(self.Get(),L"推論: 応答を反映できません。現在の入力を維持します");
                         return S_OK;
                     }
                     if (changed) { self->engine_ = std::move(next); self->refresh_candidates(cookie); }
-                    try { if (self->inference_state_.client && self->inference_state_.client->input_log_enabled() && !pending.text.contains_unknown_scope && self->composition_state_.context.Get() == pending.context.Get()) {
+                    try { if (self->inference_state_.client && self->inference_state_.client->input_log_enabled() && !pending.text.contains_unknown_scope && self->composition_state_.context.Get() == pending.input.context.Get()) {
                         // Applying text/UI can re-enter the host. Recheck privacy
                         // and identity after it, before queuing any text for disk.
-                        const auto current = self->composition_state_.composition;
-                        const auto revision = self->engine_.revision();
+                        const auto checkpoint = self->input_checkpoint();
                         const auto generation = self->inference_state_.generation;
                         ComPtr<ITfRange> active;
-                        if (current && SUCCEEDED(current->GetRange(&active)) && active) {
-                            const auto allowed = surrounding_text(pending.context.Get(), active.Get(), cookie);
-                            if (self->inference_state_.client && self->composition_state_.composition.Get() == current.Get() && self->engine_.revision() == revision && self->inference_state_.generation == generation &&
+                        if (checkpoint.composition && SUCCEEDED(checkpoint.composition->GetRange(&active)) && active) {
+                            const auto allowed = surrounding_text(pending.input.context.Get(), active.Get(), cookie);
+                            if (self->inference_state_.client && self->input_unchanged(checkpoint) && self->inference_state_.generation == generation &&
                                 allowed.permission == InputPermission::Allowed && allowed.before == pending.text.before && allowed.after == pending.text.after)
                                 self->inference_state_.client->record_input(pending.plan.request,
                                     !timed_out && result.status == InferenceStatus::Ok ? &result.response : nullptr,
@@ -753,67 +692,22 @@ private:
             if (FAILED(hr) && matches(pending)) cancel_inference();
         } catch (...) { if (inference_state_.pending && inference_state_.pending->id == id) cancel_inference(); }
     }
-    void dismiss_mode_indicator() noexcept {
-        ++mode_indicator_request_;
-        mode_publish_context_.Reset();
-        auto indicator = std::move(mode_indicator_);
-        if (indicator) indicator->close();
-    }
+    void dismiss_mode_indicator() noexcept { mode_notice_.dismiss(); }
     void publish_mode(ITfContext* target = nullptr) noexcept {
-        const auto request = mode_indicator_request_;
-        const auto previous = mode_publish_context_;
-        // Opening an IME may refresh focus without moving the caret. Let that
-        // notification identify the field whose accepted mode we will display.
-        mode_publish_context_ = target;
-        const auto binding = input_mode_;
-        if (binding) binding->publish(engine_.mode());
-        if (request == mode_indicator_request_) mode_publish_context_ = previous;
+        mode_notice_.publish(input_mode_.Get(), engine_.mode(), target);
     }
     void show_focus_mode_indicator() noexcept {
-        if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || connecting_mode_ || showing_focus_mode_) return;
         const ComPtr<TextService> self(this);
-        // Resolving a transitory parent can initialize a file-dialog text store
-        // and synchronously call OnPushContext. Do not restart that query from
-        // the nested notification, including while show_mode_indicator runs.
-        showing_focus_mode_ = true;
-        struct Reset { bool& value; ~Reset() { value = false; } } reset{showing_focus_mode_};
-        const auto request = mode_indicator_request_, generation = focus_generation_;
-        try {
-            const auto thread = manager_;
-            ComPtr<ITfDocumentMgr> document;
-            ComPtr<ITfContext> origin;
-            if (FAILED(thread->GetFocus(&document)) || !document || FAILED(document->GetTop(&origin))) return;
-            const auto context = editing_context(origin.Get());
-            if (request != mode_indicator_request_ || generation != focus_generation_ || !manager_ || !key_foreground_) return;
-            if (mode_focus_document_ == document && mode_focus_context_ == origin) return;
-            // Remember the field beyond the notice's lifetime. Repeated focus
-            // refreshes (including IME open/close) must not restart its timer.
-            mode_focus_document_ = document; mode_focus_context_ = origin;
-            if (!context || mode_publish_context_ || (mode_indicator_ && mode_indicator_->matches_focus(document.Get(), origin.Get()))) return;
-            show_mode_indicator(context.Get());
-        } catch (...) { /* A focus notification must never fail input. */ }
+        mode_notice_.show_focus(*this);
     }
     void show_mode_indicator(ITfContext* target = nullptr) noexcept {
-        if (!ui_settings_.show_input_mode || !manager_ || !key_foreground_ || engine_.registering() ||
-            engine_.forgetting() || engine_.stage() != Stage::Direct || !engine_.preedit().empty()) return;
         const ComPtr<TextService> self(this);
-        dismiss_mode_indicator();
-        const auto request = mode_indicator_request_;
-        const auto revision = engine_.revision();
-        try {
-            const auto thread = manager_;
-            ComPtr<ITfDocumentMgr> document;
-            ComPtr<ITfContext> origin;
-            if (FAILED(thread->GetFocus(&document)) || !document || FAILED(document->GetTop(&origin))) return;
-            const auto context = editing_context(origin.Get());
-            if (target && context.Get() != target) return;
-            if (!context || !editable(context.Get()) || request != mode_indicator_request_ ||
-                !manager_ || revision != engine_.revision()) return;
-            ComPtr<ModeIndicator> indicator;
-            indicator.Attach(new ModeIndicator(engine_.mode(), ui_settings_));
-            mode_indicator_ = indicator;
-            indicator->start(manager_.Get(), context.Get(), client_, origin.Get());
-        } catch (...) { if (request == mode_indicator_request_) dismiss_mode_indicator(); }
+        mode_notice_.show(*this, target);
+    }
+    ModeNoticeState mode_notice_state() const noexcept override {
+        return {manager_, client_, ui_settings_, engine_.mode(), engine_.revision(), focus_generation_,
+            key_foreground_, connecting_mode_, !engine_.registering() && !engine_.forgetting() &&
+            engine_.stage() == Stage::Direct && engine_.pending_romaji_length() == 0};
     }
     void change_mode(Mode mode, bool notify = true, ITfContext* context = nullptr) noexcept {
         // Initial compartment synchronization is not an explicit mode choice.
@@ -828,24 +722,21 @@ private:
             finish_composition(TsfReason::ModeChanged); engine_.set_mode(mode);
             update_tsf_trace(diagnostic_state());
         }
-        const auto revision = engine_.revision(), request = mode_indicator_request_;
+        const auto revision = engine_.revision(), request = mode_notice_.request();
         publish_mode(context);
-        if (notify && !connecting_mode_ && revision == engine_.revision() && request == mode_indicator_request_)
+        if (notify && !connecting_mode_ && revision == engine_.revision() && request == mode_notice_.request())
             show_mode_indicator(context);
     }
     HRESULT apply_key(ITfContext* target, TfEditCookie cookie, Key key, bool& applied, ITfContext* origin = nullptr) {
-        const auto before_notice = composition_state_.composition;
-        const auto notice_revision = engine_.revision(), notice_session = composition_state_.session;
+        const auto before_notice = input_checkpoint();
         candidates_.dismiss_notice();
-        if (!manager_ || composition_state_.composition.Get() != before_notice.Get() ||
-            composition_state_.session != notice_session || engine_.revision() != notice_revision) return S_OK;
+        if (!input_unchanged(before_notice)) return S_OK;
         // A destroyed or clipped view must not keep capturing registration
         // input while its own editor is hidden.
         if ((engine_.registering() || engine_.forgetting()) && !candidates_.presentation_available()) {
-            const auto current = composition_state_.composition;
-            const auto revision = engine_.revision(), session = composition_state_.session;
-            candidates_.locate(target, current.Get(), cookie, session, true);
-            if (composition_state_.composition.Get() != current.Get() || composition_state_.session != session || engine_.revision() != revision) return S_OK;
+            const auto checkpoint = input_checkpoint();
+            candidates_.locate(target, checkpoint.composition.Get(), cookie, checkpoint.session, true);
+            if (!input_unchanged(checkpoint)) return S_OK;
             cancel_unshown_editor();
         }
         InputPhaseTiming core(InputTimingPhase::Core);
@@ -853,9 +744,9 @@ private:
         const auto result = next.handle(key);
         core.finish();
         if (!result.consumed) return S_OK;
-        const auto revision = engine_.revision();
-        const auto current = composition_state_.composition;
-        const auto session = composition_state_.session;
+        const auto checkpoint = input_checkpoint();
+        const auto& current = checkpoint.composition;
+        const auto session = checkpoint.session;
         const bool was_pending = inference_state_.pending.has_value();
         std::wstring learning_reason;
         const bool starting_registration = next.registration_depth() > engine_.registration_depth();
@@ -865,7 +756,7 @@ private:
         const bool persistence_allowed = permission == LearningPermission::Allowed;
         const bool protected_registration = starting_registration && permission == LearningPermission::Protected;
         // Property callbacks can end or replace the composition while answering.
-        if (engine_.revision() != revision || composition_state_.composition.Get() != current.Get()) return S_OK;
+        if (!input_unchanged(checkpoint)) return S_OK;
         if (starting_registration && !persistence_allowed) next.abandon_registration();
         if (starting_forget && !persistence_allowed) next.cancel_forgetting();
         std::optional<SurroundingText> inference_text;
@@ -884,7 +775,7 @@ private:
                 }
                 else set_inference_status(this,L"推論: 保護された入力欄のため送信しません");
             }
-            if (engine_.revision() != revision || composition_state_.composition.Get() != current.Get()) return S_OK;
+            if (!input_unchanged(checkpoint)) return S_OK;
         }
         // Like skk-zenz, score before the first candidate is shown so the list
         // never reorders under the user. Too slow: fall back to the async path.
@@ -903,8 +794,7 @@ private:
             // Capture layout before changing a candidate back into the reading.
             // This also works with a delayed candidate list or a dictionary miss.
             candidates_.locate(target, current.Get(), cookie, session, true);
-            if (!manager_ || engine_.revision() != revision || composition_state_.composition.Get() != current.Get() ||
-                composition_state_.context.Get() != target || composition_state_.session != session) return S_OK;
+            if (!input_unchanged(checkpoint) || composition_state_.context.Get() != target) return S_OK;
         }
         const auto status = apply(target, cookie, result.committed, next);
         if (SUCCEEDED(status)) {
@@ -914,21 +804,23 @@ private:
             candidate_visibility_ = visibility;
             engine_ = std::move(next); applied = true;
             const auto accepted_revision = engine_.revision();
-            const auto indicator_request = mode_indicator_request_;
+            const auto indicator_request = mode_notice_.request();
             if (origin && composition_state_.composition && composition_state_.context.Get() == target) composition_state_.origin = origin;
             update_tsf_trace(diagnostic_state(target, origin));
             trace_tsf(TsfEvent::StateAccepted);
-            if (result.forgetting && persistence_allowed && publish_runtime_forgetting(dictionary_, *result.forgetting))
+            if (result.forgetting && persistence_allowed && dictionary_ && dictionary_->forget(*result.forgetting))
                 engine_.forget_registration(*result.forgetting);
             if (result.learning && persistence_allowed) {
-                publish_runtime_learning(dictionary_, *result.learning);
+                if (dictionary_) dictionary_->learn(*result.learning);
                 if (result.registration) engine_.remember_registration(*result.learning);
             } else if (result.learning || ((result.forgetting || starting_registration || starting_forget) && !persistence_allowed)) {
-                skip_runtime_learning(dictionary_, std::move(learning_reason));
+                if (dictionary_) dictionary_->skipped(std::move(learning_reason));
             }
             if (result.rerank_learning) {
-                if (persistence_allowed) publish_runtime_rerank_learning(dictionary_, *result.rerank_learning);
-                else skip_runtime_learning(dictionary_, std::move(learning_reason));
+                if (dictionary_) {
+                    if (persistence_allowed) dictionary_->learn_rerank(*result.rerank_learning);
+                    else dictionary_->skipped(std::move(learning_reason));
+                }
             }
             refresh_candidates(cookie, protected_registration ? L"保護された入力欄のため、単語登録を行いません。" : L"");
             if (scored) {
@@ -942,12 +834,11 @@ private:
                 const InputPhaseTiming mode(InputTimingPhase::ModeSync);
                 publish_mode(target);
             }
-            if (mode_changed && engine_.revision() == accepted_revision && mode_indicator_request_ == indicator_request)
+            if (mode_changed && engine_.revision() == accepted_revision && mode_notice_.request() == indicator_request)
                 show_mode_indicator(target);
             if (inference_text && inference_state_.client && composition_state_.composition && !engine_.registering()) {
                 try {
-                    inference_state_.submit(std::move(*plan), std::move(*inference_text), engine_.revision(), composition_state_.session,
-                        composition_state_.context.Get(), composition_state_.composition.Get());
+                    inference_state_.submit(std::move(*plan), std::move(*inference_text), input_checkpoint());
                     set_inference_status(this,inference_state_.pending->text.before.empty() && inference_state_.pending->text.after.empty()
                         ? L"推論: 応答待ち（周辺本文なし）" : L"推論: 応答待ち（周辺本文あり）");
                 } catch (...) { set_inference_status(this,L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
@@ -964,39 +855,31 @@ private:
         selection_pending_ = true;
         try {
             const ComPtr<TextService> self(this);
-            const auto target = composition_state_.context;
-            const auto current = composition_state_.composition;
-            const auto status = request_edit(target.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
-                [self, target, current, index, revision, request](TfEditCookie cookie) {
-                    update_tsf_trace(self->diagnostic_state(target.Get()));
+            const auto checkpoint = input_checkpoint();
+            const auto status = request_edit(checkpoint.context.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
+                [self, checkpoint, index, request](TfEditCookie cookie) {
+                    update_tsf_trace(self->diagnostic_state(checkpoint.context.Get()));
                     if (self->selection_request_ != request) return S_OK;
                     self->selection_pending_ = false;
-                    if (!self->manager_ || self->composition_state_.context.Get() != target.Get() ||
-                        self->composition_state_.composition.Get() != current.Get() || self->engine_.revision() != revision ||
-                        self->engine_.input_stage() != Stage::Selecting || !editable(target.Get())) return S_OK;
+                    if (!self->input_unchanged(checkpoint) || self->engine_.input_stage() != Stage::Selecting ||
+                        !editable(checkpoint.context.Get())) return S_OK;
                     if (!self->composition_valid(cookie)) { self->end_composition(cookie, TsfReason::InvalidCandidateSelection); return S_OK; }
                     bool applied = false;
-                    return self->apply_key(target.Get(), cookie, {KeyCode::SelectCandidate, 0, index}, applied);
+                    return self->apply_key(checkpoint.context.Get(), cookie, {KeyCode::SelectCandidate, 0, index}, applied);
                 });
             if (FAILED(status) && selection_request_ == request) selection_pending_ = false;
         } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
     }
     void refresh_candidates(TfEditCookie cookie, std::wstring_view notice = {}) noexcept {
         const InputPhaseTiming timing(InputTimingPhase::Candidates);
-        const auto context = composition_state_.context;
-        const auto current = composition_state_.composition;
-        const auto revision = engine_.revision(), session = composition_state_.session;
-        const auto unchanged = [&] {
-            return manager_ && composition_state_.context.Get() == context.Get() && composition_state_.composition.Get() == current.Get() &&
-                composition_state_.session == session && engine_.revision() == revision;
-        };
-        candidates_.update(manager_.Get(), context.Get(), engine_, candidate_actions_,
+        const auto checkpoint = input_checkpoint();
+        candidates_.update(manager_.Get(), checkpoint.context.Get(), engine_, candidate_actions_,
             candidate_visibility_.visible(candidate_settings_), candidate_settings_.keys, notice, ui_settings_.font, ui_settings_.show_input_mode);
-        if (!unchanged()) return;
-        candidates_.locate(context.Get(), current.Get(), cookie, session);
-        if (!unchanged()) return;
+        if (!input_unchanged(checkpoint)) return;
+        candidates_.locate(checkpoint.context.Get(), checkpoint.composition.Get(), cookie, checkpoint.session);
+        if (!input_unchanged(checkpoint)) return;
         locate_underline(cookie);
-        if (unchanged()) cancel_unshown_editor();
+        if (input_unchanged(checkpoint)) cancel_unshown_editor();
     }
     // Common EDIT's full parent permits direct editing but does not paint
     // display attributes. Underline the host's own text in their place.
@@ -1016,29 +899,30 @@ private:
             engine_.abandon_registration(); candidates_.close();
         }
     }
+    InputCheckpoint input_checkpoint() const { return composition_state_.checkpoint(engine_.revision()); }
+    bool input_unchanged(const InputCheckpoint& checkpoint) const {
+        return manager_ && checkpoint.matches(input_checkpoint());
+    }
     bool composition_valid(TfEditCookie cookie) const { return composition_state_.valid(cookie); }
     void cancel_focus_finish(TsfReason reason) noexcept {
         if (!focus_pending_) return;
         trace_tsf(TsfEvent::FocusCancelled, reason, S_OK, focus_request_);
         ++focus_request_; focus_pending_ = false;
     }
-    bool focus_finish_current(std::uint64_t request, ITfContext* target, ITfComposition* composition, std::uint64_t session) const noexcept {
-        return focus_pending_ && focus_request_ == request && manager_ && composition_state_.context.Get() == target &&
-            composition_state_.composition.Get() == composition && composition_state_.session == session;
+    bool focus_finish_current(std::uint64_t request, const InputCheckpoint& checkpoint) const noexcept {
+        return focus_pending_ && focus_request_ == request && manager_ && checkpoint.same_composition(input_checkpoint());
     }
     void defer_focus_finish() noexcept {
         if (focus_pending_ || !manager_ || !composition_state_.context || !composition_state_.composition) return;
-        const auto target = composition_state_.context;
-        const auto current = composition_state_.composition;
-        const auto session = composition_state_.session;
+        const auto checkpoint = input_checkpoint();
         const auto request = ++focus_request_; focus_pending_ = true;
         trace_tsf(TsfEvent::FocusDeferred, TsfReason::FocusUnavailable, S_OK, request, 0);
         try {
             const ComPtr<TextService> self(this);
-            const auto status = request_edit(target.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
-                [self, target, current, session, request](TfEditCookie) {
-                    update_tsf_trace(self->diagnostic_state(target.Get()));
-                    if (!self->focus_finish_current(request, target.Get(), current.Get(), session)) {
+            const auto status = request_edit(checkpoint.context.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
+                [self, checkpoint, request](TfEditCookie) {
+                    update_tsf_trace(self->diagnostic_state(checkpoint.context.Get()));
+                    if (!self->focus_finish_current(request, checkpoint)) {
                         trace_tsf(TsfEvent::FocusDeferred, TsfReason::Inactive, S_OK, request, 3); return S_OK;
                     }
                     self->focus_pending_ = false;
@@ -1048,12 +932,12 @@ private:
                     self->finish_composition(TsfReason::FocusUnavailable);
                     return S_OK;
                 });
-            if (FAILED(status) && focus_finish_current(request, target.Get(), current.Get(), session)) {
+            if (FAILED(status) && focus_finish_current(request, checkpoint)) {
                 trace_tsf(TsfEvent::FocusDeferred, TsfReason::EditRejected, status, request, 2);
                 finish_composition(TsfReason::FocusUnavailable);
             }
         } catch (...) {
-            if (focus_finish_current(request, target.Get(), current.Get(), session)) finish_composition(TsfReason::Exception);
+            if (focus_finish_current(request, checkpoint)) finish_composition(TsfReason::Exception);
         }
     }
     void detach_composition() noexcept override {
@@ -1119,7 +1003,7 @@ private:
     InferenceSession inference_state_;
     std::uint64_t composition_revision() const override { return engine_.revision(); }
     Engine engine_;
-    std::shared_ptr<const Dictionary> dictionary_;
+    std::shared_ptr<const RuntimeDictionary> dictionary_;
     RuntimeConfiguration configuration_;
     std::shared_ptr<TsfDiagnosticLog> diagnostics_;
     std::vector<std::shared_ptr<PendingComposition>> pending_;
@@ -1127,12 +1011,7 @@ private:
     CompositionUnderline underline_;
     CandidateSettings candidate_settings_;
     UiSettings ui_settings_;
-    ComPtr<ModeIndicator> mode_indicator_;
-    ComPtr<ITfContext> mode_publish_context_;
-    ComPtr<ITfDocumentMgr> mode_focus_document_;
-    ComPtr<ITfContext> mode_focus_context_;
-    std::uint64_t mode_indicator_request_ = 0;
-    bool showing_focus_mode_ = false;
+    ModeNotice mode_notice_;
     bool key_foreground_ = true;
     CandidateVisibility candidate_visibility_;
     ComPtr<InputMode> input_mode_;

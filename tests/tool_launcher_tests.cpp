@@ -1,5 +1,6 @@
+#include "windows_text.h"
 #include "tool_launcher.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "learning_ipc.h"
 #include <atomic>
 #include <fstream>

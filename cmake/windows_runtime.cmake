@@ -1,6 +1,6 @@
-  add_library(nskkzime_runtime STATIC src/windows/dictionary_settings.cpp src/windows/runtime_dictionary.cpp src/windows/romaji_settings.cpp
+  add_library(nskkzime_runtime STATIC src/windows/app_settings.cpp src/windows/settings_file.cpp src/windows/dictionary_loader.cpp src/windows/local_storage.cpp src/windows/windows_text.cpp src/windows/runtime_dictionary.cpp src/windows/romaji_settings.cpp
     src/windows/pipe_ipc.cpp src/windows/learning_ipc.cpp src/windows/learning_client.cpp src/windows/dictionary_cache.cpp src/windows/tool_launcher.cpp src/windows/input_timing.cpp src/windows/cpu_requirements.cpp
-    src/windows/app_container.cpp src/windows/container_runtime.cpp src/windows/broker_snapshot.cpp src/windows/runtime_configuration.cpp src/windows/diagnostic_file.cpp src/windows/tsf_diagnostics.cpp)
+    src/windows/app_container.cpp src/windows/broker_protocol.cpp src/windows/container_runtime.cpp src/windows/broker_snapshot.cpp src/windows/runtime_configuration.cpp src/windows/diagnostic_file.cpp src/windows/tsf_diagnostics.cpp)
   target_include_directories(nskkzime_runtime PUBLIC src/windows)
   target_include_directories(nskkzime_runtime SYSTEM PUBLIC third_party)
   target_link_libraries(nskkzime_runtime PUBLIC skk_dictionary nskkzime_protocol shell32 ole32 uuid advapi32 bcrypt userenv)
@@ -9,9 +9,12 @@
   add_library(nskkzime_tsf_support STATIC src/windows/tsf_edit.cpp src/windows/composition_session.cpp src/windows/inference_session.cpp src/windows/mode_indicator.cpp
     src/windows/composition_underline.cpp)
   target_link_libraries(nskkzime_tsf_support PUBLIC nskkzime_inference gdi32)
-  add_library(nskkzime_tsf SHARED src/windows/text_service.cpp src/windows/module.cpp
-    src/windows/registration.cpp src/windows/registration_registry.cpp src/windows/display_attributes.cpp
-    src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/nskkzime.def
+  # The DLL and adapter tests share one compiled implementation.
+  add_library(nskkzime_tsf_adapter STATIC src/windows/text_service.cpp src/windows/display_attributes.cpp
+    src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/mode_notice.cpp)
+  target_link_libraries(nskkzime_tsf_adapter PUBLIC nskkzime_tsf_support ole32 oleaut32 advapi32 uuid user32 gdi32)
+  add_library(nskkzime_tsf SHARED src/windows/module.cpp
+    src/windows/registration.cpp src/windows/registration_registry.cpp src/windows/nskkzime.def
     src/windows/app_icon.rc)
   target_include_directories(nskkzime_tsf PRIVATE src/windows)
-  target_link_libraries(nskkzime_tsf PRIVATE nskkzime_tsf_support ole32 oleaut32 advapi32 uuid user32 gdi32)
+  target_link_libraries(nskkzime_tsf PRIVATE nskkzime_tsf_adapter)

@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "app_container.h"
 #include "broker_snapshot.h"
 #include "container_runtime.h"
@@ -56,7 +57,7 @@ struct Probe {
     std::uint64_t id=0;
     InferenceResponse exchange(InferenceRequest request) {
         request.id=++id;
-        return decode_response(container_operation(generation,"INF1",encode_request(request),GetTickCount64()+5000,cancel.get()),request);
+        return decode_response(container_operation(BrokerOperation::Inference,generation,encode_request(request),GetTickCount64()+5000,cancel.get()),request);
     }
     void conversion(bool frozen) {
         const auto begin=GetTickCount64();
@@ -118,7 +119,7 @@ int wmain(int argc,wchar_t** argv) {
         check(argc==5 && std::wstring_view(argv[1])==L"--config" && std::wstring_view(argv[3])==L"--checkpoint", "usage: --config INI --checkpoint TOKEN | --resume TOKEN | --stop TOKEN");
         const std::filesystem::path config(argv[2]);check(config.is_absolute(),"absolute private configuration required");
         check(SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str()),"cannot select private configuration");
-        const auto settings=read_dictionary_settings(config);
+        const auto settings=read_settings(config);
         check(!settings.learning && !settings.zenz.log_input && !settings.tsf_log.enabled && settings.zenz.enabled &&
             settings.zenz.idle_seconds<=10,"probe requires isolated inference with short idle and learning/logging disabled");
         auto resume=make_event(event_name(argv[4],L"resume")),stop=make_event(event_name(argv[4],L"stop"));

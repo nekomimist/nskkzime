@@ -1,7 +1,7 @@
 #include "inference_client.h"
 #include "container_runtime.h"
 #include "runtime_configuration.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -74,7 +74,7 @@ struct InferenceClient::State {
                     if (config.container) {
                         try {
                             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-                            const auto response = container_exchange("LOG2" + config.container_generation + encode_log_record(*record),
+                            const auto response = container_operation(BrokerOperation::Log, config.container_generation, encode_log_record(*record),
                                 GetTickCount64() + 1000, cancel.get());
                             const auto status = response == "OFF" ? 0 : std::stoi(response);
                             if (status < 0 || status > static_cast<int>(InputLogStatus::Unavailable)) throw std::runtime_error("invalid log status");
@@ -88,7 +88,7 @@ struct InferenceClient::State {
             InferenceCompletion result; result.id = job->request.id; result.deadline = job->deadline;
             try {
                 if (config.container) {
-                    result.response = decode_response(container_exchange("INF1" + config.container_generation + encode_request(job->request), job->deadline, job->cancel.get()), job->request);
+                    result.response = decode_response(container_operation(BrokerOperation::Inference, config.container_generation, encode_request(job->request), job->deadline, job->cancel.get()), job->request);
                     result.status = InferenceStatus::Ok;
                 } else {
                     result.response = exchange(job->request, job->deadline, job->cancel.get());
@@ -120,7 +120,7 @@ struct InferenceClient::State {
         try {
             if (GetTickCount64() < job.deadline && WaitForSingleObject(job.cancel.get(), 0) != WAIT_OBJECT_0) {
                 if (config.container)
-                    result.response = decode_response(container_exchange("INF1" + config.container_generation + encode_request(job.request),
+                    result.response = decode_response(container_operation(BrokerOperation::Inference, config.container_generation, encode_request(job.request),
                         job.deadline, job.cancel.get()), job.request);
                 else result.response = work->state->exchange(job.request, job.deadline, job.cancel.get());
             }

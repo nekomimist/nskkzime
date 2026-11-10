@@ -1,6 +1,6 @@
 #include "inference_client.h"
 #include "learning_ipc.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "nskkzime/engine.h"
 #include <fstream>
 #include <future>

@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "settings_editor.h"
 #include "settings_gui_ids.h"
 #include "app_icon.h"
@@ -18,7 +19,7 @@ using nskkzime::InputMethod;
 using nskkzime::AzikKeyboard;
 namespace {
 struct Work {
-    DictionarySettings draft;
+    AppSettings draft;
     SettingsCheck check;
     std::atomic<bool> done{false};
     bool save = false;
@@ -196,7 +197,7 @@ template <class T> T number(HWND page, int id, std::wstring_view label, T minimu
         throw std::invalid_argument(utf8_message(std::wstring(label) + L"を表示された範囲の数値で入力してください。"));
     return result;
 }
-DictionarySettings draft(Editor& editor) {
+AppSettings draft(Editor& editor) {
     auto result = editor.document.settings;
     result.dictionaries = editor.dictionaries;
     if (!get(editor.pages[7], IDC_OFF_KEY_NAME).empty())
@@ -552,7 +553,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     Editor editor;
     try {
         if (count == 1)
-            editor.file = dictionary_settings_path();
+            editor.file = settings_file_path();
         else if (count == 3 && std::wstring_view(arguments[1]) == L"--config" &&
                  std::filesystem::path(arguments[2]).is_absolute())
             editor.file = arguments[2];

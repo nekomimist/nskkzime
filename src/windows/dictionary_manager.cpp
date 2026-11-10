@@ -1,5 +1,6 @@
+#include "windows_text.h"
 #include "dictionary_manager.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "local_storage.h"
 #include <algorithm>
 

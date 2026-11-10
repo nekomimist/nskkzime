@@ -2,6 +2,7 @@
 #include "nskkzime/engine.h"
 #include <functional>
 namespace nskkzime::windows {
+class LearningDictionary;
 struct RuntimeConfiguration;
 struct ContainerConfiguration;
 struct RuntimeDictionarySnapshot {
@@ -9,6 +10,7 @@ struct RuntimeDictionarySnapshot {
     std::wstring status;
     bool registration = false;
     std::shared_ptr<const ContainerConfiguration> container;
+    std::shared_ptr<const LearningDictionary> learning; // Explicit persistence destination, published with the lookup view.
 };
 // Publish one complete snapshot off-thread. Destruction never joins a worker
 // or calls back into a TSF object. Lookup/status only read memory.
@@ -35,13 +37,9 @@ private:
     std::shared_ptr<State> state_;
 };
 // Reads the small settings file on activation; dictionary bodies load off-thread.
-std::shared_ptr<const Dictionary> runtime_dictionary();
-std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration&);
+std::shared_ptr<const RuntimeDictionary> runtime_dictionary();
+std::shared_ptr<const RuntimeDictionary> runtime_dictionary(const RuntimeConfiguration&);
 // Last snapshot loaded in this process. Diagnostics only; performs no file I/O.
 std::wstring runtime_dictionary_status();
 bool runtime_dictionary_ready();
-void publish_runtime_learning(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
-void publish_runtime_rerank_learning(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
-bool publish_runtime_forgetting(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
-void skip_runtime_learning(const std::shared_ptr<const Dictionary>&, std::wstring reason) noexcept;
-}
+} // namespace nskkzime::windows

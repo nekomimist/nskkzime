@@ -135,8 +135,8 @@ int wmain(int argc, wchar_t** argv) {
              policy.max_score_gap = 9.5f;
              check(check_settings_draft(settings).valid, "disabled paths required existing files");
              save_settings_document(document, settings);
-             check(serialize_dictionary_settings(open_settings_document(path).settings) ==
-                       serialize_dictionary_settings(settings),
+             check(serialize_settings(open_settings_document(path).settings) ==
+                       serialize_settings(settings),
                    "inference option lost");
          }},
         {"fatal-source-failures-do-not-change-settings",
@@ -145,7 +145,7 @@ int wmain(int argc, wchar_t** argv) {
              auto document = open_settings_document(path);
              save_settings_document(document, {});
              const auto before = document.original;
-             DictionarySettings settings;
+             AppSettings settings;
              settings.dictionaries = {files.root / L"missing.skk"};
              check(!check_settings_draft(settings).valid, "missing dictionary accepted");
              settings.dictionaries.clear();
@@ -160,7 +160,7 @@ int wmain(int argc, wchar_t** argv) {
          }},
         {"invalid-settings-and-nonfatal-dictionary-diagnostics",
          [&] {
-             DictionarySettings settings;
+             AppSettings settings;
              settings.dictionaries = {L"relative.skk"};
              check(!check_settings_draft(settings).valid, "relative path accepted");
              settings.dictionaries.clear();
@@ -178,15 +178,15 @@ int wmain(int argc, wchar_t** argv) {
          [&] {
              const auto path = files.path(L"conflict.ini");
              auto document = open_settings_document(path);
-             DictionarySettings external;
+             AppSettings external;
              external.learning = false;
-             save_dictionary_settings(path, external);
+             save_settings(path, external);
              rejects([&] { save_settings_document(document, {}); });
-             check(!read_dictionary_settings(path).learning, "outside creation overwritten");
+             check(!read_settings(path).learning, "outside creation overwritten");
              document = open_settings_document(path);
-             save_dictionary_settings(path, {});
+             save_settings(path, {});
              rejects([&] { save_settings_document(document, external); });
-             check(read_dictionary_settings(path).learning, "outside update overwritten");
+             check(read_settings(path).learning, "outside update overwritten");
              document = open_settings_document(path);
              std::filesystem::remove(path);
              rejects([&] { save_settings_document(document, {}); });
@@ -204,7 +204,7 @@ int wmain(int argc, wchar_t** argv) {
              auto next = document.settings;
              next.learning = false;
              rejects([&] { save_settings_document(document, next); });
-             check(document.original == before && document.settings.learning && read_dictionary_settings(path).learning,
+             check(document.original == before && document.settings.learning && read_settings(path).learning,
                    "failed write changed state");
          }},
         {"malformed-original-is-not-replaced",

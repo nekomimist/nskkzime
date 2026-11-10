@@ -25,5 +25,4 @@ private:
     struct State;
     std::shared_ptr<State> state_;
 };
-void publish_learning(const std::shared_ptr<const Dictionary>&, const LearningEvent&) noexcept;
 } // namespace nskkzime::windows

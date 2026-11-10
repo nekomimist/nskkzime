@@ -1,8 +1,8 @@
 #include "binary_layout.h"
 #include "tool_launcher.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "learning_ipc.h"
-#include "container_runtime.h"
+#include "app_container.h"
 #include <algorithm>
 #include <atomic>
 #include <stdexcept>
@@ -50,7 +50,7 @@ void report_failure(ImeTool tool, DWORD error) {
 }
 std::array<ToolCommand, 2> current_tool_commands() noexcept {
     std::filesystem::path settings, user;
-    try { settings = dictionary_settings_path(); } catch (...) {}
+    try { settings = settings_file_path(); } catch (...) {}
     try { user = learning_file_path(); } catch (...) {}
     return tool_commands(settings, user);
 }
@@ -79,7 +79,7 @@ DWORD launch_tool_process(const ToolCommand& command) noexcept {
         auto line = tool_command_line(command);
         if (!command.broker_generation.empty()) {
             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-            return container_operation(command.broker_generation, "GUI1", command.tool == ImeTool::Settings ? "settings" : "dictionary",
+            return container_operation(BrokerOperation::Gui, command.broker_generation, command.tool == ImeTool::Settings ? "settings" : "dictionary",
                 GetTickCount64() + 5000, cancel.get()) == "OKAY" ? ERROR_SUCCESS : ERROR_GEN_FAILURE;
         }
         STARTUPINFOW start{}; start.cb = sizeof(start); start.dwFlags = STARTF_USESHOWWINDOW; start.wShowWindow = SW_SHOWNORMAL;

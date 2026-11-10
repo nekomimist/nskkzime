@@ -1,7 +1,7 @@
 #include "learning_client.h"
 #include "app_container.h"
 #include "learning_ipc.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -58,7 +58,7 @@ struct LearningDictionary::State {
     std::string exchange(std::string_view body, DWORD timeout = 1500, HANDLE cancel = nullptr) {
         NativeHandle local(cancel ? INVALID_HANDLE_VALUE : CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!cancel) cancel = local.get();
-        auto response = container_exchange("LRN1" + container_generation + std::string(body), GetTickCount64() + timeout, cancel);
+        auto response = container_operation(BrokerOperation::Learning, container_generation, body, GetTickCount64() + timeout, cancel);
         if (response == "STAL") throw StaleSettings();
         return response;
     }
@@ -253,8 +253,5 @@ std::wstring LearningDictionary::status() const {
     return state_->report + L" / 未保存 " + std::to_wstring(state_->queue.size()) + L"件 / 受付不可 " +
         std::to_wstring(state_->dropped.load()) + L"件\r\nユーザー辞書: " + state_->file.native() +
         (state_->skipped.empty() ? L"" : L"\r\n学習省略: " + state_->skipped);
-}
-void publish_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
-    if (const auto* learning = dynamic_cast<const LearningDictionary*>(dictionary.get())) learning->learn(event);
 }
 } // namespace nskkzime::windows

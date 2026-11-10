@@ -3,7 +3,7 @@
 #include "module.h"
 #include "tsf_test_host.h"
 #include "inference_client.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include <fstream>
 #include <iostream>
 using Microsoft::WRL::ComPtr;
@@ -49,9 +49,9 @@ int wmain(int argc,wchar_t** argv) {
     const auto file=root/L"設定.ini";
     const auto dictionary=root/L"辞書.skk";
     // No server path: the DLL must find the server bundled next to it (x64 for the x86 DLL).
-    DictionarySettings settings; settings.learning=false; settings.zenz={true,argv[3],{},4,2000};
+    AppSettings settings; settings.learning=false; settings.zenz={true,argv[3],{},4,2000};
     settings.zenz.idle_seconds=10; // Launched servers must idle out within the test.
-    save_dictionary_settings(file,settings);
+    save_settings(file,settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG",file.c_str());
     BYTE keyboard[256]{}; GetKeyboardState(keyboard); CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     const auto library=LoadLibraryW(argv[1]); int result=1;
@@ -59,9 +59,9 @@ int wmain(int argc,wchar_t** argv) {
         // Deterministic sharing keys change with the effective model/limits.
         const auto config=current_inference_config(); check(config&&config->model==settings.zenz.model,"saved zenz config ignored");
         check(current_inference_config()->token==config->token,"server key changed across activations");
-        settings.zenz.threads=2; save_dictionary_settings(file,settings);
+        settings.zenz.threads=2; save_settings(file,settings);
         check(current_inference_config()->token!=config->token,"incompatible settings reused server");
-        settings.zenz.threads=4; save_dictionary_settings(file,settings);
+        settings.zenz.threads=4; save_settings(file,settings);
         // The build directory's server and this timeout keep the endpoint apart from an installed IME.
         const auto token=current_inference_config()->token;
         check(library!=nullptr,"DLL load");
@@ -90,10 +90,10 @@ int wmain(int argc,wchar_t** argv) {
         { Session s(factory.Get(),L"試験問題の"); s.start(); s.complete(); check(s.context->doc->text==L"試験問題の解答","server did not restart"); }
         {std::ofstream output(dictionary,std::ios::binary);output<<"かいとう /回答/解答/解凍/\nきょうはいいてんきですね /旧候補/\n";}
         settings.dictionaries={dictionary};settings.zenz.policy.rerank=true;settings.zenz.policy.score_timeout_ms=1000;
-        settings.zenz.policy.rerank_wait_ms=0;save_dictionary_settings(file,settings);
+        settings.zenz.policy.rerank_wait_ms=0;save_settings(file,settings);
         {Session s(factory.Get(),L"試験問題の");s.start();check(s.context->doc->text==L"試験問題の回答","dictionary was not immediately available");
          s.complete();check(s.context->doc->text==L"試験問題の解答","real model score did not promote best candidate");}
-        settings.zenz.policy.rerank_wait_ms=1000;save_dictionary_settings(file,settings);
+        settings.zenz.policy.rerank_wait_ms=1000;save_settings(file,settings);
         {Session s(factory.Get(),L"試験問題の");s.type("Kaitou");s.key(VK_SPACE);
          check(s.context->doc->text==L"試験問題の解答","real model score was not applied before display");
          s.wait();check(s.context->doc->text==L"試験問題の解答","waited real score reordered after display");}
@@ -106,7 +106,7 @@ int wmain(int argc,wchar_t** argv) {
         auto process=server_process(token);
         // Broken optional model affects generation only; kana entry stays usable.
         settings.dictionaries.clear();settings.zenz.policy.rerank=false;
-        settings.zenz.model=root/L"missing.gguf"; settings.zenz.timeout_ms=150; save_dictionary_settings(file,settings);
+        settings.zenz.model=root/L"missing.gguf"; settings.zenz.timeout_ms=150; save_settings(file,settings);
         { Session s(factory.Get(),L""); s.start(); s.complete();
           // This fixture disables learning/registration, so fallback retains the reading.
           check(s.context->doc->text==L"かいとう"&&!s.host->ui,"missing model did not retain reading");

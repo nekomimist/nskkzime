@@ -1,5 +1,5 @@
 #pragma once
-#include "dictionary_settings.h"
+#include "app_settings.h"
 #include <windows.h>
 #include <array>
 #include <memory>
@@ -43,7 +43,7 @@ struct TsfTraceRecord {
 // contains primitives only; no host objects or input text reach the worker.
 class TsfDiagnosticLog {
 public:
-    static std::shared_ptr<TsfDiagnosticLog> create(const DictionarySettings::TsfLogSettings&, bool app_container) noexcept;
+    static std::shared_ptr<TsfDiagnosticLog> create(const AppSettings::TsfLogSettings&, bool app_container) noexcept;
     ~TsfDiagnosticLog();
     void record(TsfTraceRecord) noexcept;
     std::uint64_t identity(const void*) noexcept; // Bounded, thread-owned interface-pointer IDs, not COM identity.

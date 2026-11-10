@@ -3,23 +3,28 @@
 #include "runtime_dictionary.h"
 #include "tsf_test_host.h"
 #include "inference_client.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "candidate_ui.h"
+#include "windows_text.h"
 #include <atomic>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <mutex>
+#include <source_location>
 namespace nskkzime::windows { HINSTANCE module_instance=nullptr; std::atomic<long> module_objects{0},server_locks{0}; }
 using namespace nskkzime;
 using namespace nskkzime::windows;
 using Microsoft::WRL::ComPtr;
 namespace {
-void check(bool value,const char* message) { if(!value)throw std::runtime_error(message); }
+void check(bool value,const char* message, std::source_location location = std::source_location::current()) {
+    if(!value)throw std::runtime_error(std::string(message) + " at line " + std::to_string(location.line()));
+}
 void messages() { MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) {TranslateMessage(&msg);DispatchMessageW(&msg);} }
 struct Session {
     ComPtr<test_host::Manager> host; ComPtr<test_host::Context> context, origin; ComPtr<ITfTextInputProcessorEx> service; ComPtr<ITfKeyEventSink> keys;
-    explicit Session(const wchar_t* prefix=L"前") {
+    std::source_location scenario;
+    explicit Session(const wchar_t* prefix=L"前", std::source_location location = std::source_location::current()) : scenario(location) {
         host.Attach(new test_host::Manager); context.Attach(new test_host::Context); context->doc->text=std::wstring(prefix)+L"後"; context->doc->caret=static_cast<LONG>(wcslen(prefix));
         check(SUCCEEDED(create_text_service(IID_PPV_ARGS(&service))),"create"); service.As(&keys); check(SUCCEEDED(service->ActivateEx(host.Get(),1,0)),"activate"); wait_for_dictionary(nskkzime::windows::runtime_dictionary_ready);
     }
@@ -29,7 +34,10 @@ struct Session {
         BYTE state[256]{}; if(shift)state[VK_SHIFT]=state[VK_LSHIFT]=0x80; SetKeyboardState(state);
         const auto param=static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(code),MAPVK_VK_TO_VSC))<<16;
         auto* input = origin ? origin.Get() : context.Get();
-        BOOL eaten=FALSE; keys->OnTestKeyDown(input,code,param,&eaten); check(eaten,"preflight");
+        BOOL eaten=FALSE; keys->OnTestKeyDown(input,code,param,&eaten);
+        if (!eaten) throw std::runtime_error("preflight key " + std::to_string(code) + " in scenario at line " +
+            std::to_string(scenario.line()) + " modifiers " + std::to_string(GetKeyState(VK_SHIFT)) + "," +
+            std::to_string(GetKeyState(VK_CONTROL)) + "," + std::to_string(GetKeyState(VK_MENU)) + ": " + utf8_message(context->doc->text));
         keys->OnKeyDown(input,code,param,&eaten); check((eaten != FALSE)==applied,"key"); keys->OnKeyUp(input,code,param,&eaten);
     }
     void type(std::string_view text) {for(const auto ch:text) {const auto vk=VkKeyScanExW(ch,GetKeyboardLayout(0));key(LOBYTE(vk),(HIBYTE(vk)&1)!=0);}}
@@ -47,9 +55,9 @@ int wmain(int argc,wchar_t** argv) {
     const auto config=root/L"settings.ini", dictionary=root/L"dictionary.skk", user=root/L"user-dictionary.nskkdb";
     const auto log_directory = root / L"input-logs";
     {std::ofstream file(dictionary,std::ios::binary);file<<"かいとう /回答;元一/解答;元二/解凍;元三/\nありがとうございます /元一;辞書/元二/\nかk /書;文章/描;絵/\nかどう /稼動/稼働/\nこうどう /行動/公道/\nきどう /起動/軌道/\n";}
-    DictionarySettings settings{{dictionary},false};settings.zenz={true,root/L"fixture.gguf",argv[1],4,1500}; settings.zenz.policy.rerank=true;
+    AppSettings settings{{dictionary},false};settings.zenz={true,root/L"fixture.gguf",argv[1],4,1500}; settings.zenz.policy.rerank=true;
     settings.zenz.policy.rerank_wait_ms=0; // Most cases below exercise the asynchronous path; the wait is tested separately.
-    save_dictionary_settings(config,settings);
+    save_settings(config,settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG",config.c_str());
     // The fixture server answers on the endpoint derived from these settings; the model is never opened.
     const auto token=current_inference_config()->token;
@@ -89,16 +97,16 @@ int wmain(int argc,wchar_t** argv) {
         {Session s;s.start();s.queued();s.context->doc->reject_write=true;s.context->pump();check(s.context->doc->text==L"前回答後","failed edit adopted score");
          s.context->doc->reject_write=false;s.key(VK_SPACE);check(s.context->doc->text==L"前解答後","failed score damaged original order");}
         // Waiting for the score shows the promoted candidate first and never reorders afterwards.
-        settings.zenz.policy.rerank_wait_ms=400;save_dictionary_settings(config,settings);
+        settings.zenz.policy.rerank_wait_ms=400;save_settings(config,settings);
         {Session s;const auto before=count.load();s.type("Kaitou");s.key(VK_SPACE);
          check(s.context->doc->text==L"前解答後","waited score was not applied before display");
          s.wait(300);check(s.context->doc->text==L"前解答後"&&count==before+1,"waited score was requested again asynchronously");
          BSTR text=nullptr;s.list()->GetString(1,&text);check(text&&std::wstring_view(text)==L"回答","waited score changed remaining order");SysFreeString(text);}
         // A server slower than the wait keeps the asynchronous promotion.
-        settings.zenz.policy.rerank_wait_ms=50;save_dictionary_settings(config,settings);
+        settings.zenz.policy.rerank_wait_ms=50;save_settings(config,settings);
         {Session s;s.start();check(s.context->doc->text==L"前回答後","timed-out wait changed the first display");
          s.complete();check(s.context->doc->text==L"前解答後","score after a timed-out wait not applied");}
-        settings.zenz.policy.rerank_wait_ms=0;save_dictionary_settings(config,settings);
+        settings.zenz.policy.rerank_wait_ms=0;save_settings(config,settings);
         for(const bool long_reading:{false,true}) {
             delay=450;Session s;s.start(long_reading ? "Arigatougozaimasu" : "Kaitou");
             if(long_reading) {s.queued();Sleep(1550);s.context->pump();} else s.complete();
@@ -107,7 +115,7 @@ int wmain(int argc,wchar_t** argv) {
         empty=true;{Session s;s.start("Arigatougozaimasu");s.complete();check(s.context->doc->text==L"前元一後","empty long result lost dictionary");}empty=false;
         {Session s;const auto before=count.load();s.context->input_scope=IS_PRIVATE;s.start();s.wait();check(count==before&&s.context->doc->text==L"前回答後","private field scored");}
         // Async scoring/generation changes the candidate, not the user's list counter.
-        settings.candidates = {3, CandidateKeys::Asdfjkl}; save_dictionary_settings(config, settings);
+        settings.candidates = {3, CandidateKeys::Asdfjkl}; save_settings(config, settings);
         {Session s; s.start(); check(!s.host->ui, "delayed list appeared before score"); s.complete();
          check(!s.host->ui && s.context->doc->text == L"前解答後", "score forced list display");
          s.key(VK_SPACE); check(!s.host->ui, "score incremented list count"); s.key(VK_SPACE);
@@ -117,10 +125,10 @@ int wmain(int argc,wchar_t** argv) {
          check(!s.host->ui && s.context->doc->text == L"前蜜柑後", "dictionary-miss generation forced list display");
          s.key(VK_SPACE); check(!s.host->ui, "generated candidate advanced delay unexpectedly");
          s.key(VK_PRIOR); check(s.host->ui != nullptr, "explicit page did not reveal generated candidates");}
-        settings.candidates = {}; save_dictionary_settings(config, settings);
+        settings.candidates = {}; save_settings(config, settings);
         // Logging is opt-in per client, even when the inference server is shared.
         std::filesystem::create_directory(log_directory);
-        settings.zenz.log_input = true; settings.zenz.log_directory = log_directory; save_dictionary_settings(config, settings);
+        settings.zenz.log_input = true; settings.zenz.log_directory = log_directory; save_settings(config, settings);
         auto log_files = [&] {
             std::vector<std::filesystem::path> paths;
             for (const auto& item : std::filesystem::directory_iterator(log_directory))
@@ -158,7 +166,7 @@ int wmain(int argc,wchar_t** argv) {
             const std::lock_guard lock(mutex);const auto& request=requests.back();
             check(request.reading==U"みかん"&&request.left.empty()&&request.right.empty(),"unknown field exposed context instead of reading only");
         }
-        settings.zenz.allow_unknown_context=true;save_dictionary_settings(config,settings);
+        settings.zenz.allow_unknown_context=true;save_settings(config,settings);
         for (const bool parent : {false,true}) {
             Session s(L"許可前😀");if(parent)s.transitory();s.context->unknown_scope=true;
             s.start("Mikan");s.complete();s.wait(50);
@@ -181,7 +189,7 @@ int wmain(int argc,wchar_t** argv) {
             check(count==before,"unknown-context opt-in sent a protected reading");
         }
         check(log_files().size()==1,"context permission enabled input logging");
-        settings.zenz.allow_unknown_context=false;save_dictionary_settings(config,settings);
+        settings.zenz.allow_unknown_context=false;save_settings(config,settings);
         {Session s;s.context->unknown_scope=true;s.start();s.complete();
          const std::lock_guard lock(mutex);check(requests.back().left.empty()&&requests.back().right.empty(),"new activation ignored context opt-out");}
         {Session s(L"途中保護"); s.start(); s.context->input_scope = IS_PRIVATE; s.context->notify(); s.wait();}
@@ -194,11 +202,11 @@ int wmain(int argc,wchar_t** argv) {
          };
          s.context->pump(); s.wait(50);}
         check(log_files().size() == 1, "protected, cancelled or rejected input was logged");
-        settings.zenz.log_input = false; save_dictionary_settings(config, settings);
+        settings.zenz.log_input = false; save_settings(config, settings);
         {Session s(L"無効化後"); s.start(); s.complete(); s.wait(50);}
         check(log_files().size() == 1, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
-        settings.learning=true;settings.zenz.policy.learn_fallback=true;save_dictionary_settings(config,settings);
+        settings.learning=true;settings.zenz.policy.learn_fallback=true;save_settings(config,settings);
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);
          const auto until=GetTickCount64()+4000;bool learned=false;do {s.wait(30);try {learned=!read_user_dictionary(user).lookup({U"みかん"}).empty();} catch(...) {} }while(!learned&&GetTickCount64()<until);check(learned,"short fallback did not persist");}
         // Hosts without an input scope (Office etc.) are not protected fields; they learn too.
@@ -209,7 +217,7 @@ int wmain(int argc,wchar_t** argv) {
         // order unchanged, so choosing the raw best can clear that preference.
         for (const bool synchronous : {false, true}) {
             settings.zenz.policy.rerank_wait_ms = synchronous ? 400 : 0;
-            settings.candidates.show_after = 1; save_dictionary_settings(config, settings);
+            settings.candidates.show_after = 1; save_settings(config, settings);
             const auto reading = synchronous ? U"こうどう" : U"かどう";
             const auto input = synchronous ? "Koudou" : "Kadou";
             const auto preferred = synchronous ? L"行動" : L"稼動";
@@ -228,7 +236,7 @@ int wmain(int argc,wchar_t** argv) {
               check(s.context->doc->text == std::wstring(L"前") + preferred + L"後", "learned word sank again");
               s.key(VK_SPACE); s.key(VK_RETURN); boost_saved(false); }
         }
-        settings.zenz.policy.rerank_wait_ms = 0; save_dictionary_settings(config, settings);
+        settings.zenz.policy.rerank_wait_ms = 0; save_settings(config, settings);
         { Session s; s.start("Kidou"); s.complete();
           // Selecting and committing another row must write different text.
           // Enter on the already displayed word intentionally skips SetText.

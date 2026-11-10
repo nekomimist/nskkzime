@@ -1,7 +1,8 @@
+#include "dictionary_loader.h"
 #include "runtime_dictionary.h"
 #include "runtime_configuration.h"
 #include "container_runtime.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "learning_client.h"
 #include "learning_ipc.h"
 #include <windows.h>
@@ -94,12 +95,11 @@ std::vector<LookupCandidate> RuntimeDictionary::lookup_many(std::span<const Look
 }
 void RuntimeDictionary::learn(const LearningEvent& event) const noexcept {
     const auto snapshot = state_->snapshot.load();
-    if (snapshot && snapshot->registration) publish_learning(snapshot->dictionary,event);
+    if (snapshot && snapshot->registration && snapshot->learning) snapshot->learning->learn(event);
 }
 void RuntimeDictionary::learn_rerank(const LearningEvent& event) const noexcept {
     const auto snapshot = state_->snapshot.load();
-    if (snapshot && snapshot->registration)
-        if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) learning->learn_rerank(event);
+    if (snapshot && snapshot->registration && snapshot->learning) snapshot->learning->learn_rerank(event);
 }
 std::optional<RerankBoost> RuntimeDictionary::rerank_boost(const LookupKey& key) const {
     const auto snapshot = state_->snapshot.load();
@@ -111,30 +111,29 @@ std::optional<LearningEvent> RuntimeDictionary::forget_target(const LookupKey& k
 }
 bool RuntimeDictionary::forget(const LearningEvent& event) const noexcept {
     const auto snapshot = state_->snapshot.load();
-    if (snapshot && snapshot->registration)
-        if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) return learning->forget(event);
+    if (snapshot && snapshot->registration && snapshot->learning) return snapshot->learning->forget(event);
     return false;
 }
 void RuntimeDictionary::skipped(std::wstring reason) const noexcept {
     const auto snapshot = state_->snapshot.load();
-    if (snapshot) if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) learning->skipped(std::move(reason));
+    if (snapshot && snapshot->learning) snapshot->learning->skipped(std::move(reason));
 }
 std::wstring RuntimeDictionary::status() const {
     const auto snapshot = state_->snapshot.load();
     if (!snapshot) return L"辞書: 読み込み中。かな入力は利用できます。変換待ちの読みは、完了後にSpaceで再試行できます。";
-    if (const auto* learning = dynamic_cast<const LearningDictionary*>(snapshot->dictionary.get())) return snapshot->status + L"\r\n" + learning->status();
+    if (snapshot->learning) return snapshot->status + L"\r\n" + snapshot->learning->status();
     return snapshot->status;
 }
-std::shared_ptr<const Dictionary> runtime_dictionary() {
+std::shared_ptr<const RuntimeDictionary> runtime_dictionary() {
     return runtime_dictionary(capture_runtime_configuration());
 }
 std::shared_ptr<const ContainerConfiguration> RuntimeDictionary::container_configuration() const {
     const auto snapshot = state_->snapshot.load();
     return snapshot ? snapshot->container : nullptr;
 }
-std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration& settings) {
+std::shared_ptr<const RuntimeDictionary> runtime_dictionary(const RuntimeConfiguration& settings) {
     if (settings.broker) {
-        auto result = std::dynamic_pointer_cast<const RuntimeDictionary>(container_runtime_dictionary());
+        auto result = container_runtime_dictionary();
         const std::lock_guard lock(cache_mutex); latest = result; requested = true; return result;
     }
     // Capture configuration/environment before queueing. Later activations must
@@ -161,15 +160,15 @@ std::shared_ptr<const Dictionary> runtime_dictionary(const RuntimeConfiguration&
             auto load = [configuration,learning,user_file,learning_paths_failed,cache_root] {
                 auto loaded = load_dictionaries(configuration,cache_root);
                 if (loaded.failed) { OutputDebugStringW(loaded.status.c_str()); OutputDebugStringW(L"\n"); }
-                bool registration = false;
+                std::shared_ptr<const LearningDictionary> learner;
                 if (learning && !loaded.failed) {
                     try {
                         if (learning_paths_failed) throw std::runtime_error("invalid learning path");
-                        loaded.dictionary = std::make_shared<LearningDictionary>(loaded.dictionary,user_file);
-                        registration = true;
+                        learner = std::make_shared<LearningDictionary>(loaded.dictionary,user_file);
+                        loaded.dictionary = learner;
                     } catch (...) { loaded.status += L"\r\n学習: 初期化に失敗（通常の変換は利用できます）"; }
                 } else loaded.status += L"\r\n学習: 無効、または辞書未設定・読み込み失敗のため停止";
-                return RuntimeDictionarySnapshot{std::move(loaded.dictionary),std::move(loaded.status),registration,{}};
+                return RuntimeDictionarySnapshot{std::move(loaded.dictionary),std::move(loaded.status),learner != nullptr,{},std::move(learner)};
             };
             // Demo/empty configurations have no dictionary file to open.
             result = configuration.demo || configuration.settings.dictionaries.empty() ?
@@ -196,17 +195,4 @@ bool runtime_dictionary_ready() {
     { const std::lock_guard lock(cache_mutex); dictionary = latest.lock(); }
     return dictionary && dictionary->ready();
 }
-void publish_runtime_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
-    if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->learn(event);
-}
-void publish_runtime_rerank_learning(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
-    if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->learn_rerank(event);
-}
-void skip_runtime_learning(const std::shared_ptr<const Dictionary>& dictionary, std::wstring reason) noexcept {
-    if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) runtime->skipped(std::move(reason));
-}
-bool publish_runtime_forgetting(const std::shared_ptr<const Dictionary>& dictionary, const LearningEvent& event) noexcept {
-    if (const auto* runtime = dynamic_cast<const RuntimeDictionary*>(dictionary.get())) return runtime->forget(event);
-    return false;
-}
-}
+} // namespace nskkzime::windows

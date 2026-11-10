@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "container_runtime.h"
 #include "app_container.h"
 #include "learning_client.h"
@@ -55,9 +56,9 @@ void retain(const RuntimeDictionarySnapshot& snapshot) noexcept {
 }
 RuntimeDictionarySnapshot bootstrap() {
     NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-    auto response = decode_broker_bootstrap(container_exchange("INI3", GetTickCount64() + 30000, cancel.get()));
+    auto response = decode_broker_bootstrap(container_operation(BrokerOperation::Init, {}, {}, GetTickCount64() + 30000, cancel.get()));
     auto config = std::make_shared<ContainerConfiguration>();
-    config->configuration.settings = parse_dictionary_settings(response.settings);
+    config->configuration.settings = parse_settings(response.settings);
     config->configuration.file = wide_message(response.file);
     config->configuration.demo = response.demo;
     config->generation = std::move(response.generation);
@@ -75,17 +76,17 @@ RuntimeDictionarySnapshot bootstrap() {
     const bool learning = config->configuration.settings.learning && !config->configuration.demo &&
         !config->configuration.settings.dictionaries.empty() && response.learning;
     auto status = L"辞書: 補助プロセス経由\r\n" + wide_message(response.status);
-    bool registration = false;
+    std::shared_ptr<const LearningDictionary> learner;
     if (learning) {
         try {
-            base = std::make_shared<LearningDictionary>(base,
+            learner = std::make_shared<LearningDictionary>(base,
                 config->configuration.file.parent_path() / L"user-dictionary.nskkdb", config->generation);
-            registration = true;
+            base = learner;
         } catch (...) { status += L"\r\n学習: 初期化に失敗（通常の変換は利用できます）"; }
     } else status += L"\r\n学習: 無効、または辞書未設定・読み込み失敗のため停止";
     // Configuration and dictionary become visible in one atomic publication.
     // Workers already own their generation; they never consult a global config.
-    return RuntimeDictionarySnapshot{base, std::move(status), registration, std::move(config)};
+    return RuntimeDictionarySnapshot{base, std::move(status), learner != nullptr, std::move(config), std::move(learner)};
 }
 }
 std::shared_ptr<const ContainerConfiguration> container_configuration() {
@@ -94,15 +95,10 @@ std::shared_ptr<const ContainerConfiguration> container_configuration() {
     const auto current = state.live.lock();
     return current ? current->container_configuration() : nullptr;
 }
-std::shared_ptr<const ContainerConfiguration> container_configuration(const std::shared_ptr<const Dictionary>& dictionary_value) {
-    const auto runtime = std::dynamic_pointer_cast<const RuntimeDictionary>(dictionary_value);
-    return runtime ? runtime->container_configuration() : nullptr;
+std::shared_ptr<const ContainerConfiguration> container_configuration(const std::shared_ptr<const RuntimeDictionary>& dictionary) {
+    return dictionary ? dictionary->container_configuration() : nullptr;
 }
-std::string container_operation(std::string_view generation, std::string_view operation, std::string_view body, ULONGLONG deadline, HANDLE cancel) {
-    if (generation.size() != 64 || operation.size() != 4) throw std::runtime_error("AppContainer initialization pending");
-    return container_exchange(std::string(operation) + std::string(generation) + std::string(body), deadline, cancel);
-}
-std::shared_ptr<const Dictionary> container_runtime_dictionary() {
+std::shared_ptr<const RuntimeDictionary> container_runtime_dictionary() {
     auto& state = retention();
     const std::lock_guard lock(state.mutex);
     if (auto existing = state.live.lock()) return existing;
@@ -113,7 +109,7 @@ std::shared_ptr<const Dictionary> container_runtime_dictionary() {
             // settings; keep input working as an active service would have.
             try {
                 NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-                if (container_operation(previous->container->generation, "CHK1", {}, GetTickCount64() + 5000, cancel.get()) == "SAME")
+                if (container_operation(BrokerOperation::Check, previous->container->generation, {}, GetTickCount64() + 5000, cancel.get()) == "SAME")
                     return *previous;
             } catch (...) { return *previous; }
         }

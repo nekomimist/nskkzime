@@ -1,15 +1,15 @@
 #pragma once
 #include "inference_client.h"
 #include "context_text.h"
+#include "input_checkpoint.h"
 #include <msctf.h>
 #include <wrl/client.h>
 
 namespace nskkzime::windows {
 struct PendingInference {
-    std::uint64_t id, revision, session, generation;
+    std::uint64_t id, generation;
     ULONGLONG deadline;
-    Microsoft::WRL::ComPtr<ITfContext> context;
-    Microsoft::WRL::ComPtr<ITfComposition> composition;
+    InputCheckpoint input;
     SurroundingText text;
     PlannedInference plan;
 };
@@ -24,10 +24,8 @@ public:
     std::uint64_t sequence = 0, generation = 0;
     void configure(const InferenceConfig&, InferenceClient::Callback);
     bool cancel() noexcept;
-    bool matches(const PendingInference&, std::uint64_t revision, std::uint64_t session,
-        ITfContext*, ITfComposition*) const;
-    void submit(PlannedInference, SurroundingText, std::uint64_t revision, std::uint64_t session,
-        ITfContext*, ITfComposition*);
+    bool matches(const PendingInference&, InputCheckpoint) const;
+    void submit(PlannedInference, SurroundingText, InputCheckpoint);
     // Rerank only: score within policy.rerank_wait_ms before the candidates are
     // first shown. nullopt (disabled, slow or unavailable) means use submit().
     std::optional<InferenceResponse> score_now(PlannedInference&, const SurroundingText&);

@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "broker_snapshot.h"
 #include "input_log.h"
 #include "romaji_settings.h"
@@ -44,7 +45,7 @@ int main() {
         Files files;
         const auto first = files.write("first.skk", "かんじ /漢字;優先/感じ/\n");
         const auto second = files.write("second.skk", "かんじ /漢字;下位/幹事/\n");
-        DictionaryConfiguration config;
+        SettingsConfiguration config;
         config.file = files.root / "settings.ini";
         config.settings.dictionaries = {files.root / "missing.skk", first, second};
         config.settings.off_key_exclusions = {L"Code.exe", L"WindowsTerminal.exe"};
@@ -53,11 +54,11 @@ int main() {
         config.settings.ui.show_input_mode = true; config.settings.ui.input_mode_duration_ms = 1250;
         const auto partial = build_broker_snapshot(config, dictionary_configuration_id(config));
         const auto response = decode(partial);
-        check(parse_dictionary_settings(response.settings).startup_ime_off, "startup mode not transferred to container");
-        check(parse_dictionary_settings(response.settings).ui.font == config.settings.ui.font, "UI font not transferred to container");
-        check(parse_dictionary_settings(response.settings).ui.show_input_mode &&
-            parse_dictionary_settings(response.settings).ui.input_mode_duration_ms == 1250, "mode indicator settings not transferred to container");
-        check(parse_dictionary_settings(response.settings).off_key_exclusions == config.settings.off_key_exclusions,
+        check(parse_settings(response.settings).startup_ime_off, "startup mode not transferred to container");
+        check(parse_settings(response.settings).ui.font == config.settings.ui.font, "UI font not transferred to container");
+        check(parse_settings(response.settings).ui.show_input_mode &&
+            parse_settings(response.settings).ui.input_mode_duration_ms == 1250, "mode indicator settings not transferred to container");
+        check(parse_settings(response.settings).off_key_exclusions == config.settings.off_key_exclusions,
             "OFF key exclusions not transferred to container");
         check(response.generation == dictionary_configuration_id(config) && wide_message(response.file) == config.file.native(),
             "settings identity not transferred");
@@ -108,13 +109,13 @@ int main() {
         config.settings.input_method = InputMethod::Azik; config.settings.azik_keyboard = AzikKeyboard::Us101;
         config.settings.romaji_rules.clear();
         const auto azik = decode(build_broker_snapshot(config, dictionary_configuration_id(config)));
-        const auto azik_settings = parse_dictionary_settings(azik.settings);
+        const auto azik_settings = parse_settings(azik.settings);
         const auto azik_profile = resolve_input_profile(azik_settings, azik.romaji);
         check(azik_profile.method() == InputMethod::Azik && azik_profile.keyboard() == AzikKeyboard::Us101 &&
             azik_profile.rules()->find("q")->output == U"ん" && azik_profile.rules()->find("'")->output == U"ー", "empty broker overlay lost AZIK profile");
         config.settings.romaji_rules = files.root / "missing-azik.tsv";
         const auto azik_fallback = decode(build_broker_snapshot(config, dictionary_configuration_id(config)));
-        check(!azik_fallback.complete && resolve_input_profile(parse_dictionary_settings(azik_fallback.settings), azik_fallback.romaji).method() == InputMethod::Azik,
+        check(!azik_fallback.complete && resolve_input_profile(parse_settings(azik_fallback.settings), azik_fallback.romaji).method() == InputMethod::Azik,
             "broker fallback switched input method");
         config.settings = {}; config.demo = true;
         const auto demo = decode(build_broker_snapshot(config, dictionary_configuration_id(config)));

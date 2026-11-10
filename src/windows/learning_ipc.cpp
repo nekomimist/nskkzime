@@ -1,5 +1,5 @@
 #include "learning_ipc.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "local_storage.h"
 #include <bcrypt.h>
 #include <combaseapi.h>
@@ -18,7 +18,7 @@ std::filesystem::path checked_path(const std::filesystem::path& path) {
     return path.lexically_normal();
 }
 }
-std::filesystem::path learning_file_path() { return learning_file_path(dictionary_settings_path()); }
+std::filesystem::path learning_file_path() { return learning_file_path(settings_file_path()); }
 std::filesystem::path learning_file_path(const std::filesystem::path& settings_file) {
     return checked_path(settings_file.parent_path() / L"user-dictionary.nskkdb");
 }

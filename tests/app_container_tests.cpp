@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "app_container.h"
 #include "broker_snapshot.h"
 #include "container_runtime.h"
@@ -435,7 +436,7 @@ int container_test(bool denied, bool real_model) {
         LearningRequest request{learning_client_id(), 1, {{U"ちょうき", 0}, {}, {}}, DictionaryAction::Learn};
         request.event.candidate.text = U"長期";
         request.event.rerank_gap = 4.0;
-        check(container_operation(config->generation, "LRN1", encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY",
+        check(container_operation(BrokerOperation::Learning, config->generation, encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY",
             "external container write");
         const auto dictionary = container_runtime_dictionary(); const auto end = GetTickCount64() + 3000; bool seen = false;
         while (!seen && GetTickCount64() < end) { seen = !dictionary->lookup({U"ちょうき", 0}).empty(); Sleep(10); }
@@ -444,7 +445,7 @@ int container_test(bool denied, bool real_model) {
         while (!dictionary->rerank_boost(request.event.key) && GetTickCount64() < boost_end) Sleep(10);
         check(dictionary->rerank_boost(request.event.key) && dictionary->rerank_boost(request.event.key)->gap == 4.0, "AppContainer lost rerank boost snapshot");
         ++request.sequence; request.action = DictionaryAction::Rerank; request.event.rerank_gap = 0.0;
-        check(container_operation(config->generation, "LRN1", encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY", "container boost-only clear rejected");
+        check(container_operation(BrokerOperation::Learning, config->generation, encode_learning(request), GetTickCount64() + 1500, cancel.get()) == "OKAY", "container boost-only clear rejected");
         const auto clear_end = GetTickCount64() + 3000;
         while (dictionary->rerank_boost(request.event.key) && GetTickCount64() < clear_end) Sleep(10);
         check(!dictionary->rerank_boost(request.event.key) && !dictionary->lookup(request.event.key).empty(), "container boost-only clear changed vocabulary");
@@ -484,10 +485,10 @@ int container_test(bool denied, bool real_model) {
         try { container_exchange("INF1" + std::string(64, '0') + "{}", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "stale settings accepted");
         rejected = false;
-        try { container_operation(config->generation, "FILE", "C:\\private.txt", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
+        try { container_exchange("FILE" + config->generation + "C:\\private.txt", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "arbitrary file operation accepted");
         rejected = false;
-        try { container_operation(config->generation, "GUI1", "settings", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
+        try { container_operation(BrokerOperation::Gui, config->generation, "settings", GetTickCount64() + 1500, cancel.get()); } catch (...) { rejected = true; }
         check(rejected, "AppContainer launched desktop GUI");
     }
     CoUninitialize(); return 0;
@@ -532,12 +533,12 @@ int wmain(int argc, wchar_t** argv) {
             check(!dictionary->registration_allowed(), "degraded broker enabled learning");
             const auto config = container_configuration();
             check(config && config->input_profile.rules()->find("wi")->output == U"うぃ", "degraded broker lost built-in rules");
-            const auto runtime = std::dynamic_pointer_cast<const RuntimeDictionary>(dictionary);
+            const auto& runtime = dictionary;
             check(runtime->status().find(L"読み込み失敗") != std::wstring::npos &&
                 runtime->status().find(L"内蔵ルールで継続") != std::wstring::npos, "degraded broker lost diagnostics");
             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
             bool rejected = false;
-            try { (void)container_operation(config->generation, "LRN1", snapshot_request(0), GetTickCount64() + 1500, cancel.get()); }
+            try { (void)container_operation(BrokerOperation::Learning, config->generation, snapshot_request(0), GetTickCount64() + 1500, cancel.get()); }
             catch (...) { rejected = true; }
             check(rejected, "broker accepted learning from a degraded snapshot");
             return 0;
@@ -559,7 +560,7 @@ int wmain(int argc, wchar_t** argv) {
             };
             check(reactivate() == config, "desktop broker reactivation copied the dictionary again");
             auto changed = config->configuration.settings; changed.candidates.show_after = 4;
-            save_dictionary_settings(*environment_value(L"NSKKZIME_CONFIG"), changed); // The parent restores it.
+            save_settings(*environment_value(L"NSKKZIME_CONFIG"), changed); // The parent restores it.
             const auto updated = reactivate();
             check(updated != config && updated->configuration.settings.candidates.show_after == 4, "desktop broker reused stale settings");
             return 0;
@@ -580,7 +581,7 @@ int wmain(int argc, wchar_t** argv) {
         fixture = root;
         const auto config = root / L"settings.ini", dict = root / L"fixture.skk", user = root / L"user-dictionary.nskkdb";
         { std::ofstream out(dict, std::ios::binary); out << "# /#1/#3/#2/\nかんじ /漢字/感じ/幹事/\nかいとう /回答/解答/解凍/\n"; }
-        DictionarySettings settings{{dict}, true}; settings.candidates = {3, CandidateKeys::Asdfjkl};
+        AppSettings settings{{dict}, true}; settings.candidates = {3, CandidateKeys::Asdfjkl};
         settings.off_key_exclusions = {L"app_container_tests.exe"};
         settings.zenz.enabled = true; settings.zenz.model = root / L"fixture.gguf";
         settings.zenz.server = std::filesystem::path(executable).parent_path() / L"nkkz-ime-server.exe";
@@ -592,7 +593,7 @@ int wmain(int argc, wchar_t** argv) {
         settings.zenz.log_input = true; settings.zenz.log_directory = root / L"logs";
         std::filesystem::create_directory(settings.zenz.log_directory);
         if (real_model) settings.zenz.model = argv[2];
-        save_dictionary_settings(config, settings);
+        save_settings(config, settings);
         // Children inherit this file; its broker endpoint and inference endpoint are private to the test.
         SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
         const auto inference_token = current_inference_config()->token;
@@ -615,7 +616,7 @@ int wmain(int argc, wchar_t** argv) {
         // Withhold the broker until both children have made their first choice.
         // This makes late-settings protection independent of bootstrap timing.
         auto early_settings = settings; early_settings.startup_ime_off = true;
-        save_dictionary_settings(config, early_settings);
+        save_settings(config, early_settings);
         const auto broker = start_early_children(executable, allowed, denied, root, config, stop.get(), scenario);
         if (startup_only) {
             SetEvent(stop.get());
@@ -628,26 +629,26 @@ int wmain(int argc, wchar_t** argv) {
         }
         int result = 1;
         try {
-            save_dictionary_settings(config, settings);
+            save_settings(config, settings);
             auto desktop = launch(executable, L"--desktop"); check(wait_child(desktop.get()) == 0, "desktop client failed");
-            save_dictionary_settings(config, settings);
+            save_settings(config, settings);
             auto client = launch(executable, real_model ? L"--real-client" : L"--client", allowed.sid); const auto code = wait_child(client.get());
             std::cout << "allowed child=" << code << std::endl; check(code == 0, "container client failed");
             check(!private_seen.load(), "broker received protected text");
             for (const auto keyboard : {AzikKeyboard::Jp106, AzikKeyboard::Us101}) {
                 auto azik_settings = settings;
                 azik_settings.input_method = InputMethod::Azik; azik_settings.azik_keyboard = keyboard;
-                save_dictionary_settings(config, azik_settings);
+                save_settings(config, azik_settings);
                 const auto azik = launch(executable, keyboard == AzikKeyboard::Jp106 ? L"--azik-jis" : L"--azik-us", allowed.sid);
                 check(wait_child(azik.get()) == 0, "AZIK container client failed");
             }
-            save_dictionary_settings(config, settings);
+            save_settings(config, settings);
             if (!real_model) {
                 // The fixture answers generation after 160 ms; this client stops waiting first.
                 NativeHandle abandon(CreateEventW(nullptr, TRUE, FALSE, nullptr));
                 const auto generation = decode_broker_bootstrap(container_exchange("INI3", GetTickCount64() + 5000, abandon.get())).generation;
                 bool abandoned = false;
-                try { (void)container_operation(generation, "INF1", encode_request({1, U"とりけし", U"", U"", 1}), GetTickCount64() + 40, abandon.get()); }
+                try { (void)container_operation(BrokerOperation::Inference, generation, encode_request({1, U"とりけし", U"", U"", 1}), GetTickCount64() + 40, abandon.get()); }
                 catch (...) { abandoned = true; }
                 check(abandoned, "abandoned inference was answered");
                 Sleep(300); // The broker notices the closed client and ends the request.
@@ -657,26 +658,26 @@ int wmain(int argc, wchar_t** argv) {
             bool logged = false; for (const auto& item : std::filesystem::directory_iterator(root / L"logs")) if (item.path().extension() == L".jsonl") logged = true;
             check(logged, "broker input log missing");
             auto startup_settings = settings; startup_settings.startup_ime_off = true;
-            save_dictionary_settings(config, startup_settings);
+            save_settings(config, startup_settings);
             NativeHandle startup_output(CreateFileW((root / L"startup-later.log").c_str(), GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
             check(startup_output.valid(), "create later startup diagnostic file");
             auto startup_client = launch(executable, L"--startup", allowed.sid, nullptr, nullptr, startup_output.get());
             check(wait_child(startup_client.get()) == 0, "AppContainer startup mode failed");
-            save_dictionary_settings(config, settings);
+            save_settings(config, settings);
             auto degraded = settings;
             degraded.dictionaries.push_back(root / L"missing.skk");
             degraded.romaji_rules = root / L"missing-romaji.tsv";
-            save_dictionary_settings(config, degraded);
+            save_settings(config, degraded);
             auto partial_desktop = launch(executable, L"--degraded");
             check(wait_child(partial_desktop.get()) == 0, "degraded desktop broker client failed");
             auto partial_container = launch(executable, L"--degraded", allowed.sid);
             check(wait_child(partial_container.get()) == 0, "degraded AppContainer client failed");
-            save_dictionary_settings(config, settings);
+            save_settings(config, settings);
             auto updated = settings; updated.learning = false;
             updated.romaji_rules = root / L"romaji.tsv";
             { std::ofstream out(updated.romaji_rules, std::ios::binary); out << "version=1\nwi\tゐ\n"; }
-            save_dictionary_settings(config, updated);
+            save_settings(config, updated);
             NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
             (void)container_exchange("INI3", GetTickCount64() + 5000, cancel.get());
             const auto dictionary_time = std::filesystem::last_write_time(dict);
@@ -689,7 +690,7 @@ int wmain(int argc, wchar_t** argv) {
             check(std::filesystem::file_size(dict) == dictionary_size, "fixture size changed");
             auto refreshed = launch(executable, L"--updated");
             check(wait_child(refreshed.get()) == 0, "updated broker client failed");
-            save_dictionary_settings(config, settings);
+            save_settings(config, settings);
             auto blocked = launch(executable, L"--denied", denied.sid); check(wait_child(blocked.get()) == 0, "unlisted container connected");
             result = 0;
         } catch (...) { SetEvent(stop.get()); WaitForSingleObject(broker.get(), 35000); throw; }

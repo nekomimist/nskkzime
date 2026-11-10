@@ -3,7 +3,7 @@
 #include "candidate_ui.h"
 #include "learning_ipc.h"
 #include "tsf_test_host.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "isolated_settings.h"
 #include <fstream>
 #include <iostream>
@@ -60,9 +60,9 @@ void candidate_settings_tests(const std::filesystem::path& root) {
     const auto dictionary = root / L"candidate-settings.skk", config = root / L"candidate-settings.ini";
     { std::ofstream file(dictionary, std::ios::binary);
       file << "こうほ /候補一/候補二/候補三/候補四/候補五/候補六/候補七/候補八/候補九/\nかk /書/描/掻/\n"; }
-    DictionarySettings settings{{dictionary}, false}; settings.candidates = {3, CandidateKeys::Asdfjkl};
+    AppSettings settings{{dictionary}, false}; settings.candidates = {3, CandidateKeys::Asdfjkl};
     settings.ui.font = L"Meiryo";
-    save_dictionary_settings(config, settings);
+    save_settings(config, settings);
     SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
     {
         Session s; s.type("Kouho"); s.key(VK_SPACE);
@@ -101,12 +101,12 @@ void candidate_settings_tests(const std::filesystem::path& root) {
         check(!s.host->ui && s.context->doc->text == L"候補一", "cancel did not reset list delay");
         s.key(VK_RETURN); check(!s.host->ui && s.context->composition->ended, "hidden candidate could not commit with Enter");
     }
-    settings.candidates.keys = CandidateKeys::Numbers; save_dictionary_settings(config, settings);
+    settings.candidates.keys = CandidateKeys::Numbers; save_settings(config, settings);
     {
         Session s; s.type("Kouho"); s.key(VK_SPACE); s.type("2");
         check(s.context->doc->text == L"候補一2", "hidden number selected an invisible row");
     }
-    settings.candidates = {}; save_dictionary_settings(config, settings);
+    settings.candidates = {}; save_settings(config, settings);
     {
         Session s; s.type("Kouho"); s.key(VK_SPACE); check(s.host->ui != nullptr, "default stopped showing first list");
         s.type("2"); check(s.context->doc->text == L"候補二", "default numeric shortcut changed");

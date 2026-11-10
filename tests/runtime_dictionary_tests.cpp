@@ -1,5 +1,7 @@
 #include "runtime_dictionary.h"
 #include "learning_ipc.h"
+#include "learning_client.h"
+#include "isolated_settings.h"
 #include "nskkzime/inference_policy.h"
 #include "nskkzime/dictionary.h"
 #include "dictionary_wait.h"
@@ -24,6 +26,25 @@ RuntimeDictionarySnapshot loaded() { return {demo_dictionary(),L"辞書: 読み�
 int main() {
     int failed = 0;
     const std::vector<std::pair<const char*,std::function<void()>>> cases = {
+        {"learning-destination-independent-of-lookup-wrapper", [] {
+            const auto root = std::filesystem::current_path() / ("runtime-learning-" + learning_client_id());
+            use_isolated_settings(root, "learning=on\n");
+            const auto file = root / "user-dictionary.nskkdb";
+            auto learner = std::make_shared<LearningDictionary>(demo_dictionary(), file);
+            auto lookup = std::make_shared<DictionarySet>(std::vector<std::shared_ptr<const Dictionary>>{learner});
+            RuntimeDictionary dictionary(RuntimeDictionarySnapshot{lookup, L"ready", true, {}, learner});
+            LearningEvent event{{U"かんじ"}, {}, {"test", U"観字", {}}};
+            dictionary.learn(event);
+            wait_for_dictionary([&] { return !read_user_dictionary(file).lookup(event.key).empty(); });
+            check(dictionary.lookup(event.key).front().text == U"観字", "wrapped lookup lost learning");
+            event.rerank_gap = 2.0;
+            dictionary.learn_rerank(event);
+            wait_for_dictionary([&] { return read_user_dictionary(file).rerank_boost(event.key).has_value(); });
+            event.rerank_gap.reset();
+            check(dictionary.forget(event), "explicit learning destination rejected forgetting");
+            wait_for_dictionary([&] { return read_user_dictionary(file).lookup(event.key).empty(); });
+            check(!read_user_dictionary(file).rerank_boost(event.key), "forgetting retained the boost");
+        }},
         {"numeric-batch-preserves-source-priority", [] {
             const auto high = SkkDictionary::parse(U"# /#2/\n");
             const auto low = SkkDictionary::parse(U"99 /固定/\n# /#1/\n");

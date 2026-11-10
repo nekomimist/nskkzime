@@ -1,4 +1,6 @@
-#include "dictionary_settings.h"
+#include "dictionary_loader.h"
+#include "windows_text.h"
+#include "settings_file.h"
 #include "runtime_dictionary.h"
 #include "romaji_settings.h"
 #include "dictionary_wait.h"
@@ -55,201 +57,201 @@ int main() {
     const auto missing = files.root / L"missing.skk";
     const std::vector<std::pair<const char*, std::function<void()>>> cases = {
         {"settings/ui-font-default-roundtrip-and-validation", [&] {
-            const auto defaults = parse_dictionary_settings("version=1\n");
+            const auto defaults = parse_settings("version=1\n");
             require(defaults.ui.font == L"Yu Gothic UI", "old settings changed UI font");
-            require(serialize_dictionary_settings(defaults).find("ui-font=") == std::string::npos, "default font changed old settings representation");
+            require(serialize_settings(defaults).find("ui-font=") == std::string::npos, "default font changed old settings representation");
             for (const auto& font : {std::wstring(L"Meiryo"), std::wstring(L"ＭＳ ゴシック"), std::wstring(31, L'a')}) {
                 auto settings = defaults; settings.ui.font = font;
                 const auto file = files.path(L"font-" + std::to_wstring(font.size()) + L".ini");
-                save_dictionary_settings(file, settings);
-                require(read_dictionary_settings(file).ui.font == font, "UI font lost on save");
+                save_settings(file, settings);
+                require(read_settings(file).ui.font == font, "UI font lost on save");
             }
             for (const auto invalid : {"ui-font=", "ui-font=Meiryo\nui-font=Yu Gothic UI", "ui-font=bad\tfont"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
-            rejects([&] { parse_dictionary_settings("version=1\nui-font=" + std::string(32, 'a')); });
+                rejects([&] { parse_settings(std::string("version=1\n") + invalid); });
+            rejects([&] { parse_settings("version=1\nui-font=" + std::string(32, 'a')); });
             for (const auto& font : {std::wstring{}, std::wstring(32, L'a'), std::wstring(L" Meiryo"), std::wstring(L"Meiryo "),
                     std::wstring(L"Meiryo\nlearning=off"), std::wstring(L"bad\tfont"), std::wstring(1, L'\0'), std::wstring(1, wchar_t{0xd800})}) {
                 auto settings = defaults; settings.ui.font = font;
-                rejects([&] { serialize_dictionary_settings(settings); });
+                rejects([&] { serialize_settings(settings); });
             }
         }},
         {"settings/input-mode-opt-in-roundtrip-and-validation", [&] {
-            const auto defaults = parse_dictionary_settings("version=1\n");
+            const auto defaults = parse_settings("version=1\n");
             require(!defaults.ui.show_input_mode && defaults.ui.input_mode_duration_ms == 3000, "old settings enabled input mode UI");
-            require(serialize_dictionary_settings(defaults).find("input-mode") == std::string::npos, "default mode settings changed representation");
+            require(serialize_settings(defaults).find("input-mode") == std::string::npos, "default mode settings changed representation");
             for (const auto duration : {1U, 3000U, 60000U}) {
                 auto settings = defaults;
                 settings.ui.show_input_mode = true; settings.ui.input_mode_duration_ms = duration;
-                const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));
+                const auto loaded = parse_settings(serialize_settings(settings));
                 require(loaded.ui.show_input_mode && loaded.ui.input_mode_duration_ms == duration, "mode settings lost on roundtrip");
                 settings.ui.show_input_mode = false;
-                require(!parse_dictionary_settings(serialize_dictionary_settings(settings)).ui.show_input_mode, "mode opt-out lost");
+                require(!parse_settings(serialize_settings(settings)).ui.show_input_mode, "mode opt-out lost");
             }
-            require(!parse_dictionary_settings("version=1\nshow-input-mode=off\n").ui.show_input_mode, "explicit off ignored");
+            require(!parse_settings("version=1\nshow-input-mode=off\n").ui.show_input_mode, "explicit off ignored");
             for (const auto invalid : {"show-input-mode=yes", "show-input-mode=", "show-input-mode=on\nshow-input-mode=off",
                     "input-mode-duration-ms=0", "input-mode-duration-ms=60001", "input-mode-duration-ms=-1",
                     "input-mode-duration-ms=", "input-mode-duration-ms=1x", "input-mode-duration-ms=4294967296",
                     "input-mode-duration-ms=1\ninput-mode-duration-ms=2"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+                rejects([&] { parse_settings(std::string("version=1\n") + invalid); });
             for (const auto invalid : {0U, 60001U}) {
                 auto settings = defaults; settings.ui.input_mode_duration_ms = invalid;
-                rejects([&] { serialize_dictionary_settings(settings); });
+                rejects([&] { serialize_settings(settings); });
             }
         }},
         {"settings/startup-ime-off-opt-in-roundtrip-and-validation", [&] {
-            require(!parse_dictionary_settings("version=1\n").startup_ime_off, "old settings forced IME off");
+            require(!parse_settings("version=1\n").startup_ime_off, "old settings forced IME off");
             for (const bool enabled : {true, false}) {
-                const auto settings = parse_dictionary_settings(std::string("version=1\nstartup-ime-off=") + (enabled ? "on\n" : "off\n"));
+                const auto settings = parse_settings(std::string("version=1\nstartup-ime-off=") + (enabled ? "on\n" : "off\n"));
                 const auto file = files.path(enabled ? L"startup-on.ini" : L"startup-off.ini");
-                save_dictionary_settings(file, settings);
-                require(read_dictionary_settings(file).startup_ime_off == enabled, "startup mode lost on save");
+                save_settings(file, settings);
+                require(read_settings(file).startup_ime_off == enabled, "startup mode lost on save");
             }
             for (const auto invalid : {"", "ON", "true", "1", "on\nstartup-ime-off=off"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\nstartup-ime-off=") + invalid + "\n"); });
+                rejects([&] { parse_settings(std::string("version=1\nstartup-ime-off=") + invalid + "\n"); });
         }},
         {"settings/off-key-exclusions-roundtrip-and-exact-case-insensitive-match", [&] {
-            const auto settings = parse_dictionary_settings("version=1\noff-key-exclude=Code.EXE\noff-key-exclude=WindowsTerminal.exe\n");
-            const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));
+            const auto settings = parse_settings("version=1\noff-key-exclude=Code.EXE\noff-key-exclude=WindowsTerminal.exe\n");
+            const auto loaded = parse_settings(serialize_settings(settings));
             require(loaded.off_key_exclusions == settings.off_key_exclusions, "off-key exclusions lost");
             require(off_keys_excluded(loaded, L"code.exe") && off_keys_excluded(loaded, L"WINDOWSTERMINAL.EXE"), "case-insensitive exclusion failed");
             require(!off_keys_excluded(loaded, L"xcode.exe") && !off_keys_excluded(loaded, L"Code.exe.bak") &&
                 !off_keys_excluded(loaded, L"C:\\Code.exe"), "exclusion was not an exact filename match");
-            require(parse_dictionary_settings("version=1\n").off_key_exclusions.empty(), "default exclusions not empty");
+            require(parse_settings("version=1\n").off_key_exclusions.empty(), "default exclusions not empty");
             for (const auto invalid : {"", ".exe", "Code", "*.exe", "C:\\Code.exe", "folder/Code.exe", "Code.exe\noff-key-exclude=code.EXE"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\noff-key-exclude=") + invalid + "\n"); });
+                rejects([&] { parse_settings(std::string("version=1\noff-key-exclude=") + invalid + "\n"); });
             auto invalid = settings;
-            invalid.off_key_exclusions = {L" Code.exe"}; rejects([&] { serialize_dictionary_settings(invalid); });
-            invalid.off_key_exclusions = {L"Code\n.exe"}; rejects([&] { serialize_dictionary_settings(invalid); });
+            invalid.off_key_exclusions = {L" Code.exe"}; rejects([&] { serialize_settings(invalid); });
+            invalid.off_key_exclusions = {L"Code\n.exe"}; rejects([&] { serialize_settings(invalid); });
             invalid.off_key_exclusions.clear();
             for (int i = 0; i < 33; ++i) invalid.off_key_exclusions.push_back(L"app" + std::to_wstring(i) + L".exe");
-            rejects([&] { serialize_dictionary_settings(invalid); });
+            rejects([&] { serialize_settings(invalid); });
         }},
         {"settings/candidate-options-defaults-roundtrip-and-bounds", [&] {
-            const auto defaults = parse_dictionary_settings("version=1\n").candidates;
+            const auto defaults = parse_settings("version=1\n").candidates;
             require(defaults.show_after == 1 && defaults.keys == CandidateKeys::Numbers, "old settings changed candidate behavior");
-            auto settings = parse_dictionary_settings("version=1\ncandidate-show-after=3\ncandidate-keys=asdfjkl\n");
-            const auto file = files.path(L"candidates.ini"); save_dictionary_settings(file, settings);
-            const auto loaded = read_dictionary_settings(file).candidates;
+            auto settings = parse_settings("version=1\ncandidate-show-after=3\ncandidate-keys=asdfjkl\n");
+            const auto file = files.path(L"candidates.ini"); save_settings(file, settings);
+            const auto loaded = read_settings(file).candidates;
             require(loaded.show_after == 3 && loaded.keys == CandidateKeys::Asdfjkl, "candidate settings lost");
-            settings.candidates = {}; save_dictionary_settings(file, settings);
-            require(read_dictionary_settings(file).candidates.show_after == 1 && read_dictionary_settings(file).candidates.keys == CandidateKeys::Numbers, "candidate defaults not restored");
-            require(parse_dictionary_settings("version=1\ncandidate-show-after=99\ncandidate-keys=numbers\n").candidates.show_after == 99, "upper bound rejected");
+            settings.candidates = {}; save_settings(file, settings);
+            require(read_settings(file).candidates.show_after == 1 && read_settings(file).candidates.keys == CandidateKeys::Numbers, "candidate defaults not restored");
+            require(parse_settings("version=1\ncandidate-show-after=99\ncandidate-keys=numbers\n").candidates.show_after == 99, "upper bound rejected");
             for (const auto invalid : {"candidate-show-after=0", "candidate-show-after=100", "candidate-show-after=-1", "candidate-show-after=", "candidate-show-after=3x",
                  "candidate-show-after=2\ncandidate-show-after=3", "candidate-keys=ASDFJKL", "candidate-keys=qwerty", "candidate-keys=numbers\ncandidate-keys=asdfjkl"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
-            settings.candidates.show_after = 0; rejects([&] { serialize_dictionary_settings(settings); });
+                rejects([&] { parse_settings(std::string("version=1\n") + invalid); });
+            settings.candidates.show_after = 0; rejects([&] { serialize_settings(settings); });
         }},
         {"settings/tsf-log-independent-opt-in-and-validation", [&] {
-            auto settings = parse_dictionary_settings("version=1\n");
+            auto settings = parse_settings("version=1\n");
             require(!settings.tsf_log.enabled && settings.tsf_log.directory.empty(), "default TSF log enabled");
             settings.tsf_log = {true, files.root};
-            const auto loaded = parse_dictionary_settings(serialize_dictionary_settings(settings));
+            const auto loaded = parse_settings(serialize_settings(settings));
             require(loaded.tsf_log.enabled && loaded.tsf_log.directory == files.root && !loaded.zenz.enabled && !loaded.zenz.log_input, "TSF log coupled to inference");
             validate_tsf_log_settings(loaded.tsf_log, true);
             settings.tsf_log.enabled = false;
-            require(!parse_dictionary_settings(serialize_dictionary_settings(settings)).tsf_log.enabled, "TSF opt-out lost");
+            require(!parse_settings(serialize_settings(settings)).tsf_log.enabled, "TSF opt-out lost");
             for (const auto invalid : {"tsf-log=on", "tsf-log=yes", "tsf-log=off\ntsf-log=on", "tsf-log-directory=relative", "tsf-log-directory=\\\\server\\share",
                  "tsf-log-directory=C:\\a\ntsf-log-directory=C:\\b"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+                rejects([&] { parse_settings(std::string("version=1\n") + invalid); });
             rejects([&] { validate_tsf_log_settings({true, missing}, true); });
         }},
         {"settings/input-log-explicit-opt-in-and-path", [&] {
-            auto settings = parse_dictionary_settings("version=1\n");
+            auto settings = parse_settings("version=1\n");
             require(!settings.zenz.log_input && settings.zenz.log_directory.empty(), "old settings enabled input log");
             settings.zenz.log_directory = files.root;
             const auto file = files.path(L"input-log.ini");
-            save_dictionary_settings(file, settings);
-            require(!read_dictionary_settings(file).zenz.log_input, "path alone enabled input log");
-            settings.zenz.log_input = true; save_dictionary_settings(file, settings);
-            const auto loaded = read_dictionary_settings(file);
+            save_settings(file, settings);
+            require(!read_settings(file).zenz.log_input, "path alone enabled input log");
+            settings.zenz.log_input = true; save_settings(file, settings);
+            const auto loaded = read_settings(file);
             require(loaded.zenz.log_input && loaded.zenz.log_directory == files.root, "log settings lost");
             validate_zenz_settings(loaded.zenz, true);
             settings.zenz.log_directory = missing;
             rejects([&] { validate_zenz_settings(settings.zenz, true); });
             for (const auto invalid : {"input-log=yes", "input-log=on", "input-log=off\ninput-log=off",
                  "input-log-directory=relative", "input-log-directory=\\\\server\\share", "input-log-directory=C:\\a\ninput-log-directory=C:\\b"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + invalid); });
+                rejects([&] { parse_settings(std::string("version=1\n") + invalid); });
         }},
         {"settings/unknown-context-is-explicit-and-independent", [&] {
-            auto settings = parse_dictionary_settings("version=1\n");
+            auto settings = parse_settings("version=1\n");
             require(!settings.zenz.allow_unknown_context,"old settings enabled unknown context");
             settings.zenz.allow_unknown_context = true;
-            const auto file = files.path(L"unknown-context.ini"); save_dictionary_settings(file,settings);
-            const auto loaded=read_dictionary_settings(file);
+            const auto file = files.path(L"unknown-context.ini"); save_settings(file,settings);
+            const auto loaded=read_settings(file);
             require(loaded.zenz.allow_unknown_context && !loaded.zenz.log_input && !loaded.zenz.policy.learn_fallback,"context opt-in changed persistence");
-            settings.zenz.allow_unknown_context=false; save_dictionary_settings(file,settings);
-            require(!read_dictionary_settings(file).zenz.allow_unknown_context,"context opt-out lost");
-            require(!parse_dictionary_settings("version=1\nzenz-unknown-context=off\n").zenz.allow_unknown_context,"explicit off lost");
+            settings.zenz.allow_unknown_context=false; save_settings(file,settings);
+            require(!read_settings(file).zenz.allow_unknown_context,"context opt-out lost");
+            require(!parse_settings("version=1\nzenz-unknown-context=off\n").zenz.allow_unknown_context,"explicit off lost");
             for(const auto invalid:{"zenz-unknown-context=yes","zenz-unknown-context=on\nzenz-unknown-context=off"})
-                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
+                rejects([&]{parse_settings(std::string("version=1\n")+invalid);});
         }},
         {"settings/zenz-policy-roundtrip-and-bounds", [&] {
             const auto text = "version=1\nzenz-min-length=12\nzenz-rerank=on\nzenz-learn-fallback=on\nzenz-rerank-limit=8\nzenz-score-timeout-ms=250\nzenz-promote-threshold=1.5\nzenz-max-score-gap=7.5\n";
-            const auto settings=parse_dictionary_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_dictionary_settings(file,settings);
-            const auto policy=read_dictionary_settings(file).zenz.policy;
-            require(policy.rerank_learn && serialize_dictionary_settings(settings).find("zenz-rerank-learn")==std::string::npos, "default rerank learning disabled or written");
-            const auto no_rerank_learning = parse_dictionary_settings("version=1\nzenz-rerank-learn=off\n");
-            require(!parse_dictionary_settings(serialize_dictionary_settings(no_rerank_learning)).zenz.policy.rerank_learn, "rerank learning off roundtrip");
+            const auto settings=parse_settings(text); const auto file=files.path(L"zenz-policy.ini"); save_settings(file,settings);
+            const auto policy=read_settings(file).zenz.policy;
+            require(policy.rerank_learn && serialize_settings(settings).find("zenz-rerank-learn")==std::string::npos, "default rerank learning disabled or written");
+            const auto no_rerank_learning = parse_settings("version=1\nzenz-rerank-learn=off\n");
+            require(!parse_settings(serialize_settings(no_rerank_learning)).zenz.policy.rerank_learn, "rerank learning off roundtrip");
             require(policy.long_min_length==12&&policy.rerank&&policy.learn_fallback&&policy.rerank_limit==8&&policy.score_timeout_ms==250&&policy.promote_threshold==1.5f&&policy.max_score_gap==7.5f,"policy roundtrip");
             // The wait key is written only when changed, so older IMEs keep reading default files.
-            require(policy.rerank_wait_ms==InferencePolicy{}.rerank_wait_ms&&serialize_dictionary_settings(settings).find("zenz-rerank-wait-ms")==std::string::npos,"default wait was written");
-            const auto waiting=parse_dictionary_settings(std::string(text)+"zenz-rerank-wait-ms=0\n"); save_dictionary_settings(file,waiting);
-            require(read_dictionary_settings(file).zenz.policy.rerank_wait_ms==0,"rerank wait roundtrip");
-            require(serialize_dictionary_settings(settings).find("zenz-idle-seconds")==std::string::npos,"default idle time was written");
-            save_dictionary_settings(file,parse_dictionary_settings(std::string(text)+"zenz-idle-seconds=86400\n"));
-            require(read_dictionary_settings(file).zenz.idle_seconds==86400,"idle time roundtrip");
+            require(policy.rerank_wait_ms==InferencePolicy{}.rerank_wait_ms&&serialize_settings(settings).find("zenz-rerank-wait-ms")==std::string::npos,"default wait was written");
+            const auto waiting=parse_settings(std::string(text)+"zenz-rerank-wait-ms=0\n"); save_settings(file,waiting);
+            require(read_settings(file).zenz.policy.rerank_wait_ms==0,"rerank wait roundtrip");
+            require(serialize_settings(settings).find("zenz-idle-seconds")==std::string::npos,"default idle time was written");
+            save_settings(file,parse_settings(std::string(text)+"zenz-idle-seconds=86400\n"));
+            require(read_settings(file).zenz.idle_seconds==86400,"idle time roundtrip");
             for(const auto invalid:{"zenz-idle-seconds=0","zenz-idle-seconds=86401"})
-                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
+                rejects([&]{parse_settings(std::string("version=1\n")+invalid);});
             for(const auto invalid:{"zenz-min-length=1025","zenz-rerank=yes","zenz-rerank-learn=yes","zenz-rerank-learn=off\nzenz-rerank-learn=off","zenz-learn-fallback=yes","zenz-rerank-limit=1","zenz-rerank-limit=65",
                 "zenz-rerank-wait-ms=1001","zenz-rerank-wait-ms=-1","zenz-rerank-wait-ms=0\nzenz-rerank-wait-ms=0",
                 "zenz-score-timeout-ms=0","zenz-score-timeout-ms=10001","zenz-promote-threshold=nan","zenz-promote-threshold=-1",
                 "zenz-max-score-gap=inf","zenz-max-score-gap=101","zenz-min-length=0\nzenz-min-length=10"})
-                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+invalid);});
+                rejects([&]{parse_settings(std::string("version=1\n")+invalid);});
         }},
         {"settings/zenz-roundtrip-and-files", [&] {
             const auto model = files.write(L"モデル 検証.gguf","test"), server = files.write(L"サーバー.exe","test");
-            DictionarySettings settings{{first},false,{}, {true,model,server,2,800}};
-            const auto file = files.path(L"zenz.ini"); save_dictionary_settings(file,settings);
-            const auto loaded = read_dictionary_settings(file);
+            AppSettings settings{{first},false,{}, {true,model,server,2,800}};
+            const auto file = files.path(L"zenz.ini"); save_settings(file,settings);
+            const auto loaded = read_settings(file);
             require(loaded.zenz.enabled && loaded.zenz.model==model && loaded.zenz.server==server && loaded.zenz.threads==2 &&
                 loaded.zenz.timeout_ms==800 && !loaded.learning && loaded.dictionaries==settings.dictionaries,"zenz settings roundtrip");
             validate_zenz_settings(loaded.zenz,true);
             settings.zenz.model=missing; rejects([&]{validate_zenz_settings(settings.zenz,true);});
-            require(!parse_dictionary_settings("version=1").zenz.enabled,"old config enabled inference");
+            require(!parse_settings("version=1").zenz.enabled,"old config enabled inference");
         }},
         {"settings/zenz-invalid-preserves-file", [&] {
-            const auto file = files.path(L"zenz-preserve.ini"); save_dictionary_settings(file,{{first}});
-            DictionarySettings invalid{{second}}; invalid.zenz.enabled=true;
-            rejects([&]{save_dictionary_settings(file,invalid);});
-            require(read_dictionary_settings(file).dictionaries==std::vector<std::filesystem::path>{first},"invalid zenz update changed settings");
+            const auto file = files.path(L"zenz-preserve.ini"); save_settings(file,{{first}});
+            AppSettings invalid{{second}}; invalid.zenz.enabled=true;
+            rejects([&]{save_settings(file,invalid);});
+            require(read_settings(file).dictionaries==std::vector<std::filesystem::path>{first},"invalid zenz update changed settings");
             for (const auto text : {"inference=unknown", "inference=zenz", "inference=off\ninference=off",
                 "zenz-model=relative.gguf", "zenz-server=", "zenz-server=C:\\a.exe\nzenz-server=C:\\b.exe",
                 "inference-threads=0", "inference-threads=65", "inference-threads=-1", "inference-threads=+4",
                 "inference-timeout-ms=0", "inference-timeout-ms=10001", "inference-timeout-ms=10x", "zenz-model=C:\\a\"b.gguf"})
-                rejects([&]{parse_dictionary_settings(std::string("version=1\n")+text);});
+                rejects([&]{parse_settings(std::string("version=1\n")+text);});
         }},
         {"settings/romaji-roundtrip-invalid-and-fallback", [&] {
             const auto rules = files.write(L"ローマ字.tsv","version=1\nwi\tゐ\n");
-            const auto file = files.path(L"romaji.ini"); DictionarySettings proposed{{first},false,rules};
-            save_dictionary_settings(file,proposed); const auto loaded = read_dictionary_settings(file);
+            const auto file = files.path(L"romaji.ini"); AppSettings proposed{{first},false,rules};
+            save_settings(file,proposed); const auto loaded = read_settings(file);
             require(loaded.romaji_rules==rules&&!loaded.learning&&loaded.dictionaries==proposed.dictionaries,"romaji roundtrip damaged settings");
-            auto config=resolve_dictionary_configuration(file,false);
+            auto config=resolve_settings_configuration(file,false);
             const auto custom=load_romaji_rules(config); require(!custom.failed&&custom.rules->find("wi")->output==U"ゐ","romaji file not loaded");
             config.settings.romaji_rules=files.write(L"broken-romaji.tsv","version=1\nwi\t私的な出力\nwi\t別の値");
             const auto failed=load_romaji_rules(config);
             require(failed.failed&&failed.rules->find("wi")->output==U"うぃ","invalid rules did not fall back");
             require(failed.status.find(L"私的な出力")==std::wstring::npos,"diagnostic leaked output");
             for(const auto text:{"version=1\nromaji=relative.tsv","version=1\nromaji=","version=1\nromaji=C:\\a\nromaji=C:\\b"})
-                rejects([&]{parse_dictionary_settings(text);});
+                rejects([&]{parse_settings(text);});
         }},
         {"settings/azik-profile-roundtrip-overlay-and-fallback", [&] {
-            DictionarySettings settings;
-            const auto standard = serialize_dictionary_settings(settings);
+            AppSettings settings;
+            const auto standard = serialize_settings(settings);
             require(standard.find("input-method=") == std::string::npos && standard.find("azik-keyboard=") == std::string::npos, "default profile changed old settings");
             settings.input_method = InputMethod::Azik; settings.azik_keyboard = AzikKeyboard::Us101;
-            auto parsed = parse_dictionary_settings(serialize_dictionary_settings(settings));
+            auto parsed = parse_settings(serialize_settings(settings));
             require(parsed.input_method == InputMethod::Azik && parsed.azik_keyboard == AzikKeyboard::Us101, "profile roundtrip");
-            DictionaryConfiguration config; config.settings = parsed;
+            SettingsConfiguration config; config.settings = parsed;
             auto loaded = load_romaji_rules(config);
             require(!loaded.failed && loaded.profile.method() == InputMethod::Azik && loaded.rules->find("'")->output == U"ー", "US built-in rules missing");
             config.settings.romaji_rules = files.write(L"azik.tsv", "version=1\nq\tんん\n");
@@ -259,82 +261,82 @@ int main() {
             loaded = load_romaji_rules(config);
             require(loaded.failed && loaded.profile.method() == InputMethod::Azik && loaded.rules->find("q")->output == U"ん", "fallback switched AZIK to SKK");
             for (const auto text : {"input-method=other", "input-method=azik\ninput-method=skk", "azik-keyboard=auto", "azik-keyboard=us101\nazik-keyboard=jp106"})
-                rejects([&] { parse_dictionary_settings(std::string("version=1\n") + text); });
+                rejects([&] { parse_settings(std::string("version=1\n") + text); });
         }},
         {"runtime/romaji-independent-snapshots", [&] {
             const auto rules = files.write(L"snapshot.tsv","version=1\nwi\tゐ\n");
-            const auto file = files.path(L"snapshot.ini"); save_dictionary_settings(file,{{first},false,rules});
+            const auto file = files.path(L"snapshot.ini"); save_settings(file,{{first},false,rules});
             Environment config_env(L"NSKKZIME_CONFIG",file.c_str());
             const auto old=runtime_romaji_rules(); require(old->find("wi")->output==U"ゐ","saved romaji ignored");
             {std::ofstream output(rules,std::ios::binary|std::ios::trunc); output<<"version=1\nwi\tうぃー\n";}
             require(runtime_romaji_rules()->find("wi")->output==U"うぃー"&&old->find("wi")->output==U"ゐ","existing romaji snapshot changed");
         }},
         {"settings/utf8-bom-priority-and-literal-path", [&] {
-            const auto config = parse_dictionary_settings("\xef\xbb\xbf# comment\r\n; another\r\n version = 1\r\n dictionary = " +
+            const auto config = parse_settings("\xef\xbb\xbf# comment\r\n; another\r\n version = 1\r\n dictionary = " +
                 utf8_message(first.native()) + "\r\ndictionary=" + utf8_message(second.native()));
             require(config.dictionaries == std::vector<std::filesystem::path>{first, second}, "paths or priority changed");
         }},
         {"settings/reject-invalid-version-and-keys", [] {
             for (const auto bytes : {"", "dictionary=C:\\x", "version=2", "version=1\nversion=1", "version=1\nunknown=x", "version=1\ngarbage"})
-                rejects([&] { parse_dictionary_settings(bytes); });
+                rejects([&] { parse_settings(bytes); });
         }},
         {"settings/learning-default-toggle-and-invalid-values", [&] {
-            require(parse_dictionary_settings("version=1").learning, "old settings did not enable learning");
-            require(parse_dictionary_settings("version=1\nlearning=on").learning, "learning on ignored");
-            const auto disabled = parse_dictionary_settings("version=1\nlearning=off");
-            const auto path = files.path(L"learning-off.ini"); save_dictionary_settings(path, disabled);
-            require(!read_dictionary_settings(path).learning, "learning off lost on round trip");
+            require(parse_settings("version=1").learning, "old settings did not enable learning");
+            require(parse_settings("version=1\nlearning=on").learning, "learning on ignored");
+            const auto disabled = parse_settings("version=1\nlearning=off");
+            const auto path = files.path(L"learning-off.ini"); save_settings(path, disabled);
+            require(!read_settings(path).learning, "learning off lost on round trip");
             for (const auto bytes : {"version=1\nlearning=yes", "version=1\nlearning=", "version=1\nlearning=on\nlearning=off"})
-                rejects([&] { parse_dictionary_settings(bytes); });
+                rejects([&] { parse_settings(bytes); });
         }},
         {"settings/reject-invalid-text-and-path", [] {
             for (const auto bytes : {"version=1\ndictionary=relative.skk", "version=1\ndictionary=C:x", "version=1\ndictionary=",
                 "version=1\ndictionary=C:\\x\tfile", "version=1\ndictionary=C:\\x\x01", "version=1\n#\xff"})
-                rejects([&] { parse_dictionary_settings(bytes); });
-            rejects([] { parse_dictionary_settings(std::string("version=1\n#\0", 12)); });
+                rejects([&] { parse_settings(bytes); });
+            rejects([] { parse_settings(std::string("version=1\n#\0", 12)); });
         }},
         {"settings/limits", [] {
-            rejects([] { parse_dictionary_settings(std::string(65537, ' ')); });
+            rejects([] { parse_settings(std::string(65537, ' ')); });
             std::string too_many = "version=1\n";
             for (int i = 0; i < 33; ++i) too_many += "dictionary=C:\\x\n";
-            rejects([&] { parse_dictionary_settings(too_many); });
+            rejects([&] { parse_settings(too_many); });
         }},
         {"settings/save-replace-roundtrip", [&] {
             const auto path = files.path(L"保存設定.ini");
-            save_dictionary_settings(path, {{first, second}});
-            require(read_dictionary_settings(path).dictionaries == std::vector<std::filesystem::path>{first, second}, "save lost dictionary order");
-            save_dictionary_settings(path, {{second, first}});
-            require(read_dictionary_settings(path).dictionaries == std::vector<std::filesystem::path>{second, first}, "replace did not update order");
+            save_settings(path, {{first, second}});
+            require(read_settings(path).dictionaries == std::vector<std::filesystem::path>{first, second}, "save lost dictionary order");
+            save_settings(path, {{second, first}});
+            require(read_settings(path).dictionaries == std::vector<std::filesystem::path>{second, first}, "replace did not update order");
         }},
         {"settings/invalid-save-keeps-previous", [&] {
-            const auto path = files.path(L"preserve.ini"); save_dictionary_settings(path, {{first}});
-            rejects([&] { save_dictionary_settings(path, {{L"relative.skk"}}); });
-            rejects([&] { save_dictionary_settings(path, {{first.native() + L" "}}); });
-            require(read_dictionary_settings(path).dictionaries == std::vector<std::filesystem::path>{first}, "invalid save damaged previous file");
+            const auto path = files.path(L"preserve.ini"); save_settings(path, {{first}});
+            rejects([&] { save_settings(path, {{L"relative.skk"}}); });
+            rejects([&] { save_settings(path, {{first.native() + L" "}}); });
+            require(read_settings(path).dictionaries == std::vector<std::filesystem::path>{first}, "invalid save damaged previous file");
         }},
         {"settings/locked-replacement-keeps-previous-and-cleans-temp", [&] {
-            const auto path = files.path(L"locked.ini"); save_dictionary_settings(path, {{first}});
+            const auto path = files.path(L"locked.ini"); save_settings(path, {{first}});
             const auto handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
             require(handle != INVALID_HANDLE_VALUE, "cannot lock settings fixture");
             bool rejected = false;
-            try { save_dictionary_settings(path, {{second}}); } catch (const std::exception&) { rejected = true; }
+            try { save_settings(path, {{second}}); } catch (const std::exception&) { rejected = true; }
             CloseHandle(handle);
             require(rejected, "locked settings replaced");
-            require(read_dictionary_settings(path).dictionaries == std::vector<std::filesystem::path>{first}, "failed replacement damaged previous file");
+            require(read_settings(path).dictionaries == std::vector<std::filesystem::path>{first}, "failed replacement damaged previous file");
             for (const auto& entry : std::filesystem::directory_iterator(files.root)) require(entry.path().extension() != L".tmp", "temporary file leaked");
         }},
         {"settings/default-missing-vs-explicit-missing", [&] {
-            auto config = resolve_dictionary_configuration(missing, true);
+            auto config = resolve_settings_configuration(missing, true);
             require(config.demo && !load_dictionaries(config).dictionary->lookup({U"かんじ"}).empty(), "default demo missing");
-            rejects([&] { resolve_dictionary_configuration(missing, false); });
+            rejects([&] { resolve_settings_configuration(missing, false); });
         }},
         {"settings/explicit-empty-disables-demo", [&] {
-            const auto path = files.path(L"empty.ini"); save_dictionary_settings(path, {});
-            const auto loaded = load_dictionaries(resolve_dictionary_configuration(path, false));
+            const auto path = files.path(L"empty.ini"); save_settings(path, {});
+            const auto loaded = load_dictionaries(resolve_settings_configuration(path, false));
             require(!loaded.failed && loaded.dictionary->lookup({U"かんじ"}).empty(), "disabled dictionary used demo");
         }},
         {"runtime/partial-load-priority-dedup-and-diagnostics", [&] {
-            DictionaryConfiguration config; config.settings.dictionaries = {missing, first, second};
+            SettingsConfiguration config; config.settings.dictionaries = {missing, first, second};
             const auto loaded = load_dictionaries(config); const auto list = loaded.dictionary->lookup({U"かな"});
             require(loaded.failed && list.size() == 3 && list[0].text == U"仮名" && list[0].annotation == U"優先" &&
                 list[1].text == U"カナ" && list[2].text == U"かな", "partial load or priority failed");
@@ -344,12 +346,12 @@ int main() {
             require(loaded.status.find(L"仮名") == loaded.status.npos, "diagnostic leaked candidate text");
         }},
         {"runtime/live-snapshot-sharing-and-file-change", [&] {
-            const auto path = files.path(L"cache.ini"); save_dictionary_settings(path, {{first}});
+            const auto path = files.path(L"cache.ini"); save_settings(path, {{first}});
             Environment config_env(L"NSKKZIME_CONFIG", path.c_str());
             auto initial = runtime_dictionary(); auto same = runtime_dictionary();
             wait_for_dictionary([&] { return initial->ready(); });
             require(initial == same, "snapshot not reused");
-            save_dictionary_settings(path, {{second}});
+            save_settings(path, {{second}});
             const auto changed = runtime_dictionary();
             wait_for_dictionary([&] { return changed->ready(); });
             require(initial != changed && changed->lookup({U"かな"})[0].annotation == U"共通", "new configuration used stale snapshot");

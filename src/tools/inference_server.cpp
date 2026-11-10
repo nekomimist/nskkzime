@@ -1,5 +1,6 @@
+#include "windows_text.h"
 #include "inference_ipc.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "cpu_requirements.h"
 #include "nskkzime/romaji.h"
 #include <algorithm>

@@ -1,3 +1,5 @@
+#include "dictionary_loader.h"
+#include "windows_text.h"
 #include "broker_snapshot.h"
 #include "app_container.h"
 #include "byte_codec.h"
@@ -29,8 +31,8 @@ BrokerBootstrap decode_broker_bootstrap(std::string_view bytes) {
     for (std::uint32_t i = 0; i < count; ++i) value.images.emplace_back(r.text(container_response_limit));
     r.end(); return value;
 }
-std::string dictionary_configuration_id(const DictionaryConfiguration& config) {
-    auto bytes = serialize_dictionary_settings(config.settings) + utf8_message(config.file.native());
+std::string dictionary_configuration_id(const SettingsConfiguration& config) {
+    auto bytes = serialize_settings(config.settings) + utf8_message(config.file.native());
     bytes += config.demo ? "\ndemo" : "\nconfigured";
     unsigned char digest[32]{};
     if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(bytes.data()),
@@ -41,12 +43,12 @@ std::string dictionary_configuration_id(const DictionaryConfiguration& config) {
     for (auto byte : digest) { result += hex[byte >> 4]; result += hex[byte & 15]; }
     return result;
 }
-BrokerSnapshot build_broker_snapshot(const DictionaryConfiguration& config, std::string_view generation,
+BrokerSnapshot build_broker_snapshot(const SettingsConfiguration& config, std::string_view generation,
     const std::optional<std::filesystem::path>& cache_root) {
     const auto dictionaries = load_dictionaries(config, cache_root);
     const auto romaji = load_romaji_rules(config);
     BrokerBootstrap value;
-    value.settings = serialize_dictionary_settings(config.settings); value.file = utf8_message(config.file.native());
+    value.settings = serialize_settings(config.settings); value.file = utf8_message(config.file.native());
     value.demo = config.demo; value.generation = generation; value.romaji = romaji.bytes;
     value.status = utf8_message(dictionaries.status + L"\r\n" + romaji.status);
     value.learning = config.settings.learning && !config.demo && !config.settings.dictionaries.empty() && !dictionaries.failed;

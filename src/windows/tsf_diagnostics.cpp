@@ -1,3 +1,4 @@
+#include "windows_text.h"
 #include "tsf_diagnostics.h"
 #include "diagnostic_file.h"
 #include "learning_ipc.h"
@@ -89,7 +90,7 @@ struct TsfDiagnosticLog::State {
         } catch (...) { state.status = TsfLogStatus::Unavailable; }
     }
 };
-std::shared_ptr<TsfDiagnosticLog> TsfDiagnosticLog::create(const DictionarySettings::TsfLogSettings& settings, bool app_container) noexcept {
+std::shared_ptr<TsfDiagnosticLog> TsfDiagnosticLog::create(const AppSettings::TsfLogSettings& settings, bool app_container) noexcept {
     startup_failed = false;
     if (!settings.enabled) { latest.reset(); return {}; }
     try {

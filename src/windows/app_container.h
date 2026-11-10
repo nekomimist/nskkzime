@@ -1,5 +1,6 @@
 #pragma once
 #include "learning_ipc.h"
+#include "broker_protocol.h"
 #include <functional>
 #include <array>
 #include <stdexcept>
@@ -23,6 +24,7 @@ std::wstring container_pipe_name(const ProcessIdentity&);
 inline constexpr std::size_t container_request_limit = 1024 * 1024;
 inline constexpr std::size_t container_response_limit = 512 * 1024 * 1024;
 std::string container_exchange(std::string_view request, ULONGLONG deadline, HANDLE cancel);
+std::string container_operation(BrokerOperation, std::string_view generation, std::string_view body, ULONGLONG deadline, HANDLE cancel);
 using ContainerHandler = std::function<std::string(std::string_view, const std::function<bool()>&)>;
 enum class ContainerEvent { Start, Existing, Replace, Stop, Exit, Failed, ListenerCreated, ListenerFailed,
     ListenerExit, BootstrapReceived, BootstrapComplete, RequestFailed, EndpointState, Snapshot, EndpointRecreated };

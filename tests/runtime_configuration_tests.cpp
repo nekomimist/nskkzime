@@ -22,16 +22,16 @@ int main() {
         { std::ofstream out(second, std::ios::binary); out << "かな /加奈/\n"; }
         { std::ofstream out(rules, std::ios::binary); out << "version=1\nwi\tゐ\n"; }
         { std::ofstream out(replacement, std::ios::binary); out << "version=1\nwi\tヰ\n"; }
-        DictionarySettings initial{{first}, false, rules}; initial.candidates.show_after = 2;
+        AppSettings initial{{first}, false, rules}; initial.candidates.show_after = 2;
         initial.ui.font = L"Meiryo";
-        save_dictionary_settings(config, initial);
+        save_settings(config, initial);
         SetEnvironmentVariableW(L"NSKKZIME_CONFIG", config.c_str());
         // An activation keeps what it captured even after the file changes.
         const auto captured = capture_runtime_configuration();
         auto changed = initial; changed.dictionaries = {second}; changed.romaji_rules = replacement; changed.candidates.show_after = 5;
         changed.ui.font = L"ＭＳ ゴシック";
         changed.input_method = InputMethod::Azik; changed.azik_keyboard = AzikKeyboard::Us101;
-        save_dictionary_settings(config, changed);
+        save_settings(config, changed);
         const auto fresh = capture_runtime_configuration();
         const auto old_dictionary = runtime_dictionary(captured), new_dictionary = runtime_dictionary(fresh);
         wait_for_dictionary([&] { return old_dictionary->ready() && new_dictionary->ready(); });
@@ -44,7 +44,7 @@ int main() {
         check(captured.user_file == root / "user-dictionary.nskkdb" && captured.tools[0].file == config &&
             captured.tools[1].file == captured.user_file, "settings folder did not own the user dictionary");
         // Display-only changes still share the loaded dictionary.
-        changed.dictionaries = {first}; save_dictionary_settings(config, changed);
+        changed.dictionaries = {first}; save_settings(config, changed);
         const auto same_source = capture_runtime_configuration();
         check(runtime_dictionary(same_source) == old_dictionary, "display settings prevented dictionary sharing");
         check(same_source.dictionaries.settings.candidates.show_after == 5 && captured.dictionaries.settings.candidates.show_after == 2, "shared dictionary replaced activation settings");

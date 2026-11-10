@@ -1,6 +1,6 @@
 #include "binary_layout.h"
 #include "app_container.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include <appmodel.h>
 #include <shlobj.h>
 #include <sddl.h>
@@ -156,10 +156,13 @@ std::wstring container_pipe_name(const ProcessIdentity& identity) {
     return L"\\\\.\\pipe\\Sessions\\" + std::to_wstring(identity.session) + L"\\AppContainerNamedObjects\\" + identity.container +
         L"\\nskkzime-broker-v1-" + identity.user;
 }
+std::string container_operation(BrokerOperation operation, std::string_view generation, std::string_view body, ULONGLONG deadline, HANDLE cancel) {
+    return container_exchange(encode_broker_request(operation, generation, body), deadline, cancel);
+}
 std::string container_exchange(std::string_view request, ULONGLONG deadline, HANDLE cancel) {
     const auto identity = process_identity();
     auto name = identity.container.empty() ? container_pipe_name(identity) : L"\\\\.\\pipe\\LOCAL\\nskkzime-broker-v1-" + identity.user;
-    if (identity.container.empty() && environment_value(L"NSKKZIME_CONFIG")) name += config_broker_instance(dictionary_settings_path());
+    if (identity.container.empty() && environment_value(L"NSKKZIME_CONFIG")) name += config_broker_instance(settings_file_path());
     return piped([&] {
         // The broker may be starting or recreating its endpoint.
         const auto pipe = open_pipe(name, deadline, cancel, true); check_peer(pipe.get(), false, identity);
@@ -243,15 +246,21 @@ void serve_container(const std::vector<std::wstring>& packages, const ContainerH
                 phase(ContainerPhase::Authenticate); diagnostic.client = check_peer(listener.pipe.get(), true, listener.peer);
                 phase(ContainerPhase::Read);
                 const auto request = piped([&] { return receive_frame(listener.pipe.get(), container_request_limit, GetTickCount64() + 2000, stop); });
-                diagnostic.operation = request == "INI3" ? ContainerOperation::Init :
-                    request.starts_with("CHK1") ? ContainerOperation::Check :
-                    request.starts_with("LRN1") && request.size() >= 72 && request.substr(68, 4) == "WAT1" ? ContainerOperation::LearningWait :
-                    request.starts_with("LRN1") ? ContainerOperation::Learning : request.starts_with("INF1") ? ContainerOperation::Inference :
-                    request.starts_with("LOG2") ? ContainerOperation::Log : request.starts_with("GUI1") ? ContainerOperation::Gui : ContainerOperation::Unknown;
+                const auto operation = broker_operation(request);
+                switch (operation) {
+                case BrokerOperation::Init: diagnostic.operation = ContainerOperation::Init; break;
+                case BrokerOperation::Check: diagnostic.operation = ContainerOperation::Check; break;
+                case BrokerOperation::Learning:
+                    diagnostic.operation = broker_learning_wait(request) ? ContainerOperation::LearningWait : ContainerOperation::Learning; break;
+                case BrokerOperation::Inference: diagnostic.operation = ContainerOperation::Inference; break;
+                case BrokerOperation::Log: diagnostic.operation = ContainerOperation::Log; break;
+                case BrokerOperation::Gui: diagnostic.operation = ContainerOperation::Gui; break;
+                default: diagnostic.operation = ContainerOperation::Unknown; break;
+                }
                 const bool bootstrap = diagnostic.operation == ContainerOperation::Init;
                 phase(ContainerPhase::Handle);
                 if (bootstrap) { auto received = diagnostic; received.event = ContainerEvent::BootstrapReceived; emit(observer, received); }
-                need(listener.peer.container.empty() || !request.starts_with("GUI1"));
+                need(listener.peer.container.empty() || operation != BrokerOperation::Gui);
                 const auto deadline = GetTickCount64() + 30000;
                 const auto cancelled = [&] { return GetTickCount64() >= deadline || WaitForSingleObject(stop, 0) == WAIT_OBJECT_0 ||
                     !pipe_peer_open(listener.pipe.get()); };

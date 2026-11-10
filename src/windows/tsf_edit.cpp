@@ -7,6 +7,53 @@
 
 namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
+// Common controls can expose their full text store through a transitory
+// extension's parent document. Composing there keeps edits and selection
+// notifications on the same document, without queued IMM result characters.
+// A transitory flag alone is insufficient: native TSF hosts can set it too.
+ComPtr<ITfContext> editing_context(ITfContext* context) {
+    ComPtr<ITfContext> result(context);
+    TF_STATUS flags{};
+    if (!context || FAILED(context->GetStatus(&flags)) || !(flags.dwStaticFlags & TF_SS_TRANSITORY)) return result;
+    ComPtr<ITfDocumentMgr> document; ComPtr<ITfCompartmentMgr> compartments;
+    ComPtr<ITfCompartment> compartment;
+    if (FAILED(context->GetDocumentMgr(&document)) || !document || FAILED(document.As(&compartments)) ||
+        FAILED(compartments->GetCompartment(GUID_COMPARTMENT_TRANSITORYEXTENSION_PARENT, &compartment)) || !compartment) return result;
+    VARIANT value; VariantInit(&value);
+    if (compartment->GetValue(&value) == S_OK && value.vt == VT_UNKNOWN && value.punkVal) {
+        ComPtr<ITfDocumentMgr> parent; ComPtr<ITfContext> top;
+        if (SUCCEEDED(value.punkVal->QueryInterface(IID_PPV_ARGS(&parent))) && SUCCEEDED(parent->GetTop(&top)) && top &&
+            SUCCEEDED(top->GetStatus(&flags)) && !(flags.dwStaticFlags & TF_SS_TRANSITORY)) result = top;
+    }
+    VariantClear(&value);
+    return result;
+}
+
+bool editable(ITfContext* context) {
+    if (!context) return false;
+    TF_STATUS status{};
+    if (FAILED(context->GetStatus(&status)) || (status.dwDynamicFlags & TF_SD_READONLY)) return false;
+    ComPtr<ITfCompartmentMgr> compartments;
+    if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&compartments)))) {
+        for (const auto* id : {&GUID_COMPARTMENT_KEYBOARD_DISABLED, &GUID_COMPARTMENT_EMPTYCONTEXT}) {
+            ComPtr<ITfCompartment> compartment;
+            if (SUCCEEDED(compartments->GetCompartment(*id, &compartment))) {
+                VARIANT value; VariantInit(&value);
+                const auto hr = compartment->GetValue(&value);
+                const bool disabled = SUCCEEDED(hr) && value.vt == VT_I4 && value.lVal != 0;
+                VariantClear(&value);
+                if (disabled) return false;
+            }
+        }
+    }
+    const auto focus = GetFocus();
+    if (focus) {
+        wchar_t name[32]{};
+        GetClassNameW(focus, name, ARRAYSIZE(name));
+        if (_wcsicmp(name, L"Edit") == 0 && (GetWindowLongPtrW(focus, GWL_STYLE) & ES_PASSWORD)) return false;
+    }
+    return true;
+}
 std::wstring utf16(std::u32string_view text) {
     std::wstring result;
     for (auto ch : text) {

@@ -1,5 +1,6 @@
+#include "windows_text.h"
 #include "dictionary_manager.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "dictionary_gui_ids.h"
 #include <commctrl.h>
 #include <shobjidl.h>

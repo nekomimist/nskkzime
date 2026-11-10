@@ -1,4 +1,5 @@
-#include "dictionary_settings.h"
+#include "windows_text.h"
+#include "settings_file.h"
 #include "nskkzime/dictionary.h"
 #include "learning_ipc.h"
 #include "dictionary_manager.h"

@@ -1,6 +1,6 @@
 #include "dictionary_wait.h"
 #include "runtime_dictionary.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "tsf_mode_host.h"
 #include "learning_ipc.h"
 #include "candidate_ui.h"
@@ -425,8 +425,8 @@ int wmain(int argc, wchar_t** argv) {
             check(s.label() == L"ア" && s.host->open->value == 1, "default startup lost Windows open mode");
         }
         {
-            auto settings = read_dictionary_settings(root / L"settings.ini");
-            settings.startup_ime_off = true; save_dictionary_settings(root / L"settings.ini", settings);
+            auto settings = read_settings(root / L"settings.ini");
+            settings.startup_ime_off = true; save_settings(root / L"settings.ini", settings);
             for (const auto initial : {0, 1, 2, 3}) {
                 Session s(initial == 1, false, initial >= 2, initial == 3 ? Mode::FullWidthLatin : Mode::Katakana);
                 check(s.label() == L"A" && s.host->open->value == 0 && s.host->conversion->value == 0,
@@ -446,7 +446,7 @@ int wmain(int argc, wchar_t** argv) {
                 s.key(VK_SPACE, true); s.key(VK_SPACE, true);
                 check(s.label() == L"あ", "startup policy overrode toggle shortcut");
             }
-            settings.startup_ime_off = false; save_dictionary_settings(root / L"settings.ini", settings);
+            settings.startup_ime_off = false; save_settings(root / L"settings.ini", settings);
             Session s(false, false, true);
             check(s.label() == L"ア" && s.host->open->value == 1, "disabling startup policy did not restore Windows mode");
         }
@@ -527,11 +527,11 @@ int wmain(int argc, wchar_t** argv) {
             check(s.key('J', true) && s.host->open->value == 1 && s.host->ui, "registration Latin used OFF key policy");
         }
         {
-            auto settings = read_dictionary_settings(root / L"settings.ini");
+            auto settings = read_settings(root / L"settings.ini");
             wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
             auto name = std::filesystem::path(executable).filename().native();
             for (auto& ch : name) if (ch >= L'a' && ch <= L'z') ch -= L'a' - L'A';
-            settings.off_key_exclusions = {name}; save_dictionary_settings(root / L"settings.ini", settings);
+            settings.off_key_exclusions = {name}; save_settings(root / L"settings.ini", settings);
             {
                 Session s(true);
                 check(!s.key('J', true) && !s.key('Q', true) && !s.key('J', true) && s.label() == L"A", "excluded OFF keys captured");
@@ -539,7 +539,7 @@ int wmain(int argc, wchar_t** argv) {
                 s.type("l"); check(!s.key('A') && !s.key('J', true), "l bypassed app exclusion");
                 check(s.key(VK_SPACE, true) && s.label() == L"あ", "exclusion disabled explicit ON/OFF shortcut");
             }
-            settings.off_key_exclusions.clear(); save_dictionary_settings(root / L"settings.ini", settings);
+            settings.off_key_exclusions.clear(); save_settings(root / L"settings.ini", settings);
         }
         check(module_objects == 0, "mode objects retained service");
         wait_for_dictionary([&] { return std::filesystem::exists(file) && read_user_dictionary(file).revision() >= 2; });

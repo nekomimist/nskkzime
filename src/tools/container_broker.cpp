@@ -1,8 +1,9 @@
+#include "dictionary_loader.h"
 #include "app_container.h"
 #include "broker_snapshot.h"
 #include "broker_diagnostics.h"
 #include "runtime_configuration.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include "inference_client.h"
 #include "learning_client.h"
 #include "tool_launcher.h"
@@ -24,7 +25,7 @@ struct Broker {
     std::string snapshot_generation;
     bool snapshot_learning = false;
     std::unique_ptr<InputLog> logger;
-    std::string snapshot(const DictionaryConfiguration& config, const std::string& id) {
+    std::string snapshot(const SettingsConfiguration& config, const std::string& id) {
         // Only configured paths are opened; no file path comes from a client.
         const std::lock_guard lock(snapshot_mutex);
         // Read source bytes on every bootstrap. The shared dictionary cache
@@ -38,7 +39,7 @@ struct Broker {
         }
         return std::move(loaded.bytes);
     }
-    bool learning_allowed(const DictionaryConfiguration& config, const std::string& id) {
+    bool learning_allowed(const SettingsConfiguration& config, const std::string& id) {
         {
             const std::lock_guard lock(snapshot_mutex);
             if (snapshot_generation == id) return snapshot_learning;
@@ -48,19 +49,18 @@ struct Broker {
         return snapshot_generation == id && snapshot_learning;
     }
     std::string handle(std::string_view bytes, const std::function<bool()>& cancelled) {
-        const auto config = current_dictionary_configuration(); const auto id = dictionary_configuration_id(config);
-        if (bytes == "INI3") return snapshot(config, id);
+        const auto config = current_settings_configuration(); const auto id = dictionary_configuration_id(config);
+        const auto [operation, generation, body] = decode_broker_request(bytes);
+        if (operation == BrokerOperation::Init) return snapshot(config, id);
         // Reactivation reuses a retained snapshot while its settings are current.
-        if (bytes.starts_with("CHK1")) return bytes.size() == 68 && bytes.substr(4) == id ? "SAME" : "STAL";
-        if (bytes.size() < 68) throw std::runtime_error("stale settings");
-        const auto operation = bytes.substr(0, 4), body = bytes.substr(68);
-        if (bytes.substr(4, 64) != id) {
+        if (operation == BrokerOperation::Check) return generation == id && body.empty() ? "SAME" : "STAL";
+        if (generation != id) {
             // Learning workers outlive a settings change until the next activation.
-            if (operation == "LRN1") return "STAL";
+            if (operation == BrokerOperation::Learning) return "STAL";
             throw std::runtime_error("stale settings");
         }
         const auto runtime = capture_runtime_configuration(config);
-        if (operation == "GUI1") {
+        if (operation == BrokerOperation::Gui) {
             // The transport rejects this operation from AppContainer peers.
             // No caller-supplied path or command line crosses the boundary.
             ToolCommand command;
@@ -74,7 +74,7 @@ struct Broker {
             if (launch_tool_process(command) != ERROR_SUCCESS) throw std::runtime_error("GUI unavailable");
             return "OKAY";
         }
-        if (operation == "LRN1") {
+        if (operation == BrokerOperation::Learning) {
             if (!learning_allowed(config, id)) throw std::runtime_error("learning disabled");
             const auto& file = runtime.user_file;
             // Snapshots come from the saved file, so polling containers never keep the helper alive.
@@ -89,7 +89,7 @@ struct Broker {
             (void)commit_learning(file, decode_learning(body));
             return "OKAY";
         }
-        if (operation == "INF1") {
+        if (operation == BrokerOperation::Inference) {
             const auto settings = inference_config(runtime); if (!settings) throw std::runtime_error("inference disabled");
             const auto request = decode_request(std::string(body));
             const auto timeout = request.operation == InferenceOperation::Score ? settings->policy.score_timeout_ms : settings->timeout_ms;
@@ -111,7 +111,7 @@ struct Broker {
                 throw;
             }
         }
-        if (operation == "LOG2") {
+        if (operation == BrokerOperation::Log) {
             if (!config.settings.zenz.enabled || !config.settings.zenz.log_input) return "OFF";
             const auto item = decode_log_record(body);
             const std::lock_guard lock(log_mutex);
@@ -150,7 +150,7 @@ int wmain(int argc, wchar_t** argv) {
             if (!SetEvent(stop.get())) throw std::runtime_error("cannot signal broker stop");
             return 0;
         }
-        try { diagnostics = std::make_unique<BrokerDiagnostics>(dictionary_settings_path().parent_path() / L"diagnostics"); }
+        try { diagnostics = std::make_unique<BrokerDiagnostics>(settings_file_path().parent_path() / L"diagnostics"); }
         catch (...) { /* Diagnostics cannot prevent startup. */ }
         record(ContainerEvent::Start);
         const auto mutex = container_instance_mutex(instance);

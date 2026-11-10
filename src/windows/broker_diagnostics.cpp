@@ -1,5 +1,6 @@
+#include "windows_text.h"
 #include "broker_diagnostics.h"
-#include "dictionary_settings.h"
+#include "settings_file.h"
 #include <nlohmann/json.hpp>
 #include <sddl.h>
 #include <cstdio>

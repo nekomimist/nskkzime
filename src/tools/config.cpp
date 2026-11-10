@@ -1,4 +1,6 @@
-#include "dictionary_settings.h"
+#include "dictionary_loader.h"
+#include "windows_text.h"
+#include "settings_file.h"
 #include "romaji_settings.h"
 #include "cpu_requirements.h"
 #include <algorithm>
@@ -81,33 +83,33 @@ int wmain(int argc, wchar_t** argv) {
         if ((!input && !startup && !off_keys && !candidates && !set && !learning && !romaji && !zenz && !policy && !enable_log && !enable_tsf_log && index != argc) || (set && index == argc) || ((input || startup || candidates || learning || romaji || policy || enable_log || enable_tsf_log) && index + 1 != argc) || (zenz && index + 1 != argc && index + 2 != argc)) { help(); return 2; }
         if (set && argc - index > 32) throw std::invalid_argument("at most 32 dictionaries are supported");
         if (action == L"--check" && !explicit_file) {
-            const auto configuration = current_dictionary_configuration();
+            const auto configuration = current_settings_configuration();
             const auto loaded = load_dictionaries(configuration);
             const auto rules = load_romaji_rules(configuration);
             show(zenz_settings_status(configuration.settings.zenz)); validate_zenz_settings(configuration.settings.zenz,true);
             show(tsf_log_settings_status(configuration.settings.tsf_log)); validate_tsf_log_settings(configuration.settings.tsf_log,true);
             show(loaded.status); show(rules.status); return loaded.failed || rules.failed ? 2 : 0;
         }
-        const auto file = explicit_file ? *explicit_file : dictionary_settings_path();
+        const auto file = explicit_file ? *explicit_file : settings_file_path();
         if (off_keys) {
-            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            auto settings = std::filesystem::exists(file) ? read_settings(file) : AppSettings{};
             settings.off_key_exclusions.clear();
             for (; index < argc; ++index) settings.off_key_exclusions.emplace_back(argv[index]);
-            save_dictionary_settings(file, settings);
+            save_settings(file, settings);
             show(L"OFFキーの除外設定を保存しました。利用するアプリを起動し直すと反映されます。");
             return 0;
         }
         if (enable_tsf_log || disable_tsf_log) {
-            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            auto settings = std::filesystem::exists(file) ? read_settings(file) : AppSettings{};
             settings.tsf_log.enabled = enable_tsf_log;
             if (enable_tsf_log) settings.tsf_log.directory = argv[index];
             validate_tsf_log_settings(settings.tsf_log, enable_tsf_log);
-            save_dictionary_settings(file, settings);
+            save_settings(file, settings);
             show(tsf_log_settings_status(settings.tsf_log));
             show(L"保存しました。利用するアプリを起動し直すと反映されます。"); return 0;
         }
         if (candidates) {
-            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            auto settings = std::filesystem::exists(file) ? read_settings(file) : AppSettings{};
             const auto value = utf8_message(argv[index]);
             if (action == L"--set-candidate-keys") {
                 if (value != "numbers" && value != "asdfjkl") throw std::invalid_argument("candidate keys must equal numbers or asdfjkl");
@@ -118,12 +120,12 @@ int wmain(int argc, wchar_t** argv) {
                 if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("candidate-show-after must be 1..99");
                 settings.candidates.show_after = number;
             }
-            save_dictionary_settings(file, settings);
+            save_settings(file, settings);
             show(candidate_settings_status(settings.candidates));
             show(L"保存しました。利用するアプリを起動し直すと反映されます。"); return 0;
         }
         if (zenz || disable_inference || policy || enable_log || disable_log) {
-            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            auto settings = std::filesystem::exists(file) ? read_settings(file) : AppSettings{};
             if (zenz) {
                 settings.zenz.enabled = true; settings.zenz.model = argv[index];
                 settings.zenz.server = index + 1 < argc ? std::filesystem::path(argv[index+1]) : std::filesystem::path{};
@@ -143,13 +145,13 @@ int wmain(int argc, wchar_t** argv) {
                     else (action == L"--set-zenz-rerank" ? settings.zenz.policy.rerank : settings.zenz.policy.learn_fallback) = value == L"on";
                 }
             }
-            validate_zenz_settings(settings.zenz,zenz || enable_log); save_dictionary_settings(file,settings);
+            validate_zenz_settings(settings.zenz,zenz || enable_log); save_settings(file,settings);
             show(zenz_settings_status(settings.zenz));
             show(L"保存しました。利用するアプリを起動し直すと反映されます。モデルの実行確認にはサーバーの --convert を使ってください。"); return 0;
         }
         if (input || romaji || reset_romaji) {
-            DictionaryConfiguration proposed; proposed.file = file;
-            if (std::filesystem::exists(file)) proposed.settings = read_dictionary_settings(file);
+            SettingsConfiguration proposed; proposed.file = file;
+            if (std::filesystem::exists(file)) proposed.settings = read_settings(file);
             if (input) {
                 const auto value = std::wstring_view(argv[index]);
                 if (action == L"--set-input-method") {
@@ -163,20 +165,20 @@ int wmain(int argc, wchar_t** argv) {
             if (romaji && proposed.settings.romaji_rules.empty()) throw std::invalid_argument("--set-romaji requires an absolute path");
             const auto loaded = load_romaji_rules(proposed); show(loaded.status);
             if (loaded.failed) { std::cerr << "Not saved: invalid romaji rules.\n"; return 2; }
-            save_dictionary_settings(file,proposed.settings);
+            save_settings(file,proposed.settings);
             show(L"ローマ字設定を保存しました。利用するアプリを起動し直すと反映されます。"); return 0;
         }
         if (learning || startup) {
             const auto value = std::wstring_view(argv[index]);
             if (value != L"on" && value != L"off") throw std::invalid_argument("toggle must equal on or off");
-            auto settings = std::filesystem::exists(file) ? read_dictionary_settings(file) : DictionarySettings{};
+            auto settings = std::filesystem::exists(file) ? read_settings(file) : AppSettings{};
             (startup ? settings.startup_ime_off : settings.learning) = value == L"on";
-            save_dictionary_settings(file, settings);
+            save_settings(file, settings);
             show(L"設定を保存しました。利用するアプリを起動し直すと反映されます。"); return 0;
         }
         if (set || disable) {
-            DictionaryConfiguration proposed; proposed.file = file;
-            if (std::filesystem::exists(file)) proposed.settings = read_dictionary_settings(file);
+            SettingsConfiguration proposed; proposed.file = file;
+            if (std::filesystem::exists(file)) proposed.settings = read_settings(file);
             proposed.settings.dictionaries.clear();
             for (; index < argc; ++index) {
                 std::filesystem::path path(argv[index]);
@@ -186,7 +188,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto loaded = load_dictionaries(proposed);
             show(loaded.status);
             if (loaded.failed) { std::cerr << "Not saved: one or more dictionaries could not be loaded.\n"; return 2; }
-            save_dictionary_settings(file, proposed.settings);
+            save_settings(file, proposed.settings);
             show(L"保存しました: " + file.native());
             show(L"利用するアプリを終了して起動し直すと反映されます。");
             return 0;
@@ -194,7 +196,7 @@ int wmain(int argc, wchar_t** argv) {
         const bool missing_is_demo = !explicit_file && !environment_value(L"NSKKZIME_CONFIG");
         if (action == L"--show") {
             show(L"設定ファイル: " + file.native());
-            const auto configuration = resolve_dictionary_configuration(file, missing_is_demo);
+            const auto configuration = resolve_settings_configuration(file, missing_is_demo);
             if (configuration.demo) show(L"保存された設定はありません。内蔵テスト用辞書を使います。");
             else {
                 show(configuration.settings.learning ? L"学習: on" : L"学習: off");
@@ -213,7 +215,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             return 0;
         }
-        const auto configuration = resolve_dictionary_configuration(file,missing_is_demo);
+        const auto configuration = resolve_settings_configuration(file,missing_is_demo);
         const auto loaded = load_dictionaries(configuration);
         const auto rules = load_romaji_rules(configuration);
         show(loaded.status); show(rules.status);
