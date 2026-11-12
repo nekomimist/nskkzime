@@ -7,6 +7,7 @@
 #include <aclapi.h>
 #include <userenv.h>
 #include <bcrypt.h>
+#include <psapi.h>
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -21,6 +22,12 @@ int anchor;
 using Failure = ContainerFailure;
 void need(bool ok) { if (!ok) throw Failure(ContainerReason::Validation); }
 void native_need(bool ok) { if (!ok) throw Failure(ContainerReason::Win32, GetLastError()); }
+HMODULE own_module() {
+    HMODULE module = nullptr;
+    native_need(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&anchor), &module) != FALSE);
+    return module;
+}
 void check_deadline(ULONGLONG deadline, HANDLE cancel) {
     const auto waited = WaitForSingleObject(cancel, 0);
     if (waited == WAIT_FAILED) throw Failure(ContainerReason::Win32, GetLastError());
@@ -80,8 +87,8 @@ DWORD check_peer(HANDLE pipe, bool server, const ProcessIdentity& expected) {
     else {
         need(identity.container.empty());
         std::wstring path(32768, L'\0'); DWORD size = static_cast<DWORD>(path.size());
-        native_need(QueryFullProcessImageNameW(process.get(), 0, path.data(), &size) != FALSE); path.resize(size);
-        const auto wanted = container_broker_path().native();
+        native_need(QueryFullProcessImageNameW(process.get(), PROCESS_NAME_NATIVE, path.data(), &size) != FALSE); path.resize(size);
+        const auto wanted = container_broker_image_path();
         need(CompareStringOrdinal(path.c_str(), -1, wanted.c_str(), -1, TRUE) == CSTR_EQUAL);
     }
     return pid;
@@ -146,12 +153,17 @@ std::vector<std::wstring> supported_container_packages() {
     return {L"MicrosoftWindows.Client.CBS_cw5n1h2txyewy", L"Microsoft.WindowsStore_8wekyb3d8bbwe"};
 }
 std::filesystem::path container_broker_path() {
-    HMODULE module = nullptr; need(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCWSTR>(&anchor), &module) != FALSE);
-    wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path)); need(size && size < ARRAYSIZE(path));
-    // GetModuleFileName can retain a junction or short path used to load us,
-    // while QueryFullProcessImageName identifies the broker by its real path.
-    return shared_binary_directory(std::filesystem::canonical(path)) / L"nskkzime_broker.exe";
+    wchar_t path[32768]{}; const auto size = GetModuleFileNameW(own_module(), path, ARRAYSIZE(path));
+    native_need(size != 0); need(size < ARRAYSIZE(path));
+    return shared_binary_directory(std::filesystem::path(path)) / L"nskkzime_broker.exe";
+}
+std::wstring container_broker_image_path() {
+    // Compare kernel image paths: Win32 aliases can differ, and AppContainer
+    // may not have the directory access needed to canonicalize a loaded file.
+    wchar_t path[32768]{};
+    const auto size = K32GetMappedFileNameW(GetCurrentProcess(), own_module(), path, ARRAYSIZE(path));
+    native_need(size != 0); need(size < ARRAYSIZE(path));
+    return (shared_binary_directory(std::filesystem::path(path)) / L"nskkzime_broker.exe").native();
 }
 std::wstring container_pipe_name(const ProcessIdentity& identity) {
     if (identity.container.empty()) return L"\\\\.\\pipe\\nskkzime-desktop-broker-v1-" + identity.user + L"-" + std::to_wstring(identity.session);

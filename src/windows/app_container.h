@@ -18,6 +18,7 @@ bool uses_data_broker(); // AppContainer or a virtualized desktop's default conf
 std::wstring container_sid(std::wstring_view package);
 std::vector<std::wstring> supported_container_packages();
 std::filesystem::path container_broker_path();
+std::wstring container_broker_image_path(); // Native image path for peer authentication, not file access.
 std::wstring container_pipe_name(const ProcessIdentity&);
 // Off-thread only. Fixed operations, authenticated same-user/session peers,
 // bounded frames, deadlines and cancellation. No caller-supplied filesystem paths.

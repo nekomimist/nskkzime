@@ -49,6 +49,7 @@ const char* reason_name(ContainerReason reason) {
 void trace_broker_peer() {
     // Inspect metadata only, after a failed bootstrap. Do not send any payload
     // to a peer whose authentication may have failed.
+    nlohmann::json fields = nlohmann::json::object();
     try {
         const auto native_check = [](bool ok) {
             if (!ok) throw ContainerFailure(ContainerReason::Win32, GetLastError());
@@ -66,15 +67,20 @@ void trace_broker_peer() {
         const auto peer = process_identity(process.get());
         wchar_t path[32768]{}; DWORD size = ARRAYSIZE(path);
         native_check(QueryFullProcessImageNameW(process.get(), 0, path, &size) != FALSE);
-        child_trace("broker_peer", {{"peer_pid", pid}, {"same_user", peer.user == identity.user},
-            {"same_session", peer.session == identity.session}, {"peer_is_container", !peer.container.empty()},
-            {"actual_binary", utf8_message(std::wstring_view(path, size))},
-            {"expected_binary", utf8_message(container_broker_path().native())}});
+        fields = {{"peer_pid", pid}, {"same_user", peer.user == identity.user},
+            {"same_session", peer.session == identity.session}, {"peer_is_container", !peer.container.empty()}};
+        fields["actual_binary"] = utf8_message(std::wstring_view(path, size));
+        fields["expected_binary"] = utf8_message(container_broker_path().native());
+        size = ARRAYSIZE(path);
+        native_check(QueryFullProcessImageNameW(process.get(), PROCESS_NAME_NATIVE, path, &size) != FALSE);
+        fields["actual_image"] = utf8_message(std::wstring_view(path, size));
+        fields["expected_image"] = utf8_message(container_broker_image_path());
     } catch (const ContainerFailure& error) {
-        child_trace("broker_peer", {{"error", error.what()}, {"reason", reason_name(error.reason)}, {"win32_error", error.error}});
+        fields["error"] = error.what(); fields["reason"] = reason_name(error.reason); fields["win32_error"] = error.error;
     } catch (const PipeFailure& error) {
-        child_trace("broker_peer", {{"error", error.what()}, {"win32_error", error.error}});
-    } catch (const std::exception& error) { child_trace("broker_peer", {{"error", error.what()}}); }
+        fields["error"] = error.what(); fields["win32_error"] = error.error;
+    } catch (const std::exception& error) { fields["error"] = error.what(); }
+    child_trace("broker_peer", std::move(fields));
 }
 struct StartupTrace {
     std::ofstream output;
