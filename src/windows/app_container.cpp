@@ -149,7 +149,9 @@ std::filesystem::path container_broker_path() {
     HMODULE module = nullptr; need(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&anchor), &module) != FALSE);
     wchar_t path[32768]{}; const auto size = GetModuleFileNameW(module, path, ARRAYSIZE(path)); need(size && size < ARRAYSIZE(path));
-    return shared_binary_directory(std::filesystem::path(path)) / L"nskkzime_broker.exe";
+    // GetModuleFileName can retain a junction or short path used to load us,
+    // while QueryFullProcessImageName identifies the broker by its real path.
+    return shared_binary_directory(std::filesystem::canonical(path)) / L"nskkzime_broker.exe";
 }
 std::wstring container_pipe_name(const ProcessIdentity& identity) {
     if (identity.container.empty()) return L"\\\\.\\pipe\\nskkzime-desktop-broker-v1-" + identity.user + L"-" + std::to_wstring(identity.session);

@@ -46,6 +46,36 @@ const char* reason_name(ContainerReason reason) {
     }
     return "unknown";
 }
+void trace_broker_peer() {
+    // Inspect metadata only, after a failed bootstrap. Do not send any payload
+    // to a peer whose authentication may have failed.
+    try {
+        const auto native_check = [](bool ok) {
+            if (!ok) throw ContainerFailure(ContainerReason::Win32, GetLastError());
+        };
+        const auto identity = process_identity();
+        check(!identity.container.empty(), "peer probe requires AppContainer");
+        NativeHandle cancel(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        native_check(cancel.valid());
+        const auto pipe = open_pipe(L"\\\\.\\pipe\\LOCAL\\nskkzime-broker-v1-" + identity.user,
+            GetTickCount64() + 1500, cancel.get(), true);
+        ULONG pid = 0;
+        native_check(GetNamedPipeServerProcessId(pipe.get(), &pid) != FALSE);
+        NativeHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+        native_check(process.valid());
+        const auto peer = process_identity(process.get());
+        wchar_t path[32768]{}; DWORD size = ARRAYSIZE(path);
+        native_check(QueryFullProcessImageNameW(process.get(), 0, path, &size) != FALSE);
+        child_trace("broker_peer", {{"peer_pid", pid}, {"same_user", peer.user == identity.user},
+            {"same_session", peer.session == identity.session}, {"peer_is_container", !peer.container.empty()},
+            {"actual_binary", utf8_message(std::wstring_view(path, size))},
+            {"expected_binary", utf8_message(container_broker_path().native())}});
+    } catch (const ContainerFailure& error) {
+        child_trace("broker_peer", {{"error", error.what()}, {"reason", reason_name(error.reason)}, {"win32_error", error.error}});
+    } catch (const PipeFailure& error) {
+        child_trace("broker_peer", {{"error", error.what()}, {"win32_error", error.error}});
+    } catch (const std::exception& error) { child_trace("broker_peer", {{"error", error.what()}}); }
+}
 struct StartupTrace {
     std::ofstream output;
     explicit StartupTrace(const std::filesystem::path& root) : output(root / L"startup.jsonl", std::ios::binary) {
@@ -337,6 +367,7 @@ int startup_mode_test(HANDLE gate = nullptr, HANDLE broker_created = nullptr, bo
         } catch (const ContainerFailure& probe) {
             child_trace("bootstrap_probe", {{"error", probe.what()}, {"reason", reason_name(probe.reason)}, {"win32_error", probe.error}});
         } catch (const std::exception& probe) { child_trace("bootstrap_probe", {{"error", probe.what()}}); }
+        trace_broker_peer();
         throw;
     }
     child_trace("dictionary_ready", {{"elapsed_ms", GetTickCount64() - waiting}});

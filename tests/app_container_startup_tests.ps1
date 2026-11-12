@@ -17,6 +17,22 @@ try {
     if ($child.ExitCode -ne 0 -or (Test-Path -LiteralPath $absent)) { throw 'Broker stop wrote private files or failed.' }
 } finally { $child.Dispose() }
 Write-Output 'PASS broker stop with missing configuration creates no private files'
+# A loaded module keeps the junction spelling, but the broker's process image
+# uses the real path. Authentication must still accept this same executable.
+$alias = Join-Path $directory ('container-alias-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Junction -Path $alias -Target $directory | Out-Null
+try {
+    & (Join-Path $alias (Split-Path -Leaf $executablePath)) --startup-scenario delayed-broker
+    if ($LASTEXITCODE -ne 0) { throw 'Broker authentication failed through a directory junction.' }
+} finally {
+    $link = Get-Item -LiteralPath $alias
+    if ($link.LinkType -cne 'Junction' -or $link.Target -cne $directory -or $link.Parent.FullName -cne $directory) {
+        throw 'Unexpected test junction; retained it for inspection.'
+    }
+    # Remove only the junction, never recursively traverse its target.
+    Remove-Item -LiteralPath $alias -Force
+}
+Write-Output 'PASS broker authentication through a directory junction'
 foreach ($scenario in @('child-failure', 'broker-failure', 'readiness-timeout')) {
     $before = @(Get-ChildItem -LiteralPath $directory -Directory -Filter 'container-test-*' | ForEach-Object FullName)
     $output = @(& $executablePath --startup-scenario $scenario 2>&1)
@@ -67,10 +83,17 @@ foreach ($scenario in @('child-failure', 'broker-failure', 'readiness-timeout'))
                     Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json })
                 $timeouts = @($child | Where-Object phase -CEQ 'dictionary_wait_failed')
                 $probes = @($child | Where-Object phase -CEQ 'bootstrap_probe')
+                $peers = @($child | Where-Object phase -CEQ 'broker_peer')
                 if ($timeouts.Count -ne 1 -or $timeouts[0].ready -or $probes.Count -ne 1 -or
                     $null -eq $probes[0].reason -or $null -eq $probes[0].win32_error -or
                     -not (Test-Path -LiteralPath (Join-Path $fixture.FullName 'diagnostics/broker.jsonl'))) {
                     throw "Missing transport diagnostics; retained $($fixture.FullName)."
+                }
+                # This scenario exposes the broker only to the other package;
+                # the metadata probe must report that it could not connect.
+                if ($peers.Count -ne 1 -or -not $peers[0].PSObject.Properties['error'] -or
+                    [string]::IsNullOrEmpty($peers[0].error) -or -not $peers[0].PSObject.Properties['win32_error']) {
+                    throw "Missing peer-probe failure diagnostics; retained $($fixture.FullName)."
                 }
             }
         }
