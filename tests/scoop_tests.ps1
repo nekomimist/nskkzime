@@ -12,7 +12,7 @@ $directory = Join-Path $fixture ('package ' + [char]0x65e5 + [char]0x672c + [cha
 $installer = Join-Path $directory 'bin/nskkzime_setup.exe'
 [IO.File]::WriteAllText($installer, 'Fixture: must never execute.')
 @{format_version=8;architecture='x64';variant='zenz-cpu'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $directory 'manifest.json')
-$state = @{ Calls = 0; ExitCode = 0; FailStart = $false; Disposed = $false }
+$state = @{ Calls = 0; Waits = 0; ExitCode = 0; FailStart = $false; Disposed = $false }
 function Assert-Scoop([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Expect-Failure([scriptblock]$Action, [string]$Expected) {
     $message = $null
@@ -31,13 +31,14 @@ function Start-Process {
     $state.WindowStyle = $WindowStyle
     $state.Verb = $Verb
     if ($state.FailStart) { throw 'UAC cancelled fixture' }
-    $child = [pscustomobject]@{ ExitCode = $state.ExitCode }
+    $child = [pscustomobject]@{ ExitCode = $null }
+    $child | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { $state.Waits++; $this.ExitCode = $state.ExitCode }
     $child | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $state.Disposed = $true }
     return $child
 }
 try {
     & $ScoopScript -Action Install -PackageDirectory ($directory + '\')
-    Assert-Scoop ($state.Calls -eq 1 -and $state.Disposed -and $state.Wait -and $state.PassThru -and
+    Assert-Scoop ($state.Calls -eq 1 -and $state.Waits -eq 1 -and $state.Disposed -and -not $state.Wait -and $state.PassThru -and
         $state.WindowStyle -ceq 'Normal' -and $state.FilePath -ceq $installer) 'Wrapper did not wait for native setup.'
     Assert-Scoop (($state.Arguments -join '|') -ceq (@('--action', 'Install', '--package-directory', ('"' + $directory + '"')) -join '|')) 'Spaces, Unicode paths or action were lost.'
     Assert-Scoop (-not $state.Verb) 'Scoop must not elevate the scripting host.'
@@ -59,6 +60,7 @@ try {
         Assert-Scoop ($LASTEXITCODE -ne 0 -and $errorText.Contains('Elevation changed the user')) 'Different-user native handoff was accepted.'
     }
     Write-Output 'PASS Scoop native launch, no elevated scripting host, Unicode arguments and failure propagation'
+    & (Join-Path $PSScriptRoot 'scoop_process_tests.ps1') -ScoopScript $ScoopScript -BuildDirectory $BuildDirectory
 } finally {
     $absolute = [IO.Path]::GetFullPath($fixture)
     $allowed = [IO.Path]::GetFullPath($BuildDirectory).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar

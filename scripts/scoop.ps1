@@ -23,11 +23,14 @@ if ($manifest.format_version -ne 8 -or $manifest.architecture -cne 'x64' -or $ma
 $arguments = @('--action', $Action, '--package-directory', ('"' + $directory.TrimEnd('\', '/') + '"'))
 $start = @{
     FilePath = $installer; ArgumentList = $arguments
-    Wait = $true; PassThru = $true; WindowStyle = 'Normal'
+    PassThru = $true; WindowStyle = 'Normal'
 }
 try { $child = Start-Process @start }
 catch { throw "nskkzime $Action could not start. Approve UAC as the same user and retry. $($_.Exception.Message)" }
 try {
+    # Start-Process -Wait also waits for descendants, including the persistent
+    # broker that setup launches. Wait only for the setup process itself.
+    $child.WaitForExit()
     if ($child.ExitCode -ne 0) {
         throw "nskkzime $Action failed (exit $($child.ExitCode)). Run bin/nskkzime_setup.exe --action Status from Explorer or a normal terminal; use Recover if a transaction is pending. See %ProgramFiles%/nskkzime/setup.log if present."
     }
