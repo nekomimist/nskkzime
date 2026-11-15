@@ -197,6 +197,10 @@ std::wstring quote(const std::wstring& argument) {
     result.append(slashes * 2, L'\\'); result += L'\"';
     return result;
 }
+std::wstring broker_startup_command(fs::path broker) {
+    // Package-relative names can contain '/'; serialize the Run command using Windows separators.
+    return quote(broker.make_preferred().native()) + L" --replace";
+}
 DWORD run_process(const fs::path& executable, const std::vector<std::wstring>& arguments, bool wait) {
     require(executable.is_absolute(), "Executable must be an absolute path: " + utf8(executable.native()));
     auto command = quote(executable.native());
@@ -264,7 +268,7 @@ Backend windows_backend() {
                 const auto error = RegDeleteValueW(run.value, L"nskkzime broker");
                 if (error != ERROR_FILE_NOT_FOUND) status_check(error, "Remove broker startup");
             } else {
-                const auto command = quote(broker.native()) + L" --replace";
+                const auto command = broker_startup_command(broker);
                 status_check(RegSetValueExW(run.value, L"nskkzime broker", 0, REG_SZ, reinterpret_cast<const BYTE*>(command.c_str()), static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))), "Set broker startup");
             }
         }};

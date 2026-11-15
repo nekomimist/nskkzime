@@ -15,6 +15,7 @@ void initialize_root(const fs::path& root);
 void assert_root(const fs::path& root);
 void assert_no_registrar();
 std::wstring quote(const std::wstring& argument);
+std::wstring broker_startup_command(fs::path broker);
 DWORD run_process(const fs::path& executable, const std::vector<std::wstring>& arguments, bool wait = true);
 fs::path registrar_path(bool x86);
 DWORD elevate(const std::vector<std::wstring>& arguments);

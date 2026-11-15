@@ -53,12 +53,36 @@ void rehash(const fs::path& path, const std::string& name) {
     for (auto& entry : manifest["files"]) if (entry["path"] == name) { entry["size"] = bytes.size(); entry["sha256"] = sha256(bytes); }
     replace_file(path / L"manifest.json", manifest.dump());
 }
+void startup_command_test(const fs::path& root) {
+    const auto broker = root / L"startup 日本語 space" / L"versions" / std::string(64, 'a') / L"bin/nskkzime_broker.exe";
+    auto command = broker_startup_command(broker);
+    int count = 0;
+    auto parsed = CommandLineToArgvW(command.c_str(), &count);
+    check(parsed != nullptr, "Startup command could not be parsed");
+    const bool valid = count == 2 && std::wstring_view(parsed[0]).find(L'/') == std::wstring_view::npos &&
+        same_path(parsed[0], broker) && std::wstring_view(parsed[1]) == L"--replace";
+    LocalFree(parsed);
+    check(valid, "Startup command must preserve the executable and arguments with Windows separators");
+    fs::create_directories(broker.parent_path());
+    fs::copy_file(executable_path(), broker);
+    STARTUPINFOW start{}; start.cb = sizeof(start);
+    PROCESS_INFORMATION child{};
+    win_check(CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+        root.c_str(), &start, &child), "Launch serialized startup command");
+    Handle process(child.hProcess), thread(child.hThread);
+    check(WaitForSingleObject(process.value, 10000) == WAIT_OBJECT_0, "Startup child did not finish");
+    DWORD code = 0;
+    win_check(GetExitCodeProcess(process.value, &code), "Read startup child result");
+    check(code == 23, "Startup command launched the wrong child or lost its arguments");
+}
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc == 2 && std::wstring(argv[1]) == L"--process-child") return 23;
+    if (argc == 2 && std::wstring(argv[1]) == L"--replace") return 23;
     // All filesystem changes stay in this uniquely named CTest working directory.
     const auto root = fs::absolute(fs::path("native-setup-test-" + unique_suffix()));
     try {
+        startup_command_test(root);
         for (const bool x86_view : {false, true}) {
             const auto registrar = registrar_path(x86_view);
             check(registrar.is_absolute(), ("Non-absolute registrar: " + utf8(registrar.native())).c_str());
