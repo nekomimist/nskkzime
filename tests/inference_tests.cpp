@@ -95,13 +95,15 @@ void ipc_tests(const std::filesystem::path& server) {
     {
         InferenceClient client({name,{},1500},[](auto) { throw std::runtime_error("immediate request notified UI"); });
         const auto before = GetTickCount64();
-        check(!client.exchange_now({16,U"期限",U"",U"",1},20) && GetTickCount64()-before < 200,
+        client.submit({16,U"期限",U"",U"",1}, 1500, true);
+        check(!client.wait_for_response(16, before + 20) && GetTickCount64()-before < 200,
             "immediate request blocked on slow server");
-        // Destruction must not wait for or invalidate the detached callback.
+        // Destruction must not wait for or invalidate the worker.
     }
     {
         InferenceClient client({name,{},1500},[](auto) {});
-        const auto response = client.exchange_now({17,U"復帰",U"",U"",1},1000);
+        const auto deadline = client.submit({17,U"復帰",U"",U"",1},1000,true);
+        const auto response = client.wait_for_response(17, deadline);
         check(response && response->id == 17,"timed-out immediate request damaged the next client");
     }
     check(WaitForSingleObject(process.get(),5000)==WAIT_OBJECT_0,"dummy server failed to idle out");

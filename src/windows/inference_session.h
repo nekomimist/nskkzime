@@ -25,9 +25,9 @@ public:
     void configure(const InferenceConfig&, InferenceClient::Callback);
     bool cancel() noexcept;
     bool matches(const PendingInference&, InputCheckpoint) const;
-    void submit(PlannedInference, SurroundingText, InputCheckpoint);
+    bool submit(PlannedInference, SurroundingText, InputCheckpoint, ULONGLONG deadline);
     // Rerank only: score within policy.rerank_wait_ms before the candidates are
     // first shown. nullopt (disabled, slow or unavailable) means use submit().
-    std::optional<InferenceResponse> score_now(PlannedInference&, const SurroundingText&);
+    std::optional<InferenceResponse> score_now(PlannedInference&, const SurroundingText&, ULONGLONG& deadline);
 };
 } // namespace nskkzime::windows

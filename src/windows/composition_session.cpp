@@ -16,14 +16,15 @@ HRESULT PendingComposition::finish(TfEditCookie cookie) noexcept {
     return hr;
 }
 
-bool CompositionSession::valid(TfEditCookie cookie) const {
+bool CompositionSession::valid(TfEditCookie cookie, const InputCheckpoint& input) const {
     const InputPhaseTiming timing(InputTimingPhase::CompositionCheck);
+    const auto expected = expected_text;
     ComPtr<ITfRange> range;
-    update_tsf_trace_context(context.Get(), composition.Get(), session);
-    if (!composition) { trace_tsf(TsfEvent::CompositionCheck, TsfReason::MissingComposition); return false; }
-    const auto hr = composition->GetRange(&range);
+    update_tsf_trace_context(input.context.Get(), input.composition.Get(), input.session);
+    if (!input.context || !input.composition) { trace_tsf(TsfEvent::CompositionCheck, TsfReason::MissingComposition); return false; }
+    const auto hr = input.composition->GetRange(&range);
     if (FAILED(hr) || !range) { trace_tsf(TsfEvent::CompositionCheck, TsfReason::MissingRange, hr); return false; }
-    const bool matches = range_matches(range.Get(), cookie, expected_text) && selection_at_end(context.Get(), cookie, range.Get());
+    const bool matches = range_matches(range.Get(), cookie, expected) && selection_at_end(input.context.Get(), cookie, range.Get());
     trace_tsf(TsfEvent::CompositionCheck, TsfReason::None, S_OK, matches);
     return matches;
 }

@@ -339,11 +339,11 @@ public:
                     }
                     std::erase_if(self->pending_, [](const auto& pending) { return pending->done; });
                     if (self->composition_state_.composition) {
-                        const auto current = self->composition_state_.composition;
-                        const auto session = self->composition_state_.session;
-                        if (!self->composition_valid(cookie)) self->end_composition(cookie, TsfReason::InvalidBeforeKey);
-                        else if (self->composition_state_.composition.Get() == current.Get() && self->composition_state_.session == session &&
-                                 self->composition_state_.context.Get() == target.Get()) {
+                        const auto checkpoint = self->input_checkpoint();
+                        const bool valid = self->composition_state_.valid(cookie, checkpoint);
+                        if (!self->input_unchanged(checkpoint)) return S_OK;
+                        if (!valid) self->end_composition(cookie, TsfReason::InvalidBeforeKey);
+                        else if (checkpoint.context.Get() == target.Get()) {
                             // A synchronous key can run before queued async edits.
                             // Valid input in this field supersedes its old null-focus notice.
                             self->cancel_focus_finish(TsfReason::FocusValidated);
@@ -406,8 +406,11 @@ public:
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::EndEdit, diagnostic_state(context));
         if (composition_state_.ending || context != composition_state_.context.Get() || !composition_state_.composition) return S_OK;
         const ComPtr<TextService> self(this);
+        const auto validated = input_checkpoint();
         try {
-            if (!composition_valid(cookie)) finish_composition(TsfReason::InvalidAfterEdit);
+            const bool valid = composition_state_.valid(cookie, validated);
+            if (!input_unchanged(validated)) return S_OK;
+            if (!valid) finish_composition(TsfReason::InvalidAfterEdit);
             else if (!composition_state_.reading_context) {
                 composition_state_.reading_context = true;
                 const auto checkpoint = input_checkpoint();
@@ -422,11 +425,14 @@ public:
                         if (pending && inference_state_.pending && pending->id == inference_state_.pending->id && text != pending->text) cancel_inference();
                         if (preview) publish_context_preview(this, std::move(text));
                     }
-                } else if (pending) cancel_inference();
+                } else if (pending && matches(*pending)) cancel_inference();
                 composition_state_.reading_context = false;
             }
         }
-        catch (...) { composition_state_.reading_context = false; clear_context_preview(this); finish_composition(TsfReason::Exception); }
+        catch (...) {
+            composition_state_.reading_context = false;
+            if (input_unchanged(validated)) { clear_context_preview(this); finish_composition(TsfReason::Exception); }
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnLayoutChange(ITfContext* context, TfLayoutCode code, ITfContextView*) override {
@@ -644,9 +650,14 @@ private:
                 [self,pending,result=std::move(result)](TfEditCookie cookie) {
                     update_tsf_trace(self->diagnostic_state(pending.input.context.Get()));
                     if (!self->matches(pending)) return S_OK;
-                    if (!editable(pending.input.context.Get()) || !self->composition_valid(cookie)) { self->cancel_inference(); return S_OK; }
+                    const bool valid = editable(pending.input.context.Get()) && self->matches(pending) &&
+                        self->composition_state_.valid(cookie, pending.input);
+                    if (!self->matches(pending)) return S_OK;
+                    if (!valid) { self->cancel_inference(); return S_OK; }
                     ComPtr<ITfRange> range;
-                    if (FAILED(pending.input.composition->GetRange(&range)) || !range) { self->cancel_inference(); return S_OK; }
+                    const auto range_status = pending.input.composition->GetRange(&range);
+                    if (!self->matches(pending)) return S_OK;
+                    if (FAILED(range_status) || !range) { self->cancel_inference(); return S_OK; }
                     const auto text = surrounding_text(pending.input.context.Get(),range.Get(),cookie,self->inference_state_.allow_unknown_context);
                     if (!self->matches(pending)) return S_OK;
                     if (text != pending.text || text.permission == InputPermission::Restricted) { self->cancel_inference(); return S_OK; }
@@ -669,22 +680,14 @@ private:
                         set_inference_status(self.Get(),L"推論: 応答を反映できません。現在の入力を維持します");
                         return S_OK;
                     }
-                    if (changed) { self->engine_ = std::move(next); self->refresh_candidates(cookie); }
-                    try { if (self->inference_state_.client && self->inference_state_.client->input_log_enabled() && !pending.text.contains_unknown_scope && self->composition_state_.context.Get() == pending.input.context.Get()) {
-                        // Applying text/UI can re-enter the host. Recheck privacy
-                        // and identity after it, before queuing any text for disk.
-                        const auto checkpoint = self->input_checkpoint();
-                        const auto generation = self->inference_state_.generation;
-                        ComPtr<ITfRange> active;
-                        if (checkpoint.composition && SUCCEEDED(checkpoint.composition->GetRange(&active)) && active) {
-                            const auto allowed = surrounding_text(pending.input.context.Get(), active.Get(), cookie);
-                            if (self->inference_state_.client && self->input_unchanged(checkpoint) && self->inference_state_.generation == generation &&
-                                allowed.permission == InputPermission::Allowed && allowed.before == pending.text.before && allowed.after == pending.text.after)
-                                self->inference_state_.client->record_input(pending.plan.request,
-                                    !timed_out && result.status == InferenceStatus::Ok ? &result.response : nullptr,
-                                    timed_out ? InferenceStatus::Timeout : result.status);
-                        }
-                    } } catch (...) { /* Diagnostics must not fail an already applied edit. */ }
+                    if (changed) self->engine_ = std::move(next);
+                    const auto accepted = self->input_checkpoint();
+                    if (changed) self->refresh_candidates(cookie);
+                    if (pending.input.same_composition(accepted) && pending.text.available &&
+                        pending.text.permission == InputPermission::Allowed && !pending.text.contains_unknown_scope)
+                        self->log_current_input(cookie, accepted, pending.plan.request,
+                            !timed_out && result.status == InferenceStatus::Ok ? &result.response : nullptr,
+                            timed_out ? InferenceStatus::Timeout : result.status);
                     set_inference_status(self.Get(),adjusted ? (pending.plan.purpose == InferencePurpose::Rerank ? L"推論: 最良の辞書候補を先頭へ移動" : L"推論: 生成候補を反映") :
                         timed_out ? L"推論: 時間切れ。通常のSKK操作へ復帰" : L"推論: 現在の辞書候補または読みで継続");
                     return S_OK;
@@ -764,6 +767,12 @@ private:
         return persistence;
     }
     struct KeyInference {
+        explicit KeyInference(InferenceSession& session) : session(session) {}
+        ~KeyInference() {
+            if (deadline && plan && session.client) session.client->discard_deferred(plan->request.id);
+        }
+        InferenceSession& session;
+        ULONGLONG deadline = 0;
         std::optional<PlannedInference> plan;
         std::optional<SurroundingText> text;
         std::optional<std::pair<InferenceRequest, InferenceResponse>> scored;
@@ -791,10 +800,12 @@ private:
         // Like skk-zenz, score before the first candidate is shown so the list
         // never reorders under the user. Too slow: fall back to the async path.
         if (!inference.plan || !inference.text) return;
-        auto response = inference_state_.score_now(*inference.plan, *inference.text);
+        std::optional<InferenceResponse> response;
+        try { response = inference_state_.score_now(*inference.plan, *inference.text, inference.deadline); }
+        catch (...) { /* A local dispatch failure can still use ordinary dictionary order. */ }
         if (!response) return;
         inference.promoted = apply_inference_result(next, *inference.plan, *response, inference_state_.policy);
-        inference.log_scored = inference.text->permission == InputPermission::Allowed && !inference.text->contains_unknown_scope;
+        inference.log_scored = inference.text->available && inference.text->permission == InputPermission::Allowed && !inference.text->contains_unknown_scope;
         inference.scored.emplace(std::move(inference.plan->request), std::move(*response));
         inference.plan.reset(); inference.text.reset();
     }
@@ -812,13 +823,26 @@ private:
             else dictionary_->skipped(std::move(persistence.reason));
         }
     }
-    void report_key_score(const KeyInference& inference) {
+    void log_current_input(TfEditCookie cookie, const InputCheckpoint& accepted, const InferenceRequest& request,
+            const InferenceResponse* response, InferenceStatus status) noexcept {
+        try {
+            if (!inference_state_.client || !inference_state_.client->input_log_enabled() ||
+                !accepted.composition || !input_unchanged(accepted)) return;
+            const auto generation = inference_state_.generation;
+            ComPtr<ITfRange> range;
+            if (FAILED(accepted.composition->GetRange(&range)) || !range || !input_unchanged(accepted)) return;
+            const auto text = surrounding_text(accepted.context.Get(), range.Get(), cookie);
+            if (text.available && text.permission == InputPermission::Allowed && !text.contains_unknown_scope &&
+                text.before == request.left && text.after == request.right && input_unchanged(accepted) &&
+                inference_state_.generation == generation && inference_state_.client)
+                inference_state_.client->record_input(request, response, status);
+        } catch (...) { /* Logging must not affect an accepted edit. */ }
+    }
+    void report_key_score(TfEditCookie cookie, const InputCheckpoint& accepted, const KeyInference& inference) {
         if (!inference.scored) return;
         set_inference_status(this, inference.promoted ? L"推論: 表示前の採点で最良の辞書候補を先頭へ移動" : L"推論: 表示前に採点し、辞書候補の順位を維持");
-        try {
-            if (inference.log_scored && inference_state_.client && inference_state_.client->input_log_enabled())
-                inference_state_.client->record_input(inference.scored->first, &inference.scored->second, InferenceStatus::Ok);
-        } catch (...) {}
+        if (inference.log_scored)
+            log_current_input(cookie, accepted, inference.scored->first, &inference.scored->second, InferenceStatus::Ok);
     }
     void publish_key_mode(ITfContext* target, bool mode_changed, std::uint64_t accepted_revision, std::uint64_t indicator_request) {
         // Inner registration input has its own modes. Keep Windows open
@@ -833,7 +857,8 @@ private:
     void submit_key_inference(KeyInference& inference) {
         if (!inference.text || !inference_state_.client || !composition_state_.composition || engine_.registering()) return;
         try {
-            inference_state_.submit(std::move(*inference.plan), std::move(*inference.text), input_checkpoint());
+            if (!inference_state_.submit(std::move(*inference.plan), std::move(*inference.text), input_checkpoint(), inference.deadline)) return;
+            inference.deadline = 0;
             set_inference_status(this, inference_state_.pending->text.before.empty() && inference_state_.pending->text.after.empty()
                 ? L"推論: 応答待ち（周辺本文なし）" : L"推論: 応答待ち（周辺本文あり）");
         } catch (...) { set_inference_status(this, L"推論: 要求を開始できません。Spaceで通常のSKK操作へ復帰"); }
@@ -849,7 +874,7 @@ private:
         const bool was_pending = inference_state_.pending.has_value();
         auto persistence = prepare_key_persistence(target, cookie, checkpoint, result, next);
         if (!persistence) return S_OK;
-        KeyInference inference;
+        KeyInference inference(inference_state_);
         if (!prepare_key_inference(target, cookie, checkpoint, was_pending, result, next, inference)) return S_OK;
         score_key_inference(next, inference);
         auto visibility = candidate_visibility_;
@@ -862,20 +887,20 @@ private:
         const auto status = apply(target, cookie, result.committed, next);
         if (FAILED(status)) return status;
         const bool mode_changed = engine_.mode() != next.mode();
-        cancel_inference();
+        if (!inference.deadline || !inference.plan) cancel_inference();
         visibility.advance(key, result, next);
         candidate_visibility_ = visibility;
         engine_ = std::move(next); applied = true;
-        const auto accepted_revision = engine_.revision();
+        const auto accepted = input_checkpoint();
         const auto indicator_request = mode_notice_.request();
         if (origin && composition_state_.composition && composition_state_.context.Get() == target) composition_state_.origin = origin;
         update_tsf_trace(diagnostic_state(target, origin));
         trace_tsf(TsfEvent::StateAccepted);
         persist_key_result(result, *persistence);
         refresh_candidates(cookie, persistence->protected_registration ? L"保護された入力欄のため、単語登録を行いません。" : L"");
-        report_key_score(inference);
-        publish_key_mode(target, mode_changed, accepted_revision, indicator_request);
-        submit_key_inference(inference);
+        if (checkpoint.same_composition(accepted)) report_key_score(cookie, accepted, inference);
+        publish_key_mode(target, mode_changed, accepted.revision, indicator_request);
+        if (input_unchanged(accepted) && checkpoint.same_composition(accepted)) submit_key_inference(inference);
         return status;
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
@@ -895,7 +920,10 @@ private:
                     self->selection_pending_ = false;
                     if (!self->input_unchanged(checkpoint) || self->engine_.input_stage() != Stage::Selecting ||
                         !editable(checkpoint.context.Get())) return S_OK;
-                    if (!self->composition_valid(cookie)) { self->end_composition(cookie, TsfReason::InvalidCandidateSelection); return S_OK; }
+                    if (!self->input_unchanged(checkpoint)) return S_OK;
+                    const bool valid = self->composition_state_.valid(cookie, checkpoint);
+                    if (!self->input_unchanged(checkpoint)) return S_OK;
+                    if (!valid) { self->end_composition(cookie, TsfReason::InvalidCandidateSelection); return S_OK; }
                     bool applied = false;
                     return self->apply_key(checkpoint.context.Get(), cookie, {KeyCode::SelectCandidate, 0, index}, applied);
                 });
@@ -935,7 +963,6 @@ private:
     bool input_unchanged(const InputCheckpoint& checkpoint) const {
         return manager_ && checkpoint.matches(input_checkpoint());
     }
-    bool composition_valid(TfEditCookie cookie) const { return composition_state_.valid(cookie); }
     void cancel_focus_finish(TsfReason reason) noexcept {
         if (!focus_pending_) return;
         trace_tsf(TsfEvent::FocusCancelled, reason, S_OK, focus_request_);

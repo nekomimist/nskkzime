@@ -104,8 +104,8 @@ int wmain(int argc,wchar_t** argv) {
          BSTR text=nullptr;s.list()->GetString(1,&text);check(text&&std::wstring_view(text)==L"回答","waited score changed remaining order");SysFreeString(text);}
         // A server slower than the wait keeps the asynchronous promotion.
         settings.zenz.policy.rerank_wait_ms=50;save_settings(config,settings);
-        {Session s;s.start();check(s.context->doc->text==L"前回答後","timed-out wait changed the first display");
-         s.complete();check(s.context->doc->text==L"前解答後","score after a timed-out wait not applied");}
+        {Session s;const auto before=count.load();s.start();check(s.context->doc->text==L"前回答後","timed-out wait changed the first display");
+         s.complete();check(s.context->doc->text==L"前解答後" && count==before+1,"delayed score must finish the original request");}
         settings.zenz.policy.rerank_wait_ms=0;save_settings(config,settings);
         for(const bool long_reading:{false,true}) {
             delay=450;Session s;s.start(long_reading ? "Arigatougozaimasu" : "Kaitou");
@@ -202,9 +202,23 @@ int wmain(int argc,wchar_t** argv) {
          };
          s.context->pump(); s.wait(50);}
         check(log_files().size() == 1, "protected, cancelled or rejected input was logged");
+        settings.zenz.policy.rerank_wait_ms = 400; save_settings(config, settings);
+        {Session s(L"同期照合"); s.type("Kaitou");
+         s.context->scope_query = [&](ITfRange*, InputScope& scope) {
+             if (s.context->doc->text.find(L"解答") != std::wstring::npos) scope = IS_PRIVATE;
+             return S_OK;
+         };
+         s.key(VK_SPACE); check(s.context->doc->text == L"同期照合解答後", "synchronous score missing");
+         s.wait(50); check(log_files().size() == 1, "synchronous logging ignored current scope");}
+        {Session s(L"同期保存"); s.type("Kaitou"); s.key(VK_SPACE);
+         check(s.context->doc->text == L"同期保存解答後", "ordinary synchronous score missing");
+         const auto until = GetTickCount64() + 2000;
+         while (log_files().size() == 1 && GetTickCount64() < until) s.wait(10);
+         check(log_files().size() == 2, "validated synchronous score was not logged");}
+        settings.zenz.policy.rerank_wait_ms = 0;
         settings.zenz.log_input = false; save_settings(config, settings);
         {Session s(L"無効化後"); s.start(); s.complete(); s.wait(50);}
-        check(log_files().size() == 1, "new activation ignored input log opt-out");
+        check(log_files().size() == 2, "new activation ignored input log opt-out");
         // Successful commit learns a short fallback only when explicitly enabled.
         settings.learning=true;settings.zenz.policy.learn_fallback=true;save_settings(config,settings);
         {Session s;s.start("Mikan");s.complete();check(s.context->doc->text==L"前蜜柑後","short fallback missing");s.key(VK_RETURN);

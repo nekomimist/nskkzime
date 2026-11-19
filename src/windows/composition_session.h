@@ -37,7 +37,7 @@ public:
     bool ending = false, reading_context = false;
     std::uint64_t session = 0;
     InputCheckpoint checkpoint(std::uint64_t revision) const { return {context, composition, session, revision}; }
-    bool valid(TfEditCookie) const;
+    bool valid(TfEditCookie, const InputCheckpoint&) const;
     void release_context() noexcept;
     void end(TfEditCookie) noexcept;
     HRESULT apply(ITfContext*, TfEditCookie, std::u32string_view committed, Engine& next,

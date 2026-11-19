@@ -12,6 +12,7 @@
 namespace nskkzime::windows {
 namespace {
 int anchor;
+constexpr UINT completion_message = WM_APP + 1;
 thread_local const void* status_owner = nullptr;
 thread_local const wchar_t* status_text = L"推論: オフ";
 thread_local const InferenceClient* logging_client = nullptr;
@@ -51,7 +52,15 @@ struct InferenceClient::State {
     std::deque<InputLogRecord> records;
     std::atomic<InputLogStatus> log_status{InputLogStatus::Off};
     std::atomic<unsigned> log_dropped{0};
-    std::atomic<bool> immediate_busy{false};
+    NativeHandle done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+    HWND dispatcher = nullptr;
+    bool deferred = false, notified = false;
+    // Called under mutex. A full UI queue is retried by the worker until delivery or cancellation.
+    bool notify() noexcept {
+        if (!completion || deferred || notified || !dispatcher) return true;
+        notified = PostMessageW(dispatcher, completion_message, 0, 0) != FALSE;
+        return notified;
+    }
     // Desktop only: connect, launching the configured server while it is absent.
     InferenceResponse exchange(const InferenceRequest& request, ULONGLONG deadline, HANDLE cancel) const {
         InferenceLauncher launch;
@@ -65,8 +74,10 @@ struct InferenceClient::State {
         for (;;) {
             std::shared_ptr<Job> job;
             std::optional<InputLogRecord> record;
+            DWORD wait = INFINITE;
             {
                 const std::lock_guard lock(mutex); if (stop) return; job = pending;
+                if (!notify()) wait = 20;
                 if (!job && !records.empty()) { record = std::move(records.front()); records.pop_front(); }
             }
             if (!job) {
@@ -83,7 +94,7 @@ struct InferenceClient::State {
                     } else log_status = logger->write(*record);
                     continue;
                 }
-                WaitForSingleObject(wake.get(), INFINITE); continue;
+                WaitForSingleObject(wake.get(), wait); continue;
             }
             InferenceCompletion result; result.id = job->request.id; result.deadline = job->deadline;
             try {
@@ -97,7 +108,14 @@ struct InferenceClient::State {
             } catch (const InferenceFailure& failure) { result.status = failure.status; }
             catch (...) { result.status = GetTickCount64() >= job->deadline ? InferenceStatus::Timeout : InferenceStatus::Unavailable; }
             { const std::lock_guard lock(mutex);
-                if (pending == job) { pending.reset(); if (!stop && WaitForSingleObject(job->cancel.get(), 0) != WAIT_OBJECT_0) completion = std::move(result); }
+                if (pending == job) {
+                    pending.reset();
+                    if (!stop) {
+                        completion = std::move(result);
+                        notified = false;
+                        SetEvent(done.get());
+                    }
+                }
             }
         }
     }
@@ -106,34 +124,9 @@ struct InferenceClient::State {
         std::unique_ptr<Work> work(static_cast<Work*>(raw));
         FreeLibraryWhenCallbackReturns(instance, work->module); CallbackMayRunLong(instance); work->state->run();
     }
-    struct Immediate {
-        Job job;
-        NativeHandle done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
-        std::optional<InferenceResponse> response;
-        std::atomic<bool> completed{false};
-    };
-    struct ImmediateWork { std::shared_ptr<State> state; std::shared_ptr<Immediate> result; HMODULE module; };
-    static void CALLBACK immediate_callback(PTP_CALLBACK_INSTANCE instance, void* raw) noexcept {
-        std::unique_ptr<ImmediateWork> work(static_cast<ImmediateWork*>(raw));
-        FreeLibraryWhenCallbackReturns(instance, work->module); CallbackMayRunLong(instance);
-        auto& result = *work->result; const auto& job = result.job; const auto& config = work->state->config;
-        try {
-            if (GetTickCount64() < job.deadline && WaitForSingleObject(job.cancel.get(), 0) != WAIT_OBJECT_0) {
-                if (config.container)
-                    result.response = decode_response(container_operation(BrokerOperation::Inference, config.container_generation, encode_request(job.request),
-                        job.deadline, job.cancel.get()), job.request);
-                else result.response = work->state->exchange(job.request, job.deadline, job.cancel.get());
-            }
-        } catch (...) { /* The caller falls back to its ordinary asynchronous request. */ }
-        // Never change the response after publishing it. Callback ownership keeps
-        // State, handles and this DLL alive when the caller has already timed out.
-        result.completed.store(true, std::memory_order_release);
-        work->state->immediate_busy.store(false);
-        SetEvent(result.done.get());
-    }
 };
 InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : state_(std::make_shared<State>()), callback_(std::move(callback)) {
-    if (!state_->wake.valid() || config.timeout_ms == 0 || config.timeout_ms > 10000) throw std::invalid_argument("invalid inference configuration");
+    if (!state_->wake.valid() || !state_->done.valid() || config.timeout_ms == 0 || config.timeout_ms > 10000) throw std::invalid_argument("invalid inference configuration");
     state_->config = std::move(config); owner_ = module(false);
     if (state_->config.log_input) {
         if (!state_->config.container) {
@@ -147,7 +140,8 @@ InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : st
     if (!RegisterClassW(&cls)) throw std::runtime_error("cannot create inference dispatcher");
     try {
         window_ = CreateWindowExW(0,class_name_.c_str(),L"",0,0,0,0,0,HWND_MESSAGE,nullptr,owner_,this);
-        if (!window_ || !SetTimer(window_,1,20,nullptr)) throw std::runtime_error("cannot start inference dispatcher");
+        if (!window_) throw std::runtime_error("cannot start inference dispatcher");
+        state_->dispatcher = window_;
         auto work = std::make_unique<State::Work>(); work->state = state_; work->module = module(true);
         if (!TrySubmitThreadpoolCallback(State::callback,work.get(),nullptr)) { FreeLibrary(work->module); throw std::runtime_error("cannot start inference worker"); }
         work.release();
@@ -156,47 +150,51 @@ InferenceClient::InferenceClient(InferenceConfig config, Callback callback) : st
 }
 InferenceClient::~InferenceClient() {
     if (logging_client == this) logging_client = nullptr;
-    if (window_) DestroyWindow(window_); UnregisterClassW(class_name_.c_str(),owner_);
-    { const std::lock_guard lock(state_->mutex); state_->stop = true; if (state_->pending) SetEvent(state_->pending->cancel.get()); state_->completion.reset(); state_->records.clear(); }
+    { const std::lock_guard lock(state_->mutex); state_->dispatcher = nullptr; state_->stop = true; if (state_->pending) SetEvent(state_->pending->cancel.get()); state_->completion.reset(); state_->records.clear(); }
+    if (window_) DestroyWindow(window_);
+    UnregisterClassW(class_name_.c_str(),owner_);
     SetEvent(state_->wake.get()); // No join/pipe wait in a TSF callback.
 }
-ULONGLONG InferenceClient::submit(InferenceRequest request, DWORD timeout_ms) {
+ULONGLONG InferenceClient::submit(InferenceRequest request, DWORD timeout_ms, bool defer_delivery) {
     if (timeout_ms > 10000) throw std::invalid_argument("invalid request timeout");
     auto job = std::make_shared<State::Job>(); if (!job->cancel.valid()) throw std::runtime_error("cannot create cancellation event");
     job->request = std::move(request); job->deadline = GetTickCount64() + (timeout_ms ? timeout_ms : state_->config.timeout_ms);
     { const std::lock_guard lock(state_->mutex);
         if (state_->pending) SetEvent(state_->pending->cancel.get());
+        ResetEvent(state_->done.get());
+        state_->deferred = defer_delivery;
         state_->pending = job; state_->completion.reset();
     }
     SetEvent(state_->wake.get()); return job->deadline;
 }
-std::optional<InferenceResponse> InferenceClient::exchange_now(const InferenceRequest& request, DWORD wait_ms) const noexcept {
-    if (!wait_ms) return std::nullopt;
-    const auto deadline = GetTickCount64() + wait_ms;
-    if (state_->immediate_busy.exchange(true)) return std::nullopt;
-    bool dispatched = false;
-    try {
-        auto result = std::make_shared<State::Immediate>();
-        result->job.request = request; result->job.deadline = deadline;
-        if (!result->job.cancel.valid() || !result->done.valid()) throw std::runtime_error("cannot create immediate request");
-        auto work = std::make_unique<State::ImmediateWork>(); work->state = state_; work->result = result;
-        if (GetTickCount64() >= deadline) throw std::runtime_error("immediate request expired");
-        work->module = module(true);
-        if (GetTickCount64() >= deadline) {
-            FreeLibrary(work->module); throw std::runtime_error("immediate request expired");
-        }
-        if (!TrySubmitThreadpoolCallback(State::immediate_callback, work.get(), nullptr)) {
-            FreeLibrary(work->module); throw std::runtime_error("cannot start immediate request");
-        }
-        work.release(); dispatched = true;
-        const auto now = GetTickCount64();
-        const auto remaining = static_cast<DWORD>(deadline > now ? deadline - now : 0);
-        if (WaitForSingleObject(result->done.get(), remaining) == WAIT_OBJECT_0 &&
-            result->completed.load(std::memory_order_acquire) && GetTickCount64() < deadline)
-            return std::move(result->response);
-        SetEvent(result->job.cancel.get());
-    } catch (...) { if (!dispatched) state_->immediate_busy.store(false); }
-    return std::nullopt;
+std::optional<InferenceResponse> InferenceClient::wait_for_response(std::uint64_t id, ULONGLONG until) {
+    const auto now = GetTickCount64();
+    if (now >= until || WaitForSingleObject(state_->done.get(), static_cast<DWORD>(until - now)) != WAIT_OBJECT_0)
+        return std::nullopt;
+    const std::lock_guard lock(state_->mutex);
+    auto& result = state_->completion;
+    if (!state_->deferred || !result || result->id != id || result->status != InferenceStatus::Ok ||
+        GetTickCount64() >= until) return std::nullopt;
+    auto response = std::move(result->response);
+    result.reset();
+    return response;
+}
+bool InferenceClient::deliver_deferred(std::uint64_t id) {
+    const std::lock_guard lock(state_->mutex);
+    if (!state_->deferred || !((state_->pending && state_->pending->request.id == id) ||
+            (state_->completion && state_->completion->id == id))) return false;
+    state_->deferred = false;
+    if (!state_->notify()) SetEvent(state_->wake.get());
+    return true;
+}
+void InferenceClient::discard_deferred(std::uint64_t id) noexcept {
+    const std::lock_guard lock(state_->mutex);
+    if (!state_->deferred) return;
+    if (state_->pending && state_->pending->request.id == id) {
+        SetEvent(state_->pending->cancel.get());
+        state_->pending.reset();
+    }
+    if (state_->completion && state_->completion->id == id) state_->completion.reset();
 }
 void InferenceClient::cancel() noexcept {
     const std::lock_guard lock(state_->mutex);
@@ -222,7 +220,7 @@ std::wstring InferenceClient::input_log_status() const {
 }
 void InferenceClient::poll() {
     std::optional<InferenceCompletion> result;
-    { const std::lock_guard lock(state_->mutex); result = std::move(state_->completion); state_->completion.reset(); }
+    { const std::lock_guard lock(state_->mutex); if (state_->deferred) return; result = std::move(state_->completion); state_->completion.reset(); }
     if (result) {
         if (result->status == InferenceStatus::Ok && GetTickCount64() >= result->deadline) { result->status = InferenceStatus::Timeout; result->response = {}; }
         const auto callback = callback_; if (callback) callback(std::move(*result)); // May destroy this object.
@@ -231,7 +229,10 @@ void InferenceClient::poll() {
 LRESULT CALLBACK InferenceClient::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* self = reinterpret_cast<InferenceClient*>(GetWindowLongPtrW(window,GWLP_USERDATA));
     if (message == WM_NCCREATE) { self = static_cast<InferenceClient*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams); SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self)); }
-    if (message == WM_TIMER && wparam == 1 && self) { try { self->poll(); } catch (...) {} return 0; }
+    if (self && message == completion_message) {
+        try { self->poll(); } catch (...) {}
+        return 0;
+    }
     return DefWindowProcW(window,message,wparam,lparam);
 }
 std::optional<InferenceConfig> current_inference_config() {

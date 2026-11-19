@@ -37,11 +37,11 @@ public:
     ~InferenceClient();
     InferenceClient(const InferenceClient&) = delete;
     InferenceClient& operator=(const InferenceClient&) = delete;
-    ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0); // Zero uses the generation timeout.
-    // Same owning UI thread as submit()/destruction. Waits at most the remaining
-    // wait_ms budget; startup and I/O run on a separate, lifetime-pinned callback.
-    // Timeout cancels that request and yields nullopt; the caller can use submit().
-    std::optional<InferenceResponse> exchange_now(const InferenceRequest&, DWORD wait_ms) const noexcept;
+    ULONGLONG submit(InferenceRequest, DWORD timeout_ms = 0, bool defer_delivery = false);
+    // A pre-display score uses the same job and deadline after the UI stops waiting.
+    std::optional<InferenceResponse> wait_for_response(std::uint64_t id, ULONGLONG until);
+    bool deliver_deferred(std::uint64_t id);
+    void discard_deferred(std::uint64_t id) noexcept;
     void cancel() noexcept;
     void poll();
     // Called only after TSF has revalidated the current ordinary input field.

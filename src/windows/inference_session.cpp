@@ -16,15 +16,21 @@ bool InferenceSession::cancel() noexcept {
 bool InferenceSession::matches(const PendingInference& request, InputCheckpoint input) const {
     return pending && pending->id == request.id && generation == request.generation && request.input.matches(input);
 }
-std::optional<InferenceResponse> InferenceSession::score_now(PlannedInference& plan, const SurroundingText& text) {
+std::optional<InferenceResponse> InferenceSession::score_now(PlannedInference& plan, const SurroundingText& text, ULONGLONG& deadline) {
     if (!client || plan.purpose != InferencePurpose::Rerank || !policy.rerank_wait_ms) return std::nullopt;
     plan.request.id = ++sequence; plan.request.left = text.before; plan.request.right = text.after;
-    return client->exchange_now(plan.request, (std::min)(policy.rerank_wait_ms, policy.score_timeout_ms));
+    const auto until = GetTickCount64() + policy.rerank_wait_ms;
+    deadline = client->submit(plan.request, policy.score_timeout_ms, true);
+    return client->wait_for_response(plan.request.id, (std::min)(until, deadline));
 }
-void InferenceSession::submit(PlannedInference plan, SurroundingText text, InputCheckpoint input) {
-    const auto id = ++sequence;
-    plan.request.id = id; plan.request.left = text.before; plan.request.right = text.after;
-    const auto deadline = client->submit(plan.request, plan.purpose == InferencePurpose::Rerank ? policy.score_timeout_ms : 0);
-    pending = PendingInference{id, generation, deadline, std::move(input), std::move(text), std::move(plan)};
+bool InferenceSession::submit(PlannedInference plan, SurroundingText text, InputCheckpoint input, ULONGLONG deadline) {
+    if (deadline) {
+        if (!client->deliver_deferred(plan.request.id)) return false;
+    } else {
+        plan.request.id = ++sequence; plan.request.left = text.before; plan.request.right = text.after;
+        deadline = client->submit(plan.request, plan.purpose == InferencePurpose::Rerank ? policy.score_timeout_ms : 0);
+    }
+    pending = PendingInference{plan.request.id, generation, deadline, std::move(input), std::move(text), std::move(plan)};
+    return true;
 }
 } // namespace nskkzime::windows
