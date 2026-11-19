@@ -91,6 +91,7 @@ private:
     UINT current_page() const;
     std::pair<UINT, UINT> visible_rows() const;
     std::wstring footer() const;
+    SIZE measure();
     void render() noexcept;
     void paint(HDC) const;
     std::optional<std::size_t> hit_test(POINT) const noexcept;
@@ -98,6 +99,8 @@ private:
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);
     std::atomic<ULONG> refs_{1};
     Microsoft::WRL::ComPtr<ITfDocumentMgr> document_;
+    std::shared_ptr<const std::vector<Candidate>> source_rows_;
+    std::u32string source_suffix_;
     std::vector<Row> rows_;
     std::vector<UINT> pages_;
     const PopupKind kind_;
@@ -108,6 +111,10 @@ private:
     std::wstring heading_, draft_, hint_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
+    bool redraw_ = true;
+    std::optional<UINT> previous_selection_;
+    int row_width_ = 0;
+    SIZE measured_{};
     bool requested_visible_ = false, located_ = false, closed_ = false, ime_visible_ = false;
     HWND window_ = nullptr, owner_ = nullptr;
     HFONT font_ = nullptr;

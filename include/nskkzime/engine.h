@@ -151,7 +151,9 @@ public:
     std::u32string preedit() const;
     std::u32string composition_text() const; // Native composition, without diagnostic SKK markers.
     std::u32string literal_text() const; // No SKK markers; used on host termination.
-    const std::vector<Candidate>& candidates() const { return input_.candidates; }
+    const std::vector<Candidate>& candidates() const;
+    const std::shared_ptr<const std::vector<Candidate>>& candidate_snapshot() const { return input_.candidates; }
+    std::u32string candidate_suffix() const { return display(input_.visible_okuri()); }
     std::u32string candidate_text(std::size_t index) const; // Includes the current okuri; empty for an invalid index.
     std::size_t candidate_index() const { return input_.candidate_index; }
 private:
@@ -165,16 +167,18 @@ private:
         std::size_t deleted_okuri = 0;
         std::u32string_view visible_okuri() const { return std::u32string_view(okuri).substr(0, okuri.size() - deleted_okuri); }
         char okuri_letter = 0;
-        std::vector<Candidate> candidates;
+        std::shared_ptr<const std::vector<Candidate>> candidates;
         std::size_t candidate_index = 0;
         bool candidates_touched = false, generation_attempted = false;
         struct Rerank {
             std::u32string top;
-            std::vector<std::pair<std::u32string, float>> scores;
+            using Scores = std::vector<std::pair<std::u32string, float>>;
+            std::shared_ptr<const Scores> scores;
         };
         std::optional<Rerank> rerank;
     };
     struct Registration { Input original; std::u32string draft, anchor; };
+    bool insert_generated(std::vector<Candidate>, bool prepend);
     Result handle_input(Key);
     bool handle_candidate_key(Key, Result&);
     void handle_backspace(Result&);

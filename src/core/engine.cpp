@@ -4,6 +4,7 @@
 #include <array>
 #include <stdexcept>
 #include <utility>
+#include <unordered_set>
 
 namespace nskkzime {
 namespace {
@@ -59,12 +60,16 @@ Engine::Engine(std::shared_ptr<const Dictionary> dictionary, bool registration_e
     if (!dictionary_) throw std::invalid_argument("dictionary must not be null");
     input_.romaji = Romaji(profile_.rules());
 }
+const std::vector<Candidate>& Engine::candidates() const {
+    static const std::vector<Candidate> empty;
+    return input_.candidates ? *input_.candidates : empty;
+}
 void Engine::clear_composition() {
     forget_.reset();
     input_.stage = Stage::Direct;
     input_.abbrev = false;
     input_.romaji.clear(); input_.reading.clear(); input_.okuri.clear(); input_.okuri_letter = 0; input_.deleted_okuri = 0;
-    input_.candidates.clear(); input_.candidate_index = 0;
+    input_.candidates.reset(); input_.candidate_index = 0;
     input_.candidates_touched = input_.generation_attempted = false;
     input_.rerank.reset();
 }
@@ -75,7 +80,7 @@ void Engine::restore_reading() {
         input_.okuri.clear(); input_.okuri_letter = 0; input_.deleted_okuri = 0;
     }
     input_.stage = input_.okuri_letter ? Stage::Okuri : Stage::Reading;
-    input_.candidates.clear(); input_.candidate_index = 0;
+    input_.candidates.reset(); input_.candidate_index = 0;
 }
 void Engine::reset() {
     if (registering()) input_.mode = registrations_.front().original.mode;
@@ -92,7 +97,7 @@ std::u32string Engine::inference_reading(bool include_okuri) const {
     return input.reading + (include_okuri ? std::u32string(input.visible_okuri()) : U"");
 }
 std::u32string Engine::scoring_text(std::size_t index) const {
-    return !registering() && index < input_.candidates.size() ? input_.candidates[index].text + std::u32string(input_.visible_okuri()) : std::u32string{};
+    return !registering() && index < candidates().size() ? candidates()[index].text + std::u32string(input_.visible_okuri()) : std::u32string{};
 }
 bool Engine::can_reorder_candidates() const {
     return !forgetting() && !registering() && input_.stage == Stage::Selecting && !input_.candidates_touched && input_.candidate_index == 0;
@@ -105,49 +110,66 @@ void Engine::note_generation_attempt() {
     if (!input.generation_attempted) { input.generation_attempted = true; ++revision_; }
 }
 bool Engine::promote_candidate(std::size_t index) {
-    if (!can_reorder_candidates() || index == 0 || index >= input_.candidates.size()) return false;
-    std::rotate(input_.candidates.begin(),input_.candidates.begin()+static_cast<std::ptrdiff_t>(index),input_.candidates.begin()+static_cast<std::ptrdiff_t>(index+1));
+    if (!can_reorder_candidates() || index == 0 || index >= candidates().size()) return false;
+    auto reordered = std::make_shared<std::vector<Candidate>>(candidates());
+    std::rotate(reordered->begin(), reordered->begin() + index, reordered->begin() + index + 1);
+    input_.candidates = std::move(reordered);
     ++revision_; return true;
 }
 std::optional<RerankBoost> Engine::rerank_boost() const {
     return dictionary_->rerank_boost({input_.reading, input_.okuri_letter});
 }
 void Engine::record_rerank(std::span<const float> scores) {
-    Input::Rerank record;
+    auto recorded = std::make_shared<Input::Rerank::Scores>();
+    recorded->reserve(scores.size());
     for (std::size_t i = 0; i < scores.size(); ++i)
-        record.scores.emplace_back(input_.candidates.at(i).text, scores[i]);
-    input_.rerank = std::move(record);
+        recorded->emplace_back(candidates().at(i).text, scores[i]);
+    input_.rerank = Input::Rerank{{}, std::move(recorded)};
     ++revision_;
 }
 void Engine::finish_rerank() {
-    if (input_.rerank) input_.rerank->top = input_.candidates.front().text;
+    if (input_.rerank) input_.rerank->top = candidates().front().text;
 }
 bool Engine::prepend_generated(std::vector<Candidate> candidates) {
-    if (registering() || inference_reading().empty() || (input_.stage == Stage::Selecting && !can_reorder_candidates()) || candidates.empty()) return false;
-    // Reuse the same validation and stable deduplication as fallback generation,
-    // on a copy so an invalid beam cannot partially change the live list.
-    auto trial = *this; trial.input_.candidates.clear();
-    for (const auto& candidate : candidates) if (candidate.source != CandidateSource::GeneratedLong) return false;
-    if (!trial.append_generated(std::move(candidates))) return false;
-    for (const auto& old : input_.candidates)
-        if (std::none_of(trial.input_.candidates.begin(),trial.input_.candidates.end(),[&](const Candidate& item) { return item.text == old.text; })) trial.input_.candidates.push_back(old);
-    trial.input_.candidate_index = 0; *this = std::move(trial); return true;
+    return insert_generated(std::move(candidates), true);
 }
 void Engine::defer_registration() {
     if (registrations_.size() != 1 || !registrations_.front().draft.empty() || !input_literal().empty()) return;
     input_ = std::move(registrations_.front().original); registrations_.clear(); ++revision_;
 }
 bool Engine::append_generated(std::vector<Candidate> candidates) {
-    if (registering() || inference_reading().empty() || candidates.size() > 8) return false;
-    auto next = input_.candidates; const auto first = next.size();
-    for (auto& candidate : candidates) {
-        if (candidate.source == CandidateSource::Dictionary || candidate.text.empty() || candidate.text.size() > 1024) return false;
+    return insert_generated(std::move(candidates), false);
+}
+bool Engine::insert_generated(std::vector<Candidate> generated, bool prepend) {
+    if (registering() || inference_reading().empty() || generated.empty() || generated.size() > 8) return false;
+    if (prepend && input_.stage == Stage::Selecting && !can_reorder_candidates()) return false;
+    for (const auto& candidate : generated) {
+        if (candidate.source == CandidateSource::Dictionary || (prepend && candidate.source != CandidateSource::GeneratedLong) ||
+            candidate.text.empty() || candidate.text.size() > 1024) return false;
         for (const auto ch : candidate.text) if (ch < 0x20 || ch == 0x7f || ch > 0x10ffff || (ch >= 0xd800 && ch <= 0xdfff) || ch == 0xfffc) return false;
-        candidate.origin.reset(); // Generation never inherits dictionary template identities.
-        if (std::none_of(next.begin(),next.end(),[&](const Candidate& old) { return old.text == candidate.text; })) next.push_back(std::move(candidate));
     }
-    if (next.size() == first) return false;
-    input_.candidates = std::move(next); input_.candidate_index = first; input_.stage = Stage::Selecting; ++revision_; return true;
+    const auto& original = candidates();
+    auto merged = std::make_shared<std::vector<Candidate>>();
+    merged->reserve(original.size() + generated.size());
+    if (!prepend) merged->assign(original.begin(), original.end());
+    const auto first = merged->size();
+    for (auto& candidate : generated) {
+        candidate.origin.reset();
+        if (std::none_of(merged->begin(), merged->end(), [&](const Candidate& item) { return item.text == candidate.text; }))
+            merged->push_back(std::move(candidate));
+    }
+    if (merged->size() == first) return false;
+    if (prepend) {
+        // Reserved capacity keeps views into generated rows stable until the merge finishes.
+        std::unordered_set<std::u32string_view> known;
+        for (const auto& item : *merged) known.insert(item.text);
+        for (const auto& item : original) if (known.insert(item.text).second) merged->push_back(item);
+    }
+    input_.candidates = std::move(merged);
+    input_.candidate_index = first;
+    input_.stage = Stage::Selecting;
+    ++revision_;
+    return true;
 }
 bool Engine::resume_registration() {
     if (registering() || inference_reading().empty()) return false;
@@ -167,7 +189,7 @@ std::u32string Engine::literal_text() const {
     return registering() ? registrations_.front().anchor : input_literal();
 }
 std::u32string Engine::candidate_text(std::size_t index) const {
-    return index < input_.candidates.size() ? input_.candidates[index].text + display(input_.visible_okuri()) : std::u32string{};
+    return index < candidates().size() ? candidates()[index].text + display(input_.visible_okuri()) : std::u32string{};
 }
 std::u32string Engine::input_preedit() const {
     if (input_.stage == Stage::Direct) return ascii(input_.romaji.pending());
@@ -244,7 +266,8 @@ void Engine::convert(Result& result) {
     });
     // A worker can publish a snapshot between lookup and the delivery check.
     if (refresh) stored = lookup_candidates();
-    input_.candidates.clear();
+    std::vector<Candidate> found_candidates;
+    found_candidates.reserve(stored.size());
     const auto add = [&](const LookupKey& key, Candidate candidate) {
         const auto raw = candidate.text;
         bool converted = false;
@@ -255,24 +278,26 @@ void Engine::convert(Result& result) {
         }
         if (converted || key != lookup)
             candidate.origin = CandidateOrigin{key, converted ? numeric.key : lookup, raw};
-        if (std::none_of(input_.candidates.begin(), input_.candidates.end(),
-            [&](const Candidate& item) { return item.text == candidate.text; })) input_.candidates.push_back(std::move(candidate));
+        if (std::none_of(found_candidates.begin(), found_candidates.end(),
+            [&](const Candidate& item) { return item.text == candidate.text; })) found_candidates.push_back(std::move(candidate));
     };
     if (numeric.numbers.empty()) {
         for (const auto& item : registered_)
-            if (item.key == lookup && item.okuri == input_.okuri) input_.candidates.push_back(item.candidate);
-        const auto cached_count = input_.candidates.size();
+            if (item.key == lookup && item.okuri == input_.okuri) found_candidates.push_back(item.candidate);
+        const auto cached_count = found_candidates.size();
         for (auto& found : stored)
-            if (std::none_of(input_.candidates.begin(), input_.candidates.begin() + static_cast<std::ptrdiff_t>(cached_count),
-                [&](const Candidate& item) { return item.text == found.candidate.text; })) input_.candidates.push_back(std::move(found.candidate));
+            if (std::none_of(found_candidates.begin(), found_candidates.begin() + static_cast<std::ptrdiff_t>(cached_count),
+                [&](const Candidate& item) { return item.text == found.candidate.text; })) found_candidates.push_back(std::move(found.candidate));
     } else {
         for (const auto& key : keys)
             for (const auto& item : registered_)
                 if (item.key == key && item.okuri == input_.okuri) add(key, item.candidate);
         for (auto& found : stored) add(found.key, std::move(found.candidate));
     }
+    input_.candidates = found_candidates.empty() ? nullptr :
+        std::make_shared<const std::vector<Candidate>>(std::move(found_candidates));
     input_.candidate_index = 0;
-    if (input_.candidates.empty()) { result.dictionary_miss = true; begin_registration(result); }
+    if (candidates().empty()) { result.dictionary_miss = true; begin_registration(result); }
     else input_.stage = Stage::Selecting;
 }
 LearningEvent Engine::learning_event(const Candidate& candidate) const {
@@ -287,7 +312,7 @@ LearningEvent Engine::learning_event(const Candidate& candidate) const {
 }
 void Engine::learn_rerank_choice(const Input& input, LearningEvent& event) {
     if (!input.rerank || input.rerank->top == event.candidate.text) return;
-    const auto& scores = input.rerank->scores;
+    const auto& scores = *input.rerank->scores;
     const auto best = std::max_element(scores.begin(), scores.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
     const auto selected = std::find_if(scores.begin(), scores.end(), [&](const auto& item) { return item.first == event.candidate.text; });
     event.rerank_gap = selected != scores.end() && best != scores.end() ?
@@ -296,7 +321,7 @@ void Engine::learn_rerank_choice(const Input& input, LearningEvent& event) {
 void Engine::confirm(Result& result) {
     result.committed += input_literal();
     if (input_.stage == Stage::Selecting) {
-        auto event = learning_event(input_.candidates[input_.candidate_index]);
+        auto event = learning_event(candidates()[input_.candidate_index]);
         if (event.candidate.learning == LearningPolicy::Learn && event.candidate.source != CandidateSource::GeneratedLong)
             result.learning = std::move(event);
         // Long generations are never persisted, including as a rerank preference.
@@ -319,7 +344,7 @@ Result Engine::handle(Key key) {
     if (input_.stage == Stage::Selecting && (key.code == KeyCode::ForgetCandidate ||
         (profile_.method() == InputMethod::Skk && key.code == KeyCode::Character && key.character == 'X'))) {
         input_.candidates_touched = true;
-        const auto& candidate = input_.candidates[input_.candidate_index];
+        const auto& candidate = candidates()[input_.candidate_index];
         const auto lookup = candidate.origin ? candidate.origin->lookup_key : LookupKey{input_.reading, input_.okuri_letter};
         const auto& text = candidate.origin ? candidate.origin->text : candidate.text;
         auto target = dictionary_->forget_target(lookup, input_.okuri, text);
@@ -445,12 +470,12 @@ bool Engine::handle_candidate_key(Key key, Result& result) {
             input_.candidate_index / candidate_page_size * candidate_page_size + static_cast<std::size_t>(key.character - '1');
         // A missing row on the last page must not confirm a different word or
         // leak the shortcut into the document. Registration keeps the word in its draft.
-        if (index < input_.candidates.size()) { input_.candidate_index = index; confirm(result); }
+        if (index < candidates().size()) { input_.candidate_index = index; confirm(result); }
         return true;
     }
     if (key.code == KeyCode::PageDown || key.code == KeyCode::PageUp) {
         if (key.code == KeyCode::PageDown)
-            input_.candidate_index += std::min(candidate_page_size, input_.candidates.size() - 1 - input_.candidate_index);
+            input_.candidate_index += std::min(candidate_page_size, candidates().size() - 1 - input_.candidate_index);
         else input_.candidate_index -= std::min(candidate_page_size, input_.candidate_index);
         return true; // Reaching either edge never confirms or starts registration.
     }
@@ -483,7 +508,7 @@ void Engine::handle_space(Result& result) {
         return;
     }
     if (input_.stage == Stage::Selecting) {
-        if (input_.candidate_index + 1 < input_.candidates.size()) ++input_.candidate_index;
+        if (input_.candidate_index + 1 < candidates().size()) ++input_.candidate_index;
         else { result.candidates_exhausted = true; begin_registration(result); }
     } else if (input_.stage == Stage::Direct) {
         append(input_.romaji.flush(), result); result.committed += U" ";

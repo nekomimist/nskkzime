@@ -103,7 +103,7 @@ HRESULT CandidateList::SetPageIndex(UINT* indices, UINT count) {
     if (!indices) return E_POINTER;
     if (!count || count > rows_.size() || indices[0] != 0) return E_INVALIDARG;
     for (UINT i = 0; i < count; ++i) if (indices[i] >= rows_.size() || (i && indices[i] <= indices[i - 1])) return E_INVALIDARG;
-    try { cancel_pointer(); pages_.assign(indices, indices + count); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
+    try { cancel_pointer(); pages_.assign(indices, indices + count); redraw_ = true; previous_selection_.reset(); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
     catch (...) { return E_OUTOFMEMORY; }
 }
 UINT CandidateList::current_page() const {
@@ -146,15 +146,13 @@ void CandidateList::cancel_pointer() noexcept {
 }
 HRESULT CandidateList::GetCurrentPage(UINT* value) { if (!value) return E_POINTER; *value = current_page(); return S_OK; }
 void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
+    const auto old_rows = visible_rows();
+    redraw_ |= input_method_ != engine.input_method();
     input_method_ = engine.input_method();
     if (closed_) return;
     if (revision_ != engine.revision()) cancel_pointer();
     revision_ = engine.revision();
     if (engine.candidates().size() > std::numeric_limits<UINT>::max()) throw std::length_error("too many candidates");
-    std::vector<Row> rows;
-    rows.reserve(engine.candidates().size());
-    for (std::size_t i = 0; !engine.forgetting() && i < engine.candidates().size(); ++i)
-        rows.push_back({wide(engine.candidate_text(i)), wide(engine.candidates()[i].annotation)});
     updated_ = 0;
     if (engine.forgetting()) {
         const auto& target = engine.forget_target();
@@ -179,30 +177,56 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     }
     if (document_.Get() != document) updated_ |= TF_CLUIE_DOCUMENTMGR;
     document_ = document;
-    if (rows != rows_) {
-        std::vector<UINT> pages;
-        for (std::size_t index = 0; index < rows.size(); index += page_size) pages.push_back(static_cast<UINT>(index));
-        rows_ = std::move(rows); pages_ = std::move(pages);
-        updated_ |= all_updates;
+    const auto source = engine.forgetting() ? nullptr : engine.candidate_snapshot();
+    auto suffix = source ? engine.candidate_suffix() : std::u32string{};
+    if (source != source_rows_ || suffix != source_suffix_) {
+        std::vector<Row> rows;
+        if (source) {
+            rows.reserve(source->size());
+            const auto ending = wide(suffix);
+            for (const auto& candidate : *source) {
+                auto text = wide(candidate.text);
+                text += ending;
+                rows.push_back({std::move(text), wide(candidate.annotation)});
+            }
+        }
+        if (rows != rows_) {
+            std::vector<UINT> pages;
+            for (std::size_t index = 0; index < rows.size(); index += page_size) pages.push_back(static_cast<UINT>(index));
+            rows_ = std::move(rows); pages_ = std::move(pages);
+            updated_ |= all_updates;
+        }
+        source_rows_ = source;
+        source_suffix_ = std::move(suffix);
     }
     const auto selection = static_cast<UINT>(engine.candidate_index());
     if (selection != selection_) updated_ |= TF_CLUIE_SELECTION | TF_CLUIE_CURRENTPAGE;
-    selection_ = selection;
+    const auto old_selection = std::exchange(selection_, selection);
+    if (updated_ & ~TF_CLUIE_DOCUMENTMGR) {
+        if (!redraw_ && kind_ == PopupKind::Candidates && !(updated_ & TF_CLUIE_STRING) && old_rows == visible_rows())
+            previous_selection_ = old_selection;
+        else previous_selection_.reset();
+        redraw_ = true;
+    }
     if (updated_ && kind_ == PopupKind::Candidates) replace_candidate_timing(paint_timing_);
 }
 void CandidateList::notice(std::wstring_view reason, ITfDocumentMgr* document) {
     if (closed_ || kind_ != PopupKind::Notice) return;
+    redraw_ = true; previous_selection_.reset();
     heading_ = L"単語登録"; draft_ = reason;
     hint_ = L"別の入力欄で登録してください。入力を続けると閉じます。";
     rows_.clear(); pages_.clear(); selection_ = 0;
     document_ = document; updated_ = all_updates;
 }
 void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
-    if (!anchor || owner_ != owner || !EqualRect(&anchor_, anchor)) cancel_pointer();
+    const bool moved = !anchor || !located_ || owner_ != owner || !EqualRect(&anchor_, anchor);
+    if (moved) cancel_pointer();
     owner_ = owner;
     located_ = anchor && anchor->bottom > anchor->top;
     if (!located_) discard_candidate_timing(paint_timing_);
     if (located_) anchor_ = *anchor;
+    if (!moved && !redraw_ && window_ && IsWindowVisible(window_) &&
+        dpi_ == (owner ? GetDpiForWindow(owner) : 96U)) return;
     render();
 }
 void CandidateList::close() noexcept {
@@ -212,7 +236,39 @@ void CandidateList::close() noexcept {
     if (window_) { DestroyWindow(window_); window_ = nullptr; }
     if (!class_name_.empty()) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); }
     if (font_) { DeleteObject(font_); font_ = nullptr; }
+    source_rows_.reset(); source_suffix_.clear();
     owner_ = nullptr; document_.Reset();
+}
+SIZE CandidateList::measure() {
+    // Keep measurement bounded even if the host supplies a custom large page.
+    const auto [first, visible_end] = visible_rows();
+    WindowDC dc(window_);
+    if (!dc.value) return {};
+    SelectedFont selected(dc.value, font_);
+    const auto footer_text = footer(); SIZE footer_size{};
+    GetTextExtentPoint32W(dc.value, footer_text.c_str(), static_cast<int>(footer_text.size()), &footer_size);
+    int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
+    if (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice) width = std::max(width, MulDiv(580, dpi_, 96));
+    if (kind_ == PopupKind::Notice) {
+        SIZE size{}; GetTextExtentPoint32W(dc.value, draft_.c_str(), static_cast<int>(draft_.size()), &size);
+        width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
+    }
+    if (!previous_selection_) {
+        row_width_ = 0;
+        for (UINT i = first; i < visible_end; ++i) {
+            const auto row = std::wstring(1, candidate_labels(keys_)[i - first]) + L"  " + label(rows_[i].text) + L"  — " + label(rows_[i].annotation);
+            SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
+            row_width_ = std::max(row_width_, static_cast<int>(size.cx) + padding_ * 2);
+        }
+    }
+    width = std::max(width, row_width_);
+    width = std::min(width, MulDiv(680, dpi_, 96));
+    int height = (static_cast<int>(visible_end - first + 1) + (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice ? 2 : 0)) * line_height_ + padding_ * 2;
+    // The measured text and padding describe the client area. The border
+    // must be added before passing the outer dimensions to SetWindowPos.
+    RECT outer{0, 0, width, height};
+    if (!AdjustWindowRectExForDpi(&outer, popup_style, FALSE, popup_ex_style, dpi_)) return {};
+    return {outer.right - outer.left, outer.bottom - outer.top};
 }
 void CandidateList::render() noexcept {
     if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && kind_ == PopupKind::Candidates)) {
@@ -248,37 +304,16 @@ void CandidateList::render() noexcept {
         }
         const auto dpi = owner_ ? GetDpiForWindow(owner_) : 96U;
         if (dpi_ != dpi || !font_) {
+            previous_selection_.reset(); redraw_ = true;
             dpi_ = dpi ? dpi : 96;
             if (font_) DeleteObject(font_);
             font_ = CreateFontW(-MulDiv(18, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, font_face_.c_str());
             line_height_ = MulDiv(32, dpi_, 96); padding_ = MulDiv(10, dpi_, 96);
         }
-        // Keep measurement bounded even if the host supplies a custom large page.
-        const auto [first, visible_end] = visible_rows();
-        WindowDC dc(window_);
-        if (!dc.value) return;
-        SelectedFont selected(dc.value, font_);
-        const auto footer_text = footer(); SIZE footer_size{};
-        GetTextExtentPoint32W(dc.value, footer_text.c_str(), static_cast<int>(footer_text.size()), &footer_size);
-        int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
-        if (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice) width = std::max(width, MulDiv(580, dpi_, 96));
-        if (kind_ == PopupKind::Notice) {
-            SIZE size{}; GetTextExtentPoint32W(dc.value, draft_.c_str(), static_cast<int>(draft_.size()), &size);
-            width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
-        }
-        for (UINT i = first; i < visible_end; ++i) {
-            const auto row = std::wstring(1, candidate_labels(keys_)[i - first]) + L"  " + label(rows_[i].text) + L"  — " + label(rows_[i].annotation);
-            SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
-            width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
-        }
-        width = std::min(width, MulDiv(680, dpi_, 96));
-        int height = (static_cast<int>(visible_end - first + 1) + (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice ? 2 : 0)) * line_height_ + padding_ * 2;
-        // The measured text and padding describe the client area. The border
-        // must be added before passing the outer dimensions to SetWindowPos.
-        RECT outer{0, 0, width, height};
-        if (!AdjustWindowRectExForDpi(&outer, popup_style, FALSE, popup_ex_style, dpi_)) return;
-        width = outer.right - outer.left; height = outer.bottom - outer.top;
+        if (redraw_ || !measured_.cx) measured_ = measure();
+        if (!measured_.cx) return;
+        int width = measured_.cx, height = measured_.cy;
         MONITORINFO monitor{sizeof(MONITORINFO)};
         if (!GetMonitorInfoW(MonitorFromRect(&anchor_, MONITOR_DEFAULTTONEAREST), &monitor)) return;
         width = std::min(width, static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));
@@ -287,9 +322,26 @@ void CandidateList::render() noexcept {
         auto y = anchor_.bottom;
         if (y + height > monitor.rcWork.bottom) y = anchor_.top - height;
         y = std::clamp(y, monitor.rcWork.top, monitor.rcWork.bottom - height);
-        const auto placed = SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        trace(L"placed", placed, IsWindowVisible(window_), placed ? 0 : GetLastError());
-        InvalidateRect(window_, nullptr, FALSE);
+        const RECT expected{x, y, x + width, y + height};
+        RECT actual{};
+        const bool place = !IsWindowVisible(window_) || !GetWindowRect(window_, &actual) || !EqualRect(&expected, &actual);
+        const bool redraw = std::exchange(redraw_, false);
+        const auto old_selection = std::exchange(previous_selection_, {});
+        if (place) {
+            const auto placed = SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            const auto error = placed ? 0 : GetLastError();
+            if (IsDebuggerPresent()) trace(L"placed", placed, IsWindowVisible(window_), error);
+            if (!placed) { redraw_ = true; return; }
+        }
+        if (!window_ || closed_) return;
+        if (redraw && old_selection && !place) {
+            const auto [first, end] = visible_rows();
+            for (const UINT row : {*old_selection, selection_, end}) {
+                const int top = padding_ + static_cast<int>(row - first) * line_height_;
+                const RECT strip{0, top, width, top + line_height_};
+                InvalidateRect(window_, &strip, FALSE);
+            }
+        } else if (redraw || place) InvalidateRect(window_, nullptr, FALSE);
     } catch (...) { if (window_) ShowWindow(window_, SW_HIDE); }
 }
 std::wstring CandidateList::footer() const {
@@ -327,6 +379,7 @@ void CandidateList::paint(HDC dc) const {
         for (UINT i = first; i < end; ++i, top += line_height_) {
             RECT row{0, top, area.right, top + line_height_};
             if (i == selection_) FillRect(dc, &row, GetSysColorBrush(COLOR_HIGHLIGHT));
+            if (!RectVisible(dc, &row)) continue;
             SetTextColor(dc, GetSysColor(i == selection_ ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
             row.left += padding_; row.right -= padding_;
             const auto text = std::wstring(1, candidate_labels(keys_)[i - first]) + L"  " + label(rows_[i].text) +
@@ -342,6 +395,10 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     if (message == WM_NCCREATE) {
         self = static_cast<CandidateList*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    }
+    if (self && (message == WM_SETTINGCHANGE || message == WM_DISPLAYCHANGE || message == WM_DPICHANGED)) {
+        self->redraw_ = true;
+        self->previous_selection_.reset();
     }
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     // Eat popup clicks, including its header/footer, without activating it or
@@ -497,7 +554,7 @@ void CandidatePresenter::invalidate_position() noexcept {
 void CandidatePresenter::hide() noexcept { invalidate_position(); if (list_) list_->locate(nullptr, nullptr); }
 void CandidatePresenter::dismiss_notice() noexcept { if (list_ && list_->kind() == PopupKind::Notice) close_ui(); }
 Key CandidatePresenter::selection_key(Key key, const Engine& engine) const noexcept {
-    if (list_ && list_->kind() != PopupKind::Notice &&
+    if (presentation_available() && list_->kind() != PopupKind::Notice &&
         !engine.forgetting() && engine.input_stage() == Stage::Selecting && key.code == KeyCode::Character) {
         const auto slot = candidate_keys(list_->keys()).find(key.character);
         if (slot != std::string_view::npos) return {KeyCode::SelectCandidate, 0, list_->shortcut_index(slot)};
