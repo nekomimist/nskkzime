@@ -1,6 +1,8 @@
 #include "installation.h"
 #include <bcrypt.h>
 #include <algorithm>
+#include <map>
+#include <set>
 
 namespace nskkzime::setup {
 std::string unique_suffix() {
@@ -54,9 +56,11 @@ Json Installation::status() const {
 void Installation::preflight(const std::string& target) const {
     const auto current = managed(backend_.read_registration(false));
     const auto x86 = managed(backend_.read_registration(true), true);
-    for (const auto& version : {current, x86, target}) if (!version.empty()) (void)installed(version);
+    std::set<std::string> versions{current, x86, target};
     const auto pending = journal();
-    if (!pending.is_null()) for (const auto* key : {"previous", "target"}) if (!pending.at(key).is_null()) (void)installed(pending.at(key).get<std::string>());
+    if (!pending.is_null()) for (const auto* key : {"previous", "target"})
+        if (!pending.at(key).is_null()) versions.insert(pending.at(key).get<std::string>());
+    for (const auto& version : versions) if (!version.empty()) (void)installed(version);
 }
 Bundle Installation::stage(const fs::path& source) {
     const auto bundle = verify_(source);
@@ -85,9 +89,15 @@ void Installation::set_target(const std::string& target, const std::vector<std::
     const auto version = managed(current), x86_version = managed(companion, true);
     for (const auto& observed : {version, x86_version})
         require(observed.empty() || std::find(allowed.begin(), allowed.end(), observed) != allowed.end(), "Registration points outside transaction");
-    const auto next = target.empty() ? Bundle{} : installed(target);
-    const auto old = version.empty() ? Bundle{} : installed(version);
-    const auto old_x86 = x86_version.empty() ? Bundle{} : installed(x86_version);
+    std::map<std::string, Bundle> verified;
+    const auto bundle = [&](const std::string& id) -> const Bundle& {
+        auto [it, inserted] = verified.try_emplace(id);
+        if (inserted && !id.empty()) it->second = installed(id);
+        return it->second;
+    };
+    const auto& next = bundle(target);
+    const auto& old = bundle(version);
+    const auto& old_x86 = bundle(x86_version);
     if (!x86_version.empty()) require(same_path(old_x86.x86(), companion), "Companion path differs from verified package");
     assert_registration(false, current); assert_registration(true, companion);
     if (!x86_version.empty()) {
