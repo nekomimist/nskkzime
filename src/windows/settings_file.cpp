@@ -1,5 +1,6 @@
 #include "settings_file.h"
 #include "local_storage.h"
+#include "pipe_ipc.h"
 #include "windows_text.h"
 #include <windows.h>
 #include <shlobj.h>
@@ -268,17 +269,60 @@ AppSettings parse_settings(std::string_view bytes) {
     validate_tsf_log_settings(settings.tsf_log);
     return settings;
 }
+namespace {
+std::optional<std::string> snapshot(const std::filesystem::path& file) {
+    if (!std::filesystem::exists(file))
+        return {};
+    std::ifstream input(file, std::ios::binary | std::ios::ate);
+    if (!input)
+        throw std::runtime_error("cannot read settings file");
+    const auto size = input.tellg();
+    if (size < 0 || size > static_cast<std::streamoff>(max_settings_bytes))
+        throw std::runtime_error("settings exceed 64 KiB");
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    input.seekg(0);
+    if (!input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())))
+        throw std::runtime_error("cannot read settings file");
+    return bytes;
+}
+NativeHandle lock_settings(const std::filesystem::path& file) {
+    validate_storage_path(file);
+    std::filesystem::create_directories(file.parent_path());
+    // CREATE_NEW never removes an existing file. Windows releases our lock even on process exit.
+    NativeHandle lock(CreateFileW((file.native() + L".write-lock").c_str(), GENERIC_WRITE | DELETE, 0,
+        nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr));
+    if (!lock.valid()) throw std::runtime_error("cannot lock settings for writing; retry after other writers finish");
+    return lock;
+}
+} // namespace
+SettingsDocument open_settings_document(const std::filesystem::path& file) {
+    validate_storage_path(file);
+    SettingsDocument result;
+    result.file = file;
+    result.original = snapshot(file);
+    if (result.original)
+        result.settings = parse_settings(*result.original);
+    return result;
+}
+void save_settings_document(SettingsDocument& document, const AppSettings& settings) {
+    // Prepare every allocation before replacement so a successful write cannot
+    // leave this editor with an old revision if an allocation subsequently fails.
+    SettingsDocument next{document.file, settings, serialize_settings(settings)};
+    const auto lock = lock_settings(document.file);
+    if (snapshot(document.file) != document.original)
+        throw std::runtime_error("settings changed since loading; reload before saving");
+    write_file_atomic(document.file, *next.original);
+    document = std::move(next);
+}
 AppSettings read_settings(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary | std::ios::ate);
-    if (!stream) throw std::runtime_error("cannot open settings file");
-    const auto length = stream.tellg();
-    if (length < 0 || length > static_cast<std::streamoff>(max_settings_bytes)) throw std::runtime_error("settings exceed 64 KiB or cannot be read");
-    std::string bytes(static_cast<std::size_t>(length), '\0'); stream.seekg(0);
-    if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) throw std::runtime_error("cannot read settings file");
-    return parse_settings(bytes);
+    const auto bytes = snapshot(path);
+    if (!bytes) throw std::runtime_error("cannot open settings file");
+    return parse_settings(*bytes);
 }
 void save_settings(const std::filesystem::path& path, const AppSettings& settings) {
-    write_file_atomic(path, serialize(settings));
+    const auto bytes = serialize(settings);
+    const auto lock = lock_settings(path);
+    write_file_atomic(path, bytes);
 }
 std::string serialize_settings(const AppSettings& settings) { return serialize(settings); }
 SettingsConfiguration resolve_settings_configuration(const std::filesystem::path& file, bool missing_is_demo) {

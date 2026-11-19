@@ -61,33 +61,33 @@ enum class Action {
     SetZenzRerank, SetZenzRerankLearn, SetZenzLearning, SetZenzUnknownContext,
     EnableInputLog, DisableInputLog, EnableTsfLog, DisableTsfLog
 };
-AppSettings read_or_default(const std::filesystem::path& file) {
-    return std::filesystem::exists(file) ? read_settings(file) : AppSettings{};
-}
 bool parse_toggle(std::wstring_view value, const char* error) {
     if (value != L"on" && value != L"off") throw std::invalid_argument(error);
     return value == L"on";
 }
 int set_off_key_exclusions(const std::filesystem::path& file, Action, Arguments args) {
-    auto settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    auto& settings = document.settings;
     settings.off_key_exclusions.assign(args.begin(), args.end());
-    save_settings(file, settings);
+    save_settings_document(document, settings);
     show(L"OFFキーの除外設定を保存しました。利用するアプリを起動し直すと反映されます。");
     return 0;
 }
 int set_tsf_log(const std::filesystem::path& file, Action action, Arguments args) {
-    auto settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    auto& settings = document.settings;
     const bool enable = action == Action::EnableTsfLog;
     settings.tsf_log.enabled = enable;
     if (enable) settings.tsf_log.directory = args[0];
     validate_tsf_log_settings(settings.tsf_log, enable);
-    save_settings(file, settings);
+    save_settings_document(document, settings);
     show(tsf_log_settings_status(settings.tsf_log));
     show(L"保存しました。利用するアプリを起動し直すと反映されます。");
     return 0;
 }
 int set_candidates(const std::filesystem::path& file, Action action, Arguments args) {
-    auto settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    auto& settings = document.settings;
     const auto value = utf8_message(args[0]);
     if (action == Action::SetCandidateKeys) {
         if (value != "numbers" && value != "asdfjkl") throw std::invalid_argument("candidate keys must equal numbers or asdfjkl");
@@ -98,7 +98,7 @@ int set_candidates(const std::filesystem::path& file, Action action, Arguments a
         if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("candidate-show-after must be 1..99");
         settings.candidates.show_after = number;
     }
-    save_settings(file, settings);
+    save_settings_document(document, settings);
     show(candidate_settings_status(settings.candidates));
     show(L"保存しました。利用するアプリを起動し直すと反映されます。");
     return 0;
@@ -133,10 +133,11 @@ void update_zenz(ZenzSettings& settings, Action action, Arguments args) {
     }
 }
 int set_zenz(const std::filesystem::path& file, Action action, Arguments args) {
-    auto settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    auto& settings = document.settings;
     update_zenz(settings.zenz, action, args);
     validate_zenz_settings(settings.zenz, action == Action::SetZenz || action == Action::EnableInputLog);
-    save_settings(file, settings);
+    save_settings_document(document, settings);
     show(zenz_settings_status(settings.zenz));
     show(L"保存しました。利用するアプリを起動し直すと反映されます。モデルの実行確認にはサーバーの --convert を使ってください。");
     return 0;
@@ -164,29 +165,28 @@ void update_input(AppSettings& settings, Action action, Arguments args) {
     }
 }
 int set_input(const std::filesystem::path& file, Action action, Arguments args) {
-    SettingsConfiguration proposed;
-    proposed.file = file;
-    proposed.settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    SettingsConfiguration proposed{document.settings, file};
     update_input(proposed.settings, action, args);
     const auto loaded = load_romaji_rules(proposed);
     show(loaded.status);
     if (loaded.failed) { std::cerr << "Not saved: invalid romaji rules.\n"; return 2; }
-    save_settings(file, proposed.settings);
+    save_settings_document(document, proposed.settings);
     show(L"ローマ字設定を保存しました。利用するアプリを起動し直すと反映されます。");
     return 0;
 }
 int set_toggle(const std::filesystem::path& file, Action action, Arguments args) {
     const auto enabled = parse_toggle(args[0], "toggle must equal on or off");
-    auto settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    auto& settings = document.settings;
     (action == Action::SetStartupImeOff ? settings.startup_ime_off : settings.learning) = enabled;
-    save_settings(file, settings);
+    save_settings_document(document, settings);
     show(L"設定を保存しました。利用するアプリを起動し直すと反映されます。");
     return 0;
 }
 int set_dictionaries(const std::filesystem::path& file, Action, Arguments args) {
-    SettingsConfiguration proposed;
-    proposed.file = file;
-    proposed.settings = read_or_default(file);
+    auto document = open_settings_document(file);
+    SettingsConfiguration proposed{document.settings, file};
     proposed.settings.dictionaries.clear();
     for (const auto arg : args) {
         std::filesystem::path path(arg);
@@ -196,7 +196,7 @@ int set_dictionaries(const std::filesystem::path& file, Action, Arguments args) 
     const auto loaded = load_dictionaries(proposed);
     show(loaded.status);
     if (loaded.failed) { std::cerr << "Not saved: one or more dictionaries could not be loaded.\n"; return 2; }
-    save_settings(file, proposed.settings);
+    save_settings_document(document, proposed.settings);
     show(L"保存しました: " + file.native());
     show(L"利用するアプリを終了して起動し直すと反映されます。");
     return 0;
