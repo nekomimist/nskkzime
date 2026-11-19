@@ -23,9 +23,9 @@ struct TemporaryFile {
     }
 };
 }
-void write_file_atomic(const std::filesystem::path& path, std::string_view bytes, bool replace_existing) {
+void write_file_atomic(const std::filesystem::path& path, std::string_view bytes, bool replace_existing, std::size_t max_bytes) {
     validate_storage_path(path);
-    if (bytes.size() > 64 * 1024 * 1024) throw std::invalid_argument("file exceeds 64 MiB");
+    if (bytes.size() > max_bytes || bytes.size() > MAXDWORD) throw std::invalid_argument("file exceeds size limit");
     std::filesystem::create_directories(path.parent_path());
     GUID guid{};
     if (FAILED(CoCreateGuid(&guid))) throw std::runtime_error("cannot allocate temporary settings name");

@@ -77,8 +77,7 @@ struct Probe {
             std::filesystem::path(wide_message(bootstrap.file))==config, "private bootstrap differs");
         check(generation.empty() || generation==bootstrap.generation, "private settings changed across checkpoint");
         generation=bootstrap.generation;
-        auto bytes=std::make_shared<const std::string>(std::move(bootstrap.images.front()));
-        auto loaded=std::make_shared<CompiledDictionary>(*bytes,bytes);
+        auto loaded=std::make_shared<CompiledDictionary>(bootstrap.images.front(),bootstrap.frame);
         dictionary(*loaded); if(retained)dictionary(*retained);else retained=loaded;
         report({{"event","bootstrap"},{"phase",name},{"elapsed_ms",GetTickCount64()-begin},{"retained_dictionary_valid",true}});
         conversion(false); conversion(true);

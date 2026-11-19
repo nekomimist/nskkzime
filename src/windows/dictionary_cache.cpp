@@ -262,7 +262,7 @@ CachedDictionary load_cached_dictionary(const std::filesystem::path &source, con
             for (unsigned i = 0; i < 8; ++i)
                 image[72 + i] = static_cast<char>((static_cast<std::uint64_t>(packed.size()) >> (i * 8)) & 0xff);
             image += packed;
-            write_file_atomic(destination, image);
+            write_file_atomic(destination, image, true, compiled_dictionary_limit + envelope);
             prune(root, destination);
         }
         const auto dictionary = create_mapping(name, user, image, digest);

@@ -33,10 +33,8 @@ BrokerBootstrap decode(const BrokerSnapshot& snapshot) { return decode_broker_bo
 std::vector<Candidate> lookup(const BrokerBootstrap& snapshot) {
     if (snapshot.demo) return demo_dictionary()->lookup({U"かんじ", 0});
     std::vector<std::shared_ptr<const Dictionary>> sources;
-    for (const auto& image : snapshot.images) {
-        const auto owner = std::make_shared<const std::string>(image);
-        sources.push_back(std::make_shared<CompiledDictionary>(*owner, owner));
-    }
+    for (auto image : snapshot.images)
+        sources.push_back(std::make_shared<CompiledDictionary>(image, snapshot.frame));
     return DictionarySet(std::move(sources)).lookup({U"かんじ", 0});
 }
 }
@@ -69,7 +67,7 @@ int main() {
         check(!response.complete, "partial failure marked complete");
         check(wide_message(response.status).find(L"読み込み失敗") != std::wstring::npos, "lost failure diagnostic");
         for (std::size_t size = 0; size < partial.bytes.size(); size += 97)
-            rejects([&] { decode_broker_bootstrap(std::string_view(partial.bytes).substr(0, size)); });
+            rejects([&] { decode_broker_bootstrap(partial.bytes.substr(0, size)); });
         rejects([&] { decode_broker_bootstrap(partial.bytes + "x"); });
         rejects([&] { auto bytes = partial.bytes; bytes[0] = 'X'; decode_broker_bootstrap(bytes); });
 

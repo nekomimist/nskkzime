@@ -67,10 +67,8 @@ RuntimeDictionarySnapshot bootstrap() {
     config->complete = response.complete;
     config->input_profile = resolve_input_profile(config->configuration.settings, response.romaji);
     std::vector<std::shared_ptr<const Dictionary>> bases;
-    for (auto& image : response.images) {
-        const auto owner = std::make_shared<const std::string>(std::move(image));
-        bases.push_back(std::make_shared<CompiledDictionary>(*owner, owner));
-    }
+    for (auto image : response.images)
+        bases.push_back(std::make_shared<CompiledDictionary>(image, response.frame));
     std::shared_ptr<const Dictionary> base = config->configuration.demo ?
         demo_dictionary() : std::make_shared<DictionarySet>(std::move(bases));
     const bool learning = config->configuration.settings.learning && !config->configuration.demo &&

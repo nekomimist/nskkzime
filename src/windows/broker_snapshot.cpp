@@ -11,19 +11,19 @@ namespace nskkzime::windows {
 namespace {
 constexpr std::string_view bootstrap_magic = "NKB1";
 constexpr std::size_t text_limit = 1024 * 1024, image_count_limit = 32;
-}
-std::string encode_broker_bootstrap(const BrokerBootstrap& value) {
-    if (value.images.size() > image_count_limit) throw std::runtime_error("too many dictionaries for a snapshot");
+ByteWriter bootstrap_header(const BrokerBootstrap& value, std::size_t count) {
+    if (count > image_count_limit) throw std::runtime_error("too many dictionaries for a snapshot");
     ByteWriter w(bootstrap_magic);
     w.text(value.settings); w.text(value.file); w.number(value.demo); w.text(value.generation); w.text(value.romaji);
     w.text(value.status); w.number(value.learning); w.number(value.complete);
-    w.number(static_cast<std::uint32_t>(value.images.size()));
-    for (const auto& image : value.images) w.text(image);
-    if (w.bytes.size() > container_response_limit) throw std::runtime_error("snapshot too large");
-    return std::move(w.bytes);
+    w.number(static_cast<std::uint32_t>(count));
+    return w;
 }
-BrokerBootstrap decode_broker_bootstrap(std::string_view bytes) {
-    ByteReader r(bytes, bootstrap_magic); BrokerBootstrap value;
+}
+BrokerBootstrap decode_broker_bootstrap(std::string bytes) {
+    BrokerBootstrap value;
+    value.frame = std::make_shared<const std::string>(std::move(bytes));
+    ByteReader r(*value.frame, bootstrap_magic);
     value.settings = r.text(text_limit); value.file = r.text(text_limit); value.demo = r.flag();
     value.generation = r.text(64); value.romaji = r.text(text_limit); value.status = r.text(text_limit);
     value.learning = r.flag(); value.complete = r.flag();
@@ -53,12 +53,24 @@ BrokerSnapshot build_broker_snapshot(const SettingsConfiguration& config, std::s
     value.status = utf8_message(dictionaries.status + L"\r\n" + romaji.status);
     value.learning = config.settings.learning && !config.demo && !config.settings.dictionaries.empty() && !dictionaries.failed;
     value.complete = !dictionaries.failed && !romaji.failed;
+    auto output = bootstrap_header(value, dictionaries.sources.size());
+    std::vector<std::string> compiled_fallbacks;
+    compiled_fallbacks.reserve(dictionaries.sources.size());
+    std::size_t size = output.bytes.size();
     for (const auto& source : dictionaries.sources) {
-        if (const auto* compiled = dynamic_cast<const CompiledDictionary*>(source.get())) value.images.emplace_back(compiled->image());
-        else if (const auto* parsed = dynamic_cast<const SkkDictionary*>(source.get())) value.images.push_back(CompiledDictionary::compile(*parsed));
+        std::string_view image;
+        if (const auto* compiled = dynamic_cast<const CompiledDictionary*>(source.get())) image = compiled->image();
+        else if (const auto* parsed = dynamic_cast<const SkkDictionary*>(source.get()))
+            image = compiled_fallbacks.emplace_back(CompiledDictionary::compile(*parsed));
         else throw std::runtime_error("unsupported broker dictionary source");
+        if (size > container_response_limit - 4 || image.size() > container_response_limit - 4 - size)
+            throw std::runtime_error("snapshot too large");
+        size += 4 + image.size();
+        value.images.push_back(image);
     }
-    return {encode_broker_bootstrap(value), value.learning, static_cast<int>(dictionaries.sources.size()),
+    output.bytes.reserve(size);
+    for (auto image : value.images) output.text(image);
+    return {std::move(output.bytes), value.learning, static_cast<int>(dictionaries.sources.size()),
         static_cast<int>(config.demo ? 0 : config.settings.dictionaries.size() - dictionaries.sources.size()), romaji.failed};
 }
 } // namespace nskkzime::windows

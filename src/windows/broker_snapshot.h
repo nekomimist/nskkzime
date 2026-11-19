@@ -12,10 +12,10 @@ struct BrokerBootstrap {
     std::string romaji; // Validated rules; empty means the built-in rules.
     std::string status; // UTF-8 load report
     bool learning = false, complete = false;
-    std::vector<std::string> images; // Compiled dictionaries, in priority order.
+    std::shared_ptr<const std::string> frame; // Owns the decoded image views.
+    std::vector<std::string_view> images; // Compiled dictionaries, in priority order.
 };
-std::string encode_broker_bootstrap(const BrokerBootstrap&);
-BrokerBootstrap decode_broker_bootstrap(std::string_view);
+BrokerBootstrap decode_broker_bootstrap(std::string);
 struct BrokerSnapshot {
     std::string bytes;
     bool learning_allowed = false;
