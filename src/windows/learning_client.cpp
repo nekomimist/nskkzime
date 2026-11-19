@@ -21,7 +21,7 @@ HMODULE pin_module() {
 }
 struct LearningDictionary::State {
     std::shared_ptr<const Dictionary> base;
-    std::atomic<std::shared_ptr<const UserDictionary>> snapshot{std::make_shared<UserDictionary>()};
+    std::shared_ptr<const UserDictionary> snapshot{std::make_shared<UserDictionary>()};
     std::filesystem::path file;
     std::string container_generation;
     // Readers outside an AppContainer open the change events directly. An
@@ -34,13 +34,14 @@ struct LearningDictionary::State {
     NativeHandle interrupt{CreateEventW(nullptr, TRUE, FALSE, nullptr)}; // Ends a remote wait for a write or stop.
     std::mutex mutex;
     std::deque<LearningRequest> queue;
+    std::uint64_t capacity_rejections = 0;
     bool stop = false;
     std::wstring report = L"学習: 接続待ち";
     std::wstring skipped;
     // Call with mutex held. Replay only this small scope, never copy the whole
     // user dictionary on the key path. Pending forgets must not resurrect words.
     std::vector<Candidate> scope(const LookupKey& key, std::u32string_view okuri) const {
-        auto result = snapshot.load()->lookup_scope(key, okuri);
+        auto result = snapshot->lookup_scope(key, okuri);
         for (const auto& request : queue) {
             if (request.action == DictionaryAction::Rerank) continue;
             if (request.event.key != key || request.event.okuri != okuri) continue;
@@ -97,13 +98,17 @@ struct LearningDictionary::State {
                 NativeHandle changed(!remote_wait && revision != none ? listen(revision) : NativeHandle{});
                 const bool wait = remote_wait && !request && revision != none;
                 try {
-                    std::shared_ptr<UserDictionary> next;
+                    std::shared_ptr<const UserDictionary> next;
                     if (request && container_generation.empty()) {
                         // The saved result is the next snapshot; no second read.
                         auto saved = std::make_shared<UserDictionary>(commit_learning(file, *request));
                         if (saved->revision() != revision) next = std::move(saved);
                     } else {
-                        if (request && exchange(encode_learning(*request)) != "OKAY") throw std::runtime_error("dictionary update rejected");
+                        if (request) {
+                            const auto response = exchange(encode_learning(*request));
+                            if (response == "FULL") throw UserDictionaryFull();
+                            if (response != "OKAY") throw std::runtime_error("dictionary update rejected");
+                        }
                         next = refresh(revision, wait);
                     }
                     const bool published = next != nullptr;
@@ -112,12 +117,20 @@ struct LearningDictionary::State {
                     // even if the word was deleted before the next lookup.
                     {
                         const std::lock_guard lock(mutex);
-                        if (next) { revision = next->revision(); snapshot.store(std::move(next)); }
+                        if (next) { revision = next->revision(); snapshot.swap(next); }
                         if (request) queue.pop_front();
                     }
                     update_status(L"学習: 保存済み・同期済み（世代 " + std::to_wstring(revision) + L"）");
                     retry_delay = 250;
                     if (published && !remote_wait) continue; // Listen on the new revision's event.
+                } catch (const UserDictionaryFull&) {
+                    const std::lock_guard lock(mutex);
+                    if (request) {
+                        queue.pop_front();
+                        ++capacity_rejections;
+                    }
+                    retry_delay = 250;
+                    continue;
                 } catch (const StaleSettings&) {
                     // This generation can no longer save. The next activation
                     // bootstraps the new settings and replaces this worker.
@@ -184,7 +197,19 @@ std::vector<Candidate> LearningDictionary::lookup(const LookupKey& key, std::u32
         result = state_->scope(key, okuri);
         if (key.okuri && !okuri.empty()) append(state_->scope(key, {}));
     }
-    append(state_->base->lookup(key, okuri));
+    auto base = state_->base->lookup(key, okuri);
+    // The production DictionarySet already merges duplicate spellings across sources.
+    if (dynamic_cast<const DictionarySet*>(state_->base.get())) {
+        if (result.empty()) return base;
+        const auto learned = result.size();
+        result.reserve(learned + base.size());
+        for (auto& item : base)
+            if (std::none_of(result.begin(), result.begin() + static_cast<std::ptrdiff_t>(learned),
+                [&](const Candidate& candidate) { return candidate.text == item.text; }))
+                result.push_back(std::move(item));
+    } else {
+        append(base);
+    }
     return result;
 }
 std::optional<LearningEvent> LearningDictionary::forget_target(const LookupKey& key, std::u32string_view okuri, std::u32string_view text) const {
@@ -198,7 +223,7 @@ std::optional<LearningEvent> LearningDictionary::forget_target(const LookupKey& 
 }
 std::optional<RerankBoost> LearningDictionary::rerank_boost(const LookupKey& key) const {
     const std::lock_guard lock(state_->mutex);
-    auto boost = state_->snapshot.load()->rerank_boost(key);
+    auto boost = state_->snapshot->rerank_boost(key);
     for (const auto& request : state_->queue) {
         if (request.event.key != key) continue;
         if (request.action == DictionaryAction::Forget) {
@@ -251,7 +276,9 @@ void LearningDictionary::skipped(std::wstring reason) const noexcept {
 std::wstring LearningDictionary::status() const {
     const std::lock_guard lock(state_->mutex);
     return state_->report + L" / 未保存 " + std::to_wstring(state_->queue.size()) + L"件 / 受付不可 " +
-        std::to_wstring(state_->dropped.load()) + L"件\r\nユーザー辞書: " + state_->file.native() +
+        std::to_wstring(state_->dropped.load()) + L"件" +
+        (state_->capacity_rejections ? L" / 容量超過で未保存 " + std::to_wstring(state_->capacity_rejections) + L"件" : L"") +
+        L"\r\nユーザー辞書: " + state_->file.native() +
         (state_->skipped.empty() ? L"" : L"\r\n学習省略: " + state_->skipped);
 }
 } // namespace nskkzime::windows

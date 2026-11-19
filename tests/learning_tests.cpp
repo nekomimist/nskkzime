@@ -26,7 +26,7 @@ struct Files {
     Files() { std::filesystem::create_directory(root); }
     ~Files() {
         // Only these known test artifacts; no recursive deletion.
-        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock", L"held.nskkdb", L"held.nskkdb.lock", L"rerank.nskkdb", L"rerank.nskkdb.lock", L"blocker"}) {
+        for (const auto name : {L"user.nskkdb", L"user.nskkdb.lock", L"broken.nskkdb", L"broken.nskkdb.lock", L"forget.nskkdb", L"forget.nskkdb.lock", L"queued.nskkdb", L"queued.nskkdb.lock", L"full.nskkdb", L"full.nskkdb.lock", L"notify.nskkdb", L"notify.nskkdb.lock", L"numeric.nskkdb", L"numeric.nskkdb.lock", L"held.nskkdb", L"held.nskkdb.lock", L"rerank.nskkdb", L"rerank.nskkdb.lock", L"blocker"}) {
             std::error_code ignored; std::filesystem::remove(root / name, ignored);
         }
         std::error_code ignored; std::filesystem::remove(root, ignored);
@@ -311,6 +311,29 @@ int wmain(int argc, wchar_t** argv) {
             const auto saved = read_user_dictionary(isolated);
             check(saved.lookup_scope(common.key, U"く").empty() && saved.lookup_scope(common.key, {}).empty() && saved.lookup_scope(common.key, U"け").size() == 1,
                 "queued retry changed unrelated scope or resurrected deletion");
+        }},
+        {"client/full-dictionary-still-processes-deletion-and-next-learn", [&] {
+            const auto path = files.root / L"full.nskkdb";
+            auto entry = update().event;
+            ImportRequest seed{learning_client_id(), 1, {}};
+            for (unsigned i = 0; i < 50000; ++i) {
+                entry.key = {ascii(std::to_string(i))};
+                seed.entries.push_back(entry);
+            }
+            (void)commit_import(path, seed);
+            LearningDictionary client(demo_dictionary(), path);
+            auto rejected = entry;
+            rejected.key = {U"あふれる"};
+            auto accepted = entry;
+            accepted.key = {U"つぎ"};
+            client.learn(rejected);
+            check(client.forget(entry), "delete not queued");
+            client.learn(accepted);
+            until([&] { return !client.registration_pending(accepted); });
+            auto saved = read_user_dictionary(path);
+            check(saved.lookup(entry.key).empty() && saved.lookup(rejected.key).empty() &&
+                saved.lookup(accepted.key).size() == 1 && client.status().find(L"容量超過で未保存 1件") != std::wstring::npos,
+                "capacity failure blocked or reordered later events");
         }},
         {"store/corrupt-or-newer-file-is-not-overwritten", [&] {
             const auto broken = files.root / L"broken.nskkdb";

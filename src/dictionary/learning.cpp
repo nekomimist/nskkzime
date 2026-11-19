@@ -32,7 +32,7 @@ void client_check(std::string_view client) {
 struct Writer {
     std::string bytes;
     void number(std::uint64_t value) { for (int i = 0; i < 8; ++i) { bytes += static_cast<char>(value & 255); value >>= 8; } }
-    void string(std::string_view value) { number(value.size()); bytes += value; check(bytes.size() <= learning_max_bytes); }
+    void string(std::string_view value) { number(value.size()); bytes += value; if (bytes.size() > learning_max_bytes) throw UserDictionaryFull(); }
     void text(std::u32string_view value) { string(utf8(value)); }
     void event(const LearningEvent& e) {
         text(e.key.reading); number(static_cast<unsigned char>(e.key.okuri)); text(e.okuri);
@@ -129,9 +129,9 @@ bool UserDictionary::apply(const LearningRequest& request) {
     const auto previous = find_client(clients_, request.client);
     if (previous != clients_.end() && previous->second >= request.sequence) return false;
     Key key{request.event.key, request.event.okuri};
-    check(request.action != DictionaryAction::Learn || entries_.contains(key) || entries_.size() < max_entries);
+    if (request.action == DictionaryAction::Learn && !entries_.contains(key) && entries_.size() >= max_entries) throw UserDictionaryFull();
     const bool set_boost = request.event.rerank_gap && *request.event.rerank_gap != 0;
-    check(!set_boost || boosts_.contains(request.event.key) || boosts_.size() < max_entries);
+    if (set_boost && !boosts_.contains(request.event.key) && boosts_.size() >= max_entries) throw UserDictionaryFull();
     check(revision_ != std::numeric_limits<std::uint64_t>::max());
     // Every failure is checked above. The byte limit is enforced when the
     // caller serializes this working copy, before anything is written.
@@ -199,7 +199,9 @@ std::string UserDictionary::serialize() const {
             w.number(std::bit_cast<std::uint64_t>(boost.gap));
         }
     }
-    w.number(checksum(w.bytes)); check(w.bytes.size() <= learning_max_bytes); return w.bytes;
+    w.number(checksum(w.bytes));
+    if (w.bytes.size() > learning_max_bytes) throw UserDictionaryFull();
+    return w.bytes;
 }
 UserDictionary UserDictionary::parse(std::string_view bytes) {
     check(bytes.size() >= 37 && bytes.size() <= learning_max_bytes && (bytes.starts_with("NKUD1") || bytes.starts_with("NKUD2") || bytes.starts_with("NKUD3")));

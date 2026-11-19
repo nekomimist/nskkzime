@@ -1,10 +1,15 @@
 #pragma once
 #include "engine.h"
 #include <string_view>
+#include <stdexcept>
 
 namespace nskkzime {
 inline constexpr std::size_t learning_max_bytes = 16 * 1024 * 1024;
 inline constexpr std::size_t import_max_candidates = 50000;
+class UserDictionaryFull : public std::length_error {
+public:
+    UserDictionaryFull() : std::length_error("user dictionary capacity exceeded") {}
+};
 enum class DictionaryAction { Learn, Forget, Rerank };
 // Binary envelope with length-prefixed UTF-8 strings; shared by disk and IPC.
 struct LearningRequest {
