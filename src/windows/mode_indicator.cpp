@@ -9,9 +9,15 @@ using Microsoft::WRL::ComPtr;
 namespace {
 constexpr UINT_PTR expiry_timer = 1;
 constexpr UINT_PTR position_retry_timer = 2;
+constexpr UINT_PTR fade_start_timer = 3;
+constexpr UINT_PTR fade_step_timer = 4;
 constexpr unsigned int position_retry_delays[] = {25, 50, 100, 200};
-constexpr DWORD window_style = WS_POPUP | WS_BORDER;
-constexpr DWORD window_ex_style = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+constexpr unsigned int fade_duration_ms = 200;
+constexpr unsigned int fade_min_duration_ms = 400;
+constexpr unsigned int fade_step_ms = 20;
+constexpr BYTE base_alpha = 242;
+constexpr DWORD window_style = WS_POPUP;
+constexpr DWORD window_ex_style = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED;
 }
 
 ModeIndicator::ModeIndicator(Mode mode, const UiSettings& settings)
@@ -56,6 +62,28 @@ HRESULT ModeIndicator::IsShown(BOOL* out) {
     *out = window_ && IsWindowVisible(window_); return S_OK;
 }
 
+void ModeIndicator::refresh_theme() noexcept {
+    theme_ = current_ui_theme();
+    if (!window_) return;
+    UiTheme frame_theme = theme_;
+    frame_theme.border = mode_palette(theme_, mode_).border;
+    dwm_framed_ = apply_popup_frame(window_, frame_theme, PopupCorner::RoundSmall);
+}
+
+void ModeIndicator::update_fade() noexcept {
+    if (closed_ || !window_) return;
+    const auto now = GetTickCount64();
+    if (now >= deadline_) {
+        close();
+        return;
+    }
+    const auto remaining = deadline_ - now;
+    const auto alpha = remaining >= fade_duration_ms
+        ? base_alpha
+        : static_cast<BYTE>((static_cast<ULONGLONG>(base_alpha) * remaining) / fade_duration_ms);
+    SetLayeredWindowAttributes(window_, 0, alpha, LWA_ALPHA);
+}
+
 void ModeIndicator::start(ITfThreadMgr* thread, ITfContext* context, TfClientId client, ITfContext* origin) noexcept {
     const ComPtr<ModeIndicator> self(this);
     if (started_ || closed_) return;
@@ -82,7 +110,7 @@ void ModeIndicator::start(ITfThreadMgr* thread, ITfContext* context, TfClientId 
         class_name_ = name;
         WNDCLASSW cls{};
         cls.style = CS_IME; cls.lpfnWndProc = window_proc; cls.hInstance = module_instance;
-        cls.lpszClassName = class_name_.c_str(); cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+        cls.lpszClassName = class_name_.c_str();
         if (!RegisterClassW(&cls)) { class_name_.clear(); close(); return; }
         const auto window = CreateWindowExW(window_ex_style, class_name_.c_str(), L"nskkzime 入力モード", window_style,
             0, 0, 0, 0, owner, nullptr, module_instance, this);
@@ -91,6 +119,11 @@ void ModeIndicator::start(ITfThreadMgr* thread, ITfContext* context, TfClientId 
         // A hidden window bounds the notification lifetime even if the host
         // never services our asynchronous position request.
         if (!window_ || closed_ || !SetTimer(window_, expiry_timer, duration_ms_, nullptr)) { close(); return; }
+        SetLayeredWindowAttributes(window_, 0, base_alpha, LWA_ALPHA);
+        refresh_theme();
+        if (duration_ms_ >= fade_min_duration_ms) {
+            SetTimer(window_, fade_start_timer, duration_ms_ - fade_duration_ms, nullptr);
+        }
 
         ComPtr<ITfSource> source;
         if (FAILED(context->QueryInterface(IID_PPV_ARGS(&source))) || !source || closed_) { close(); return; }
@@ -231,17 +264,17 @@ void ModeIndicator::render() noexcept {
         if (!font_ || dpi_ != dpi) {
             dpi_ = dpi ? dpi : 96;
             if (font_) DeleteObject(font_);
-            font_ = CreateFontW(-MulDiv(18, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            font_ = CreateFontW(-MulDiv(16, dpi_, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, font_face_.c_str());
         }
-        const auto side = MulDiv(32, dpi_, 96);
+        const auto side = MulDiv(30, dpi_, 96);
         RECT outer{0, 0, side, side};
         if (!AdjustWindowRectExForDpi(&outer, window_style, FALSE, window_ex_style, dpi_)) { close(); return; }
         MONITORINFO monitor{sizeof(MONITORINFO)};
         if (!GetMonitorInfoW(MonitorFromRect(&anchor_, MONITOR_DEFAULTTONEAREST), &monitor)) { close(); return; }
         const auto width = std::min(outer.right - outer.left, monitor.rcWork.right - monitor.rcWork.left);
         const auto height = std::min(outer.bottom - outer.top, monitor.rcWork.bottom - monitor.rcWork.top);
-        const auto gap = MulDiv(2, dpi_, 96);
+        const auto gap = MulDiv(4, dpi_, 96);
         const auto x = std::clamp(anchor_.left, monitor.rcWork.left, monitor.rcWork.right - width);
         auto y = anchor_.bottom + gap;
         if (y + height > monitor.rcWork.bottom) y = anchor_.top - height - gap;
@@ -250,6 +283,36 @@ void ModeIndicator::render() noexcept {
         if (!closed_ && window_) InvalidateRect(window_, nullptr, FALSE);
     } catch (...) { close(); }
 }
+
+void ModeIndicator::paint(HDC target_dc) const noexcept {
+    RECT rect{};
+    if (!GetClientRect(window_, &rect)) return;
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    if (width <= 0 || height <= 0) return;
+
+    const auto palette = mode_palette(theme_, mode_);
+    SurfaceCanvas canvas(target_dc, width, height);
+    const HDC dc = canvas.valid() ? canvas.dc() : target_dc;
+    if (canvas.valid()) {
+        canvas.clear(palette.background);
+        if (!dwm_framed_ || theme_.high_contrast) {
+            const float thickness = std::max(1.0f, static_cast<float>(MulDiv(1, dpi_ ? dpi_ : 96, 96)));
+            canvas.stroke_rounded_rect(rect, 0.0f, thickness, palette.border);
+        }
+    } else {
+        const HBRUSH brush = CreateSolidBrush(palette.background);
+        if (brush) { FillRect(dc, &rect, brush); DeleteObject(brush); }
+    }
+
+    const auto previous = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
+    SetTextColor(dc, palette.text);
+    SetBkMode(dc, TRANSPARENT);
+    DrawTextW(dc, mode_label(mode_), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, previous);
+    if (canvas.valid()) canvas.present();
+}
+
 void ModeIndicator::close() noexcept {
     if (closed_) {
         // An owner-driven DestroyWindow may still have been dispatching its
@@ -265,7 +328,13 @@ void ModeIndicator::close() noexcept {
     layout_cookie_ = edit_cookie_ = TF_INVALID_COOKIE;
     thread_.Reset(); focus_document_.Reset(); focus_context_.Reset();
     cancel_retry();
-    if (window_) { KillTimer(window_, expiry_timer); DestroyWindow(window_); window_ = nullptr; }
+    if (window_) {
+        KillTimer(window_, expiry_timer);
+        KillTimer(window_, fade_start_timer);
+        KillTimer(window_, fade_step_timer);
+        DestroyWindow(window_);
+        window_ = nullptr;
+    }
     if (!class_name_.empty() && UnregisterClassW(class_name_.c_str(), module_instance)) class_name_.clear();
     if (font_) { DeleteObject(font_); font_ = nullptr; }
     ComPtr<ITfSource> source;
@@ -284,6 +353,7 @@ LRESULT CALLBACK ModeIndicator::window_proc(HWND window, UINT message, WPARAM wp
     const ComPtr<ModeIndicator> keep(self);
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     if (message == WM_NCHITTEST) return HTTRANSPARENT;
+    if (message == WM_ERASEBKGND) return 1;
     if (message == WM_TIMER && wparam == expiry_timer && self) {
         if (GetTickCount64() >= self->deadline_) self->close();
         return 0;
@@ -293,18 +363,28 @@ LRESULT CALLBACK ModeIndicator::window_proc(HWND window, UINT message, WPARAM wp
         if (!self->closed_ && GetTickCount64() < self->retry_deadline_) self->request_position();
         return 0;
     }
+    if (message == WM_TIMER && wparam == fade_start_timer && self) {
+        KillTimer(window, fade_start_timer);
+        if (!self->closed_) {
+            SetTimer(window, fade_step_timer, fade_step_ms, nullptr);
+            self->update_fade();
+        }
+        return 0;
+    }
+    if (message == WM_TIMER && wparam == fade_step_timer && self) {
+        self->update_fade();
+        return 0;
+    }
+    if (message == WM_SETTINGCHANGE && self) {
+        self->refresh_theme();
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
     if (message == WM_DPICHANGED && self) { self->render(); return 0; }
     if (message == WM_PAINT && self) {
         PAINTSTRUCT paint{};
         const auto dc = BeginPaint(window, &paint);
-        if (dc) {
-            RECT rect{}; GetClientRect(window, &rect);
-            FillRect(dc, &rect, GetSysColorBrush(COLOR_WINDOW));
-            const auto previous = SelectObject(dc, self->font_ ? self->font_ : GetStockObject(DEFAULT_GUI_FONT));
-            SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT)); SetBkMode(dc, TRANSPARENT);
-            DrawTextW(dc, mode_label(self->mode_), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            SelectObject(dc, previous);
-        }
+        if (dc) self->paint(dc);
         EndPaint(window, &paint); return 0;
     }
     if (message == WM_WINDOWPOSCHANGED && self) {

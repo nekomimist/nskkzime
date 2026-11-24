@@ -190,6 +190,20 @@ int wmain(int argc, wchar_t** argv) {
             until([&] { return read_user_dictionary(file).revision() == 1; });
             check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"感じ", "wrong click learned");
         }
+        {
+            // Wheel scrolling moves within bounds without triggering registration or canceling conversion.
+            // The previous test learned "感じ" as the top candidate for "かんじ".
+            Session s; s.convert();
+            auto list = s.snapshot();
+            list->request_step(-1); s.context->pump();
+            check(s.context->doc->text == L"感じ" && s.host->ui, "wheel up at first candidate left selection");
+            list->request_step(1); s.context->pump();
+            check(s.context->doc->text == L"漢字" && s.host->ui, "wheel down did not advance candidate");
+            s.snapshot()->request_step(1); s.context->pump();
+            check(s.context->doc->text == L"漢字" && s.host->ui, "wheel down at last candidate entered registration");
+            s.snapshot()->request_step(-1); s.context->pump();
+            check(s.context->doc->text == L"感じ" && s.host->ui, "wheel up did not return to previous candidate");
+        }
         candidate_settings_tests(root);
         check(module_objects == 0, "click sessions or UI retained the service");
         std::cout << "PASS deferred clicks, stale requests, retries, private scopes, registration draft, persistence and lifetime\n";

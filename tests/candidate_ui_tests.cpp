@@ -159,9 +159,110 @@ void presenter_positions() {
     check(!host->ui, "UI kind switch restored a popup after reentrant close");
     host->ui_end_query = {};
 }
+void ui_theme_and_icon_tests() {
+    const auto light = make_ui_theme(false, false, RGB(0, 103, 192));
+    const auto dark = make_ui_theme(true, false, RGB(96, 205, 255));
+    const auto hc = make_ui_theme(false, true, RGB(0, 103, 192));
+    check(!light.dark && dark.dark && hc.high_contrast, "theme flags incorrect");
+    check(light.surface != dark.surface && light.text != dark.text, "light and dark surfaces did not differ");
+    check(hc.surface == GetSysColor(COLOR_WINDOW) && hc.selection_bg == GetSysColor(COLOR_HIGHLIGHT),
+        "high contrast did not fall back to system colors");
+
+    const auto p_hira = mode_palette(light, Mode::Hiragana);
+    const auto p_kata = mode_palette(light, Mode::Katakana);
+    const auto p_wide = mode_palette(light, Mode::FullWidthLatin);
+    const auto p_latin = mode_palette(light, Mode::Latin);
+    check(p_hira.background != p_kata.background && p_hira.background != p_wide.background &&
+          p_hira.background != p_latin.background && p_kata.background != p_wide.background,
+          "mode badges did not distinguish input modes");
+
+    const HICON icon = create_mode_tray_icon(L"あ", default_ui_font, 24, 24, RGB(255, 255, 255));
+    check(icon != nullptr, "anti-aliased tray icon creation failed");
+    ICONINFO info{};
+    check(GetIconInfo(icon, &info) != FALSE && info.hbmColor != nullptr && info.hbmMask != nullptr,
+        "tray icon missing 32bpp color bitmap");
+    BITMAP bm{};
+    check(GetObjectW(info.hbmColor, sizeof(bm), &bm) == sizeof(bm) && bm.bmWidth == 24 && bm.bmHeight == 24 && bm.bmBitsPixel == 32,
+        "tray icon color bitmap dimensions or depth incorrect");
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(bm.bmWidth) * static_cast<std::size_t>(bm.bmHeight));
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = bm.bmWidth;
+    bi.bmiHeader.biHeight = -bm.bmHeight;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    const HDC screen = GetDC(nullptr);
+    const int copied = GetDIBits(screen, info.hbmColor, 0, static_cast<UINT>(bm.bmHeight), pixels.data(), &bi, DIB_RGB_COLORS);
+    if (screen) ReleaseDC(nullptr, screen);
+    check(copied == bm.bmHeight, "failed to inspect tray icon pixels");
+    const bool has_crisp_stroke = std::any_of(pixels.begin(), pixels.end(), [](std::uint32_t p) { return (p >> 24) >= 220; });
+    const bool has_transparent = std::any_of(pixels.begin(), pixels.end(), [](std::uint32_t p) { return (p >> 24) == 0; });
+    check(has_crisp_stroke && has_transparent, "tray icon lacked crisp opaque strokes or transparent background");
+    DeleteObject(info.hbmColor);
+    DeleteObject(info.hbmMask);
+    DestroyIcon(icon);
+}
+void paint_and_wheel_tests() {
+    auto dictionary = std::make_shared<MemoryDictionary>();
+    dictionary->add({U"かんじ"}, {{"1", U"漢字", U"文字"}, {"2", U"感じ", U"感覚"}});
+    Engine engine(dictionary);
+    type(engine, "Kanji");
+    engine.handle({KeyCode::Space});
+    engine.append_generated({{"ai-1", U"幹事", U"AI候補", CandidateSource::GeneratedFallback, LearningPolicy::DoNotLearn}});
+
+    auto actions = std::make_shared<CandidateActions>();
+    int stepped = 0; std::uint64_t step_rev = 0;
+    actions->step = [&](int delta, std::uint64_t rev) { stepped += delta; step_rev = rev; };
+
+    ComPtr<CandidateList> popup;
+    popup.Attach(new CandidateList(PopupKind::Candidates, actions, CandidateKeys::Numbers, default_ui_font, true));
+    popup->update(engine, nullptr);
+    RECT anchor{120, 120, 140, 140};
+    popup->locate(nullptr, &anchor);
+    popup->Show(TRUE);
+    drain_events();
+    popup->request_step(1);
+    check(stepped == 1 && step_rev == engine.revision(), "wheel step callback lost delta or revision");
+    popup->close();
+    popup->request_step(1);
+    check(stepped == 1, "closed popup dispatched wheel step");
+
+    // Exercise painting for registration (with mode badge & nested candidates), forget prompt, and notice.
+    Engine reg_engine(dictionary);
+    type(reg_engine, "Michi"); reg_engine.handle({KeyCode::Space});
+    type(reg_engine, "Kanji"); reg_engine.handle({KeyCode::Space});
+    ComPtr<CandidateList> editor;
+    editor.Attach(new CandidateList(PopupKind::Editor, {}, CandidateKeys::Asdfjkl, default_ui_font, true));
+    editor->update(reg_engine, nullptr);
+    editor->locate(nullptr, &anchor);
+    editor->Show(TRUE);
+    drain_events();
+    editor->close();
+
+    Engine forget_engine(dictionary);
+    type(forget_engine, "Kanji"); forget_engine.handle({KeyCode::Space}); type(forget_engine, "X");
+    ComPtr<CandidateList> forget_ui;
+    forget_ui.Attach(new CandidateList(PopupKind::Editor));
+    forget_ui->update(forget_engine, nullptr);
+    forget_ui->locate(nullptr, &anchor);
+    forget_ui->Show(TRUE);
+    drain_events();
+    forget_ui->close();
+
+    ComPtr<CandidateList> notice_ui;
+    notice_ui.Attach(new CandidateList(PopupKind::Notice));
+    notice_ui->notice(L"保護された入力欄のため、単語登録を行いません。", nullptr);
+    notice_ui->locate(nullptr, &anchor);
+    notice_ui->Show(TRUE);
+    drain_events();
+    notice_ui->close();
+}
 }
 int main() {
     try {
+        ui_theme_and_icon_tests();
+        paint_and_wheel_tests();
         popup_events();
         presenter_fonts();
         presenter_positions();

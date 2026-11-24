@@ -7,8 +7,8 @@
   add_library(nskkzime_inference STATIC src/windows/inference_ipc.cpp src/windows/inference_client.cpp src/windows/input_log.cpp)
   target_link_libraries(nskkzime_inference PUBLIC nskkzime_runtime nskkzime_protocol user32)
   add_library(nskkzime_tsf_support STATIC src/windows/tsf_edit.cpp src/windows/composition_session.cpp src/windows/inference_session.cpp src/windows/mode_indicator.cpp
-    src/windows/composition_underline.cpp)
-  target_link_libraries(nskkzime_tsf_support PUBLIC nskkzime_inference gdi32)
+    src/windows/composition_underline.cpp src/windows/ui_theme.cpp)
+  target_link_libraries(nskkzime_tsf_support PUBLIC nskkzime_inference gdi32 advapi32)
   # The DLL and adapter tests share one compiled implementation.
   add_library(nskkzime_tsf_adapter STATIC src/windows/text_service.cpp src/windows/display_attributes.cpp
     src/windows/candidate_ui.cpp src/windows/input_mode.cpp src/windows/context_text.cpp src/windows/mode_notice.cpp)

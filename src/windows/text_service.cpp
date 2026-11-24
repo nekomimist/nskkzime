@@ -175,6 +175,7 @@ public:
             candidate_actions_->interact = [this](std::uint64_t revision) {
                 if (engine_.revision() == revision && inference_state_.pending) cancel_inference();
             };
+            candidate_actions_->step = [this](int delta, std::uint64_t revision) { step_candidate(delta, revision); };
         } catch (...) { candidate_actions_.reset(); return E_OUTOFMEMORY; }
         manager_ = manager; client_ = client; key_foreground_ = true;
         auto hr = manager_.As(&keys_);
@@ -902,6 +903,37 @@ private:
         publish_key_mode(target, mode_changed, accepted.revision, indicator_request);
         if (input_unchanged(accepted) && checkpoint.same_composition(accepted)) submit_key_inference(inference);
         return status;
+    }
+    void step_candidate(int delta, std::uint64_t revision) noexcept {
+        if (!delta || selection_pending_ || !manager_ || !composition_state_.composition || !composition_state_.context ||
+            engine_.revision() != revision || engine_.forgetting() || engine_.input_stage() != Stage::Selecting) return;
+        const auto count = engine_.candidates().size();
+        const auto index = engine_.candidate_index();
+        if (delta > 0 && index + 1 >= count) return;
+        if (delta < 0 && index == 0) return;
+        cancel_inference();
+        const auto request = ++selection_request_;
+        selection_pending_ = true;
+        try {
+            const ComPtr<TextService> self(this);
+            const auto checkpoint = input_checkpoint();
+            const Key key = delta > 0 ? Key{KeyCode::Space} : Key{KeyCode::Character, 'x'};
+            const auto status = request_edit(checkpoint.context.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
+                [self, checkpoint, key, request](TfEditCookie cookie) {
+                    update_tsf_trace(self->diagnostic_state(checkpoint.context.Get()));
+                    if (self->selection_request_ != request) return S_OK;
+                    self->selection_pending_ = false;
+                    if (!self->input_unchanged(checkpoint) || self->engine_.input_stage() != Stage::Selecting ||
+                        !editable(checkpoint.context.Get())) return S_OK;
+                    if (!self->input_unchanged(checkpoint)) return S_OK;
+                    const bool valid = self->composition_state_.valid(cookie, checkpoint);
+                    if (!self->input_unchanged(checkpoint)) return S_OK;
+                    if (!valid) { self->end_composition(cookie, TsfReason::InvalidCandidateSelection); return S_OK; }
+                    bool applied = false;
+                    return self->apply_key(checkpoint.context.Get(), cookie, key, applied);
+                });
+            if (FAILED(status) && selection_request_ == request) selection_pending_ = false;
+        } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::CandidateSelect, diagnostic_state());
