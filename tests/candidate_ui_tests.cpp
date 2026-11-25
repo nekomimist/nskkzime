@@ -204,16 +204,37 @@ void ui_theme_and_icon_tests() {
     DestroyIcon(icon);
 }
 void paint_and_wheel_tests() {
+    {
+        CandidateWheel wheel;
+        check(wheel.accumulate(-30) == 0 && wheel.accumulate(-30) == 0 && wheel.accumulate(-30) == 0,
+            "sub-notch wheel deltas stepped early");
+        check(wheel.accumulate(-30) == 1, "four -30 wheel deltas did not equal one step down");
+        check(wheel.accumulate(-240) == 2, "-240 wheel delta did not step two rows down");
+        check(wheel.accumulate(120) == -1, "+120 wheel delta did not step one row up");
+        check(wheel.accumulate(-150) == 1 && wheel.accumulate(-90) == 1, "wheel remainder was not carried across notches");
+        check(wheel.accumulate(-30) == 0 && wheel.accumulate(30) == 0 && wheel.remainder == 0,
+            "opposite wheel deltas did not cancel remainder");
+        wheel.accumulate(-60); wheel.reset(); check(wheel.remainder == 0, "wheel reset kept remainder");
+    }
+
     auto dictionary = std::make_shared<MemoryDictionary>();
-    dictionary->add({U"かんじ"}, {{"1", U"漢字", U"文字"}, {"2", U"感じ", U"感覚"}});
+    std::vector<Candidate> many;
+    for (int i = 0; i < 8; ++i) many.push_back({std::to_string(i), U"候補" + ascii(std::to_string(i)), U"注釈"});
+    dictionary->add({U"かんじ"}, many);
     Engine engine(dictionary);
     type(engine, "Kanji");
     engine.handle({KeyCode::Space});
     engine.append_generated({{"ai-1", U"幹事", U"AI候補", CandidateSource::GeneratedFallback, LearningPolicy::DoNotLearn}});
+    // Return to page 0 (7 full rows: indices 0..6) so shrinking to 220px makes
+    // the footer overlap row 5's raw vertical slot.
+    engine.handle({KeyCode::PageUp});
 
     auto actions = std::make_shared<CandidateActions>();
-    int stepped = 0; std::uint64_t step_rev = 0;
-    actions->step = [&](int delta, std::uint64_t rev) { stepped += delta; step_rev = rev; };
+    int stepped = 0, step_calls = 0, last_step = 0, select_calls = 0;
+    std::size_t last_selected = 99;
+    std::uint64_t step_rev = 0;
+    actions->step = [&](int delta, std::uint64_t rev) { ++step_calls; last_step = delta; stepped += delta; step_rev = rev; };
+    actions->select = [&](std::size_t index, std::uint64_t) { ++select_calls; last_selected = index; };
 
     ComPtr<CandidateList> popup;
     popup.Attach(new CandidateList(PopupKind::Candidates, actions, CandidateKeys::Numbers, default_ui_font, true));
@@ -222,11 +243,36 @@ void paint_and_wheel_tests() {
     popup->locate(nullptr, &anchor);
     popup->Show(TRUE);
     drain_events();
-    popup->request_step(1);
-    check(stepped == 1 && step_rev == engine.revision(), "wheel step callback lost delta or revision");
+    const auto popup_window = [&] {
+        wchar_t name[96]{}; swprintf_s(name, L"nskkzime.Candidates.%p", static_cast<void*>(popup.Get()));
+        return FindWindowW(name, nullptr);
+    }();
+    check(popup_window != nullptr, "candidate popup window missing for wheel/footer test");
+
+    // Accumulate sub-notch WM_MOUSEWHEEL messages and pass multi-notch counts.
+    for (int i = 0; i < 3; ++i) SendMessageW(popup_window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<short>(-30)), 0);
+    check(step_calls == 0, "WM_MOUSEWHEEL stepped before reaching WHEEL_DELTA");
+    SendMessageW(popup_window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<short>(-30)), 0);
+    check(step_calls == 1 && last_step == 1 && step_rev == engine.revision(), "four -30 WM_MOUSEWHEEL messages did not step once");
+    SendMessageW(popup_window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<short>(-240)), 0);
+    check(step_calls == 2 && last_step == 2, "-240 WM_MOUSEWHEEL message did not pass 2 steps");
+
+    // Shrink popup to 220px (simulating work-area clamping) and click 12px above the bottom (inside footer).
+    check(SetWindowPos(popup_window, nullptr, 0, 0, 320, 220, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE,
+        "failed to shrink popup for footer click test");
+    RECT client{}; check(GetClientRect(popup_window, &client) != FALSE && client.bottom == 220, "unexpected shrunk popup height");
+    const LPARAM footer_point = MAKELPARAM(40, client.bottom - 12);
+    SendMessageW(popup_window, WM_LBUTTONDOWN, MK_LBUTTON, footer_point);
+    SendMessageW(popup_window, WM_LBUTTONUP, 0, footer_point);
+    check(select_calls == 0, "clicking the footer of a clamped candidate list confirmed a candidate");
+    const LPARAM first_row_point = MAKELPARAM(40, 16);
+    SendMessageW(popup_window, WM_LBUTTONDOWN, MK_LBUTTON, first_row_point);
+    SendMessageW(popup_window, WM_LBUTTONUP, 0, first_row_point);
+    check(select_calls == 1 && last_selected == 0, "clicking the first candidate row failed");
+
     popup->close();
     popup->request_step(1);
-    check(stepped == 1, "closed popup dispatched wheel step");
+    check(stepped == 3, "closed popup dispatched wheel step");
 
     // Exercise painting for registration (with mode badge & nested candidates), forget prompt, and notice.
     Engine reg_engine(dictionary);

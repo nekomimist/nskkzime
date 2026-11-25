@@ -6,6 +6,7 @@
 #include "ui_theme.h"
 #include "nskkzime/engine.h"
 #include <wrl/client.h>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -29,6 +30,17 @@ struct CandidatePointer {
         return before && before == row ? row : std::nullopt;
     }
     void cancel() { pressed.reset(); }
+};
+struct CandidateWheel {
+    int remainder = 0;
+    int accumulate(int delta) noexcept {
+        if (!delta) return 0;
+        const long long total = static_cast<long long>(remainder) + delta;
+        const auto notches = static_cast<int>(total / WHEEL_DELTA);
+        remainder = static_cast<int>(total % WHEEL_DELTA);
+        return -notches;
+    }
+    void reset() noexcept { remainder = 0; }
 };
 std::optional<std::size_t> candidate_row_at_top(POINT, SIZE client, int top, int line_height,
     std::size_t first, std::size_t end) noexcept;
@@ -107,6 +119,8 @@ private:
         int footer_height = 28;
         int keycap_size = 22;
         int badge_height = 18;
+        int footer_top(int client_height) const noexcept { return (std::max)(0, client_height - footer_height); }
+        int rows_bottom(int client_height) const noexcept { return (std::max)(rows_top, footer_top(client_height)); }
     };
     int scale(int px) const noexcept { return MulDiv(px, static_cast<int>(dpi_ ? dpi_ : 96), 96); }
     Layout layout() const noexcept;
@@ -120,7 +134,7 @@ private:
     SIZE measure();
     void render() noexcept;
     void paint(HDC) const;
-    void paint_candidates(SurfaceCanvas&, const Layout&, int width, int top) const;
+    void paint_candidates(SurfaceCanvas&, const Layout&, int width, int top, int bottom) const;
     void paint_registration_header(SurfaceCanvas&, const Layout&, int width) const;
     void paint_forget_body(SurfaceCanvas&, const Layout&, int width) const;
     void paint_notice(SurfaceCanvas&, const Layout&, int width, int height) const;
@@ -167,6 +181,7 @@ private:
     std::weak_ptr<CandidateActions> actions_;
     std::uint64_t revision_ = 0;
     CandidatePointer pointer_;
+    CandidateWheel wheel_;
     InputTimingToken paint_timing_;
 };
 

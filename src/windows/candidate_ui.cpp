@@ -98,7 +98,7 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
 }
 HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Notice ? notice_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
 HRESULT CandidateList::Show(BOOL show) {
-    if (!show) { cancel_pointer(); hovered_.reset(); discard_candidate_timing(paint_timing_); }
+    if (!show) { cancel_pointer(); hovered_.reset(); wheel_.reset(); discard_candidate_timing(paint_timing_); }
     requested_visible_ = show != FALSE;
     render();
     return S_OK;
@@ -125,7 +125,7 @@ HRESULT CandidateList::SetPageIndex(UINT* indices, UINT count) {
     if (!indices) return E_POINTER;
     if (!count || count > rows_.size() || indices[0] != 0) return E_INVALIDARG;
     for (UINT i = 0; i < count; ++i) if (indices[i] >= rows_.size() || (i && indices[i] <= indices[i - 1])) return E_INVALIDARG;
-    try { cancel_pointer(); hovered_.reset(); pages_.assign(indices, indices + count); redraw_ = true; previous_selection_.reset(); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
+    try { cancel_pointer(); hovered_.reset(); wheel_.reset(); pages_.assign(indices, indices + count); redraw_ = true; previous_selection_.reset(); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
     catch (...) { return E_OUTOFMEMORY; }
 }
 UINT CandidateList::current_page() const {
@@ -194,7 +194,7 @@ std::optional<std::size_t> CandidateList::hit_test(POINT point) const noexcept {
     if (kind_ == PopupKind::Notice || forgetting_) return {};
     const auto [first, end] = visible_rows();
     const auto m = layout();
-    return candidate_row_at_top(point, {area.right, area.bottom}, m.rows_top, m.row_height, first, end);
+    return candidate_row_at_top(point, {area.right, m.rows_bottom(area.bottom)}, m.rows_top, m.row_height, first, end);
 }
 void CandidateList::cancel_pointer() noexcept {
     pointer_.cancel();
@@ -305,6 +305,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
             std::vector<UINT> pages;
             for (std::size_t index = 0; index < rows.size(); index += page_size) pages.push_back(static_cast<UINT>(index));
             rows_ = std::move(rows); pages_ = std::move(pages);
+            wheel_.reset();
             updated_ |= all_updates;
         }
         source_rows_ = source;
@@ -323,7 +324,7 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
 }
 void CandidateList::notice(std::wstring_view reason, ITfDocumentMgr* document) {
     if (closed_ || kind_ != PopupKind::Notice) return;
-    redraw_ = true; previous_selection_.reset(); hovered_.reset();
+    redraw_ = true; previous_selection_.reset(); hovered_.reset(); wheel_.reset();
     forgetting_ = false; has_forget_target_ = false;
     heading_ = L"単語登録"; draft_ = reason;
     hint_ = L"別の入力欄で登録してください。入力を続けると閉じます。";
@@ -344,7 +345,7 @@ void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
 void CandidateList::close() noexcept {
     discard_candidate_timing(paint_timing_);
     closed_ = true; located_ = false; requested_visible_ = false;
-    hovered_.reset(); tracking_mouse_ = false;
+    hovered_.reset(); tracking_mouse_ = false; wheel_.reset();
     actions_.reset(); cancel_pointer();
     if (window_) { DestroyWindow(window_); window_ = nullptr; }
     if (!class_name_.empty()) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); }
@@ -436,6 +437,7 @@ void CandidateList::render() noexcept {
         trace(L"hidden", closed_, located_, requested_visible_);
         cancel_pointer();
         hovered_.reset();
+        wheel_.reset();
         if (window_) ShowWindow(window_, SW_HIDE);
         return;
     }
@@ -494,8 +496,8 @@ void CandidateList::render() noexcept {
     } catch (...) { if (window_) ShowWindow(window_, SW_HIDE); }
 }
 
-void CandidateList::paint_candidates(SurfaceCanvas& canvas, const Layout& m, int width, int top) const {
-    if (pages_.empty()) return;
+void CandidateList::paint_candidates(SurfaceCanvas& canvas, const Layout& m, int width, int top, int bottom) const {
+    if (pages_.empty() || top >= bottom) return;
     const auto [first, end] = visible_rows();
     const HDC dc = canvas.dc();
     const auto labels = candidate_labels(keys_);
@@ -507,7 +509,9 @@ void CandidateList::paint_candidates(SurfaceCanvas& canvas, const Layout& m, int
     const int pill_w = std::max(3, scale(3));
     const int pill_h = scale(16);
 
-    for (UINT i = first; i < end; ++i, top += m.row_height) {
+    const int saved_dc = SaveDC(dc);
+    IntersectClipRect(dc, 0, top, width, bottom);
+    for (UINT i = first; i < end && top < bottom; ++i, top += m.row_height) {
         const bool selected = i == selection_;
         const bool hovered = !selected && hovered_ && *hovered_ == i;
         const RECT row_box{inset_x, top + inset_y, width - inset_x, top + m.row_height - inset_y};
@@ -584,6 +588,7 @@ void CandidateList::paint_candidates(SurfaceCanvas& canvas, const Layout& m, int
                 DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
     }
+    if (saved_dc) RestoreDC(dc, saved_dc);
 }
 
 void CandidateList::paint_registration_header(SurfaceCanvas& canvas, const Layout& m, int width) const {
@@ -830,6 +835,7 @@ void CandidateList::paint_notice(SurfaceCanvas& canvas, const Layout&, int width
 
 void CandidateList::paint_footer(SurfaceCanvas& canvas, const Layout& m, int width, int top) const {
     const HDC dc = canvas.dc();
+    canvas.fill_rect({0, top, width, top + m.footer_height}, theme_.surface);
     canvas.fill_rect({scale(8), top, width - scale(8), top + 1}, theme_.separator);
     const RECT rect{scale(12), top + 1, width - scale(12), top + m.footer_height};
     SelectedFont f(dc, sub_font_);
@@ -880,12 +886,12 @@ void CandidateList::paint(HDC target_dc) const {
             paint_forget_body(canvas, m, width);
         } else {
             paint_registration_header(canvas, m, width);
-            paint_candidates(canvas, m, width, m.rows_top);
+            paint_candidates(canvas, m, width, m.rows_top, m.rows_bottom(height));
         }
-        paint_footer(canvas, m, width, height - m.footer_height);
+        paint_footer(canvas, m, width, m.footer_top(height));
     } else {
-        paint_candidates(canvas, m, width, m.rows_top);
-        paint_footer(canvas, m, width, height - m.footer_height);
+        paint_candidates(canvas, m, width, m.rows_top, m.rows_bottom(height));
+        paint_footer(canvas, m, width, m.footer_top(height));
     }
 
     if (!dwm_framed_ || theme_.high_contrast) {
@@ -939,10 +945,13 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
     }
     if (message == WM_MOUSEWHEEL && self) {
         const ComPtr<CandidateList> keep(self);
-        const short wheel = GET_WHEEL_DELTA_WPARAM(wparam);
+        const int wheel = GET_WHEEL_DELTA_WPARAM(wparam);
         if (wheel != 0 && !self->rows_.empty()) {
-            self->begin_interaction();
-            self->request_step(wheel < 0 ? 1 : -1);
+            const int steps = self->wheel_.accumulate(wheel);
+            if (steps != 0) {
+                self->begin_interaction();
+                self->request_step(steps);
+            }
         }
         return 0;
     }

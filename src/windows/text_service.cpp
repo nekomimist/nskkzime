@@ -443,7 +443,7 @@ public:
         if (code == TF_LC_DESTROY) {
             cancel_inference();
             ++layout_generation_; layout_pending_ = false;
-            ++selection_request_; selection_pending_ = false;
+            clear_pending_pointer();
             candidates_.hide(); underline_.hide(); return S_OK;
         }
         if (layout_pending_) return S_OK;
@@ -891,6 +891,7 @@ private:
         if (!inference.deadline || !inference.plan) cancel_inference();
         visibility.advance(key, result, next);
         candidate_visibility_ = visibility;
+        clear_pending_pointer();
         engine_ = std::move(next); applied = true;
         const auto accepted = input_checkpoint();
         const auto indicator_request = mode_notice_.request();
@@ -904,44 +905,86 @@ private:
         if (input_unchanged(accepted) && checkpoint.same_composition(accepted)) submit_key_inference(inference);
         return status;
     }
+    void clear_pending_pointer() noexcept {
+        ++selection_request_;
+        pending_pointer_ = PendingPointer::None;
+        pending_step_ = 0;
+        pending_step_revision_ = 0;
+    }
+    HRESULT apply_step(ITfContext* target, TfEditCookie cookie, int steps) {
+        if (!steps || engine_.forgetting() || engine_.input_stage() != Stage::Selecting) return S_OK;
+        if (!prepare_key_editor(target, cookie)) return S_OK;
+        const auto count = engine_.candidates().size();
+        if (count <= 1) return S_OK;
+        const auto current = static_cast<long long>(engine_.candidate_index());
+        const auto destination = std::clamp<long long>(current + steps, 0, static_cast<long long>(count - 1));
+        const auto diff = static_cast<int>(destination - current);
+        if (!diff) return S_OK;
+        auto next = engine_;
+        const Key single = diff > 0 ? Key{KeyCode::Space} : Key{KeyCode::Character, 'x'};
+        for (int i = 0; i < std::abs(diff); ++i) {
+            const auto result = next.handle(single);
+            if (!result.consumed) return S_OK;
+        }
+        const auto status = apply(target, cookie, U"", next);
+        if (FAILED(status)) return status;
+        cancel_inference();
+        engine_ = std::move(next);
+        update_tsf_trace(diagnostic_state(target));
+        trace_tsf(TsfEvent::StateAccepted);
+        refresh_candidates(cookie);
+        return status;
+    }
     void step_candidate(int delta, std::uint64_t revision) noexcept {
-        if (!delta || selection_pending_ || !manager_ || !composition_state_.composition || !composition_state_.context ||
+        if (!delta || pending_pointer_ == PendingPointer::Click || !manager_ || !composition_state_.composition || !composition_state_.context ||
             engine_.revision() != revision || engine_.forgetting() || engine_.input_stage() != Stage::Selecting) return;
         const auto count = engine_.candidates().size();
-        const auto index = engine_.candidate_index();
-        if (delta > 0 && index + 1 >= count) return;
-        if (delta < 0 && index == 0) return;
+        if (count <= 1) return;
+        const auto current = static_cast<long long>(engine_.candidate_index());
+        const auto max_index = static_cast<long long>(count - 1);
+        if (pending_pointer_ == PendingPointer::Step && pending_step_revision_ == revision) {
+            const auto destination = std::clamp<long long>(current + pending_step_ + delta, 0, max_index);
+            pending_step_ = static_cast<int>(destination - current);
+            return;
+        }
+        const auto destination = std::clamp<long long>(current + delta, 0, max_index);
+        const auto initial_step = static_cast<int>(destination - current);
+        if (!initial_step) return;
         cancel_inference();
         const auto request = ++selection_request_;
-        selection_pending_ = true;
+        pending_pointer_ = PendingPointer::Step;
+        pending_step_ = initial_step;
+        pending_step_revision_ = revision;
         try {
             const ComPtr<TextService> self(this);
             const auto checkpoint = input_checkpoint();
-            const Key key = delta > 0 ? Key{KeyCode::Space} : Key{KeyCode::Character, 'x'};
             const auto status = request_edit(checkpoint.context.Get(), client_, TF_ES_ASYNC | TF_ES_READWRITE,
-                [self, checkpoint, key, request](TfEditCookie cookie) {
+                [self, checkpoint, request](TfEditCookie cookie) {
                     update_tsf_trace(self->diagnostic_state(checkpoint.context.Get()));
                     if (self->selection_request_ != request) return S_OK;
-                    self->selection_pending_ = false;
-                    if (!self->input_unchanged(checkpoint) || self->engine_.input_stage() != Stage::Selecting ||
+                    const int steps = std::exchange(self->pending_step_, 0);
+                    self->pending_pointer_ = PendingPointer::None;
+                    self->pending_step_revision_ = 0;
+                    if (!steps || !self->input_unchanged(checkpoint) || self->engine_.input_stage() != Stage::Selecting ||
                         !editable(checkpoint.context.Get())) return S_OK;
                     if (!self->input_unchanged(checkpoint)) return S_OK;
                     const bool valid = self->composition_state_.valid(cookie, checkpoint);
                     if (!self->input_unchanged(checkpoint)) return S_OK;
                     if (!valid) { self->end_composition(cookie, TsfReason::InvalidCandidateSelection); return S_OK; }
-                    bool applied = false;
-                    return self->apply_key(checkpoint.context.Get(), cookie, key, applied);
+                    return self->apply_step(checkpoint.context.Get(), cookie, steps);
                 });
-            if (FAILED(status) && selection_request_ == request) selection_pending_ = false;
-        } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
+            if (FAILED(status) && selection_request_ == request) clear_pending_pointer();
+        } catch (...) { if (selection_request_ == request) clear_pending_pointer(); }
     }
     void select_candidate(std::size_t index, std::uint64_t revision) noexcept {
         TsfDiagnosticScope diagnostic(diagnostics_, TsfEvent::CandidateSelect, diagnostic_state());
-        if (selection_pending_ || !manager_ || !composition_state_.composition || !composition_state_.context ||
+        if (pending_pointer_ == PendingPointer::Click || !manager_ || !composition_state_.composition || !composition_state_.context ||
             engine_.revision() != revision || engine_.forgetting() || engine_.input_stage() != Stage::Selecting || index >= engine_.candidates().size()) return;
         cancel_inference();
         const auto request = ++selection_request_;
-        selection_pending_ = true;
+        pending_pointer_ = PendingPointer::Click;
+        pending_step_ = 0;
+        pending_step_revision_ = 0;
         try {
             const ComPtr<TextService> self(this);
             const auto checkpoint = input_checkpoint();
@@ -949,7 +992,7 @@ private:
                 [self, checkpoint, index, request](TfEditCookie cookie) {
                     update_tsf_trace(self->diagnostic_state(checkpoint.context.Get()));
                     if (self->selection_request_ != request) return S_OK;
-                    self->selection_pending_ = false;
+                    self->pending_pointer_ = PendingPointer::None;
                     if (!self->input_unchanged(checkpoint) || self->engine_.input_stage() != Stage::Selecting ||
                         !editable(checkpoint.context.Get())) return S_OK;
                     if (!self->input_unchanged(checkpoint)) return S_OK;
@@ -959,8 +1002,8 @@ private:
                     bool applied = false;
                     return self->apply_key(checkpoint.context.Get(), cookie, {KeyCode::SelectCandidate, 0, index}, applied);
                 });
-            if (FAILED(status) && selection_request_ == request) selection_pending_ = false;
-        } catch (...) { if (selection_request_ == request) selection_pending_ = false; }
+            if (FAILED(status) && selection_request_ == request) clear_pending_pointer();
+        } catch (...) { if (selection_request_ == request) clear_pending_pointer(); }
     }
     void refresh_candidates(TfEditCookie cookie, std::wstring_view notice = {}) noexcept {
         const InputPhaseTiming timing(InputTimingPhase::Candidates);
@@ -1038,7 +1081,7 @@ private:
         ++composition_state_.session; cancel_inference();
         clear_context_preview(this);
         ++layout_generation_; layout_pending_ = false;
-        ++selection_request_; selection_pending_ = false;
+        clear_pending_pointer();
         candidates_.close(); underline_.hide();
         composition_state_.release_context();
         update_tsf_trace(diagnostic_state());
@@ -1112,8 +1155,11 @@ private:
     std::shared_ptr<ToolLauncher> tool_launcher_;
     std::array<bool, 2> preserved_{};
     std::shared_ptr<CandidateActions> candidate_actions_;
+    enum class PendingPointer { None, Click, Step };
     std::uint64_t selection_request_ = 0;
-    bool selection_pending_ = false;
+    PendingPointer pending_pointer_ = PendingPointer::None;
+    int pending_step_ = 0;
+    std::uint64_t pending_step_revision_ = 0;
     std::uint64_t layout_generation_ = 0;
     bool layout_pending_ = false;
     std::uint64_t focus_request_ = 0, focus_generation_ = 0;
