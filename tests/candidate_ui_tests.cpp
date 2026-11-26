@@ -159,9 +159,156 @@ void presenter_positions() {
     check(!host->ui, "UI kind switch restored a popup after reentrant close");
     host->ui_end_query = {};
 }
+void ui_theme_and_icon_tests() {
+    const auto light = make_ui_theme(false, false, RGB(0, 103, 192));
+    const auto dark = make_ui_theme(true, false, RGB(96, 205, 255));
+    const auto hc = make_ui_theme(false, true, RGB(0, 103, 192));
+    check(!light.dark && dark.dark && hc.high_contrast, "theme flags incorrect");
+    check(light.surface != dark.surface && light.text != dark.text, "light and dark surfaces did not differ");
+    check(hc.surface == GetSysColor(COLOR_WINDOW) && hc.selection_bg == GetSysColor(COLOR_HIGHLIGHT),
+        "high contrast did not fall back to system colors");
+
+    const auto p_hira = mode_palette(light, Mode::Hiragana);
+    const auto p_kata = mode_palette(light, Mode::Katakana);
+    const auto p_wide = mode_palette(light, Mode::FullWidthLatin);
+    const auto p_latin = mode_palette(light, Mode::Latin);
+    check(p_hira.background != p_kata.background && p_hira.background != p_wide.background &&
+          p_hira.background != p_latin.background && p_kata.background != p_wide.background,
+          "mode badges did not distinguish input modes");
+
+    const HICON icon = create_mode_tray_icon(L"あ", default_ui_font, 24, 24, RGB(255, 255, 255));
+    check(icon != nullptr, "anti-aliased tray icon creation failed");
+    ICONINFO info{};
+    check(GetIconInfo(icon, &info) != FALSE && info.hbmColor != nullptr && info.hbmMask != nullptr,
+        "tray icon missing 32bpp color bitmap");
+    BITMAP bm{};
+    check(GetObjectW(info.hbmColor, sizeof(bm), &bm) == sizeof(bm) && bm.bmWidth == 24 && bm.bmHeight == 24 && bm.bmBitsPixel == 32,
+        "tray icon color bitmap dimensions or depth incorrect");
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(bm.bmWidth) * static_cast<std::size_t>(bm.bmHeight));
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = bm.bmWidth;
+    bi.bmiHeader.biHeight = -bm.bmHeight;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    const HDC screen = GetDC(nullptr);
+    const int copied = GetDIBits(screen, info.hbmColor, 0, static_cast<UINT>(bm.bmHeight), pixels.data(), &bi, DIB_RGB_COLORS);
+    if (screen) ReleaseDC(nullptr, screen);
+    check(copied == bm.bmHeight, "failed to inspect tray icon pixels");
+    const bool has_crisp_stroke = std::any_of(pixels.begin(), pixels.end(), [](std::uint32_t p) { return (p >> 24) >= 220; });
+    const bool has_transparent = std::any_of(pixels.begin(), pixels.end(), [](std::uint32_t p) { return (p >> 24) == 0; });
+    check(has_crisp_stroke && has_transparent, "tray icon lacked crisp opaque strokes or transparent background");
+    DeleteObject(info.hbmColor);
+    DeleteObject(info.hbmMask);
+    DestroyIcon(icon);
+}
+void paint_and_wheel_tests() {
+    {
+        CandidateWheel wheel;
+        check(wheel.accumulate(-30) == 0 && wheel.accumulate(-30) == 0 && wheel.accumulate(-30) == 0,
+            "sub-notch wheel deltas stepped early");
+        check(wheel.accumulate(-30) == 1, "four -30 wheel deltas did not equal one step down");
+        check(wheel.accumulate(-240) == 2, "-240 wheel delta did not step two rows down");
+        check(wheel.accumulate(120) == -1, "+120 wheel delta did not step one row up");
+        check(wheel.accumulate(-150) == 1 && wheel.accumulate(-90) == 1, "wheel remainder was not carried across notches");
+        check(wheel.accumulate(-30) == 0 && wheel.accumulate(30) == 0 && wheel.remainder == 0,
+            "opposite wheel deltas did not cancel remainder");
+        wheel.accumulate(-60); wheel.reset(); check(wheel.remainder == 0, "wheel reset kept remainder");
+    }
+
+    auto dictionary = std::make_shared<MemoryDictionary>();
+    std::vector<Candidate> many;
+    for (int i = 0; i < 8; ++i) many.push_back({std::to_string(i), U"候補" + ascii(std::to_string(i)), U"注釈"});
+    dictionary->add({U"かんじ"}, many);
+    Engine engine(dictionary);
+    type(engine, "Kanji");
+    engine.handle({KeyCode::Space});
+    engine.append_generated({{"ai-1", U"幹事", U"AI候補", CandidateSource::GeneratedFallback, LearningPolicy::DoNotLearn}});
+    // Return to page 0 (7 full rows: indices 0..6) so shrinking to 220px makes
+    // the footer overlap row 5's raw vertical slot.
+    engine.handle({KeyCode::PageUp});
+
+    auto actions = std::make_shared<CandidateActions>();
+    int stepped = 0, step_calls = 0, last_step = 0, select_calls = 0;
+    std::size_t last_selected = 99;
+    std::uint64_t step_rev = 0;
+    actions->step = [&](int delta, std::uint64_t rev) { ++step_calls; last_step = delta; stepped += delta; step_rev = rev; };
+    actions->select = [&](std::size_t index, std::uint64_t) { ++select_calls; last_selected = index; };
+
+    ComPtr<CandidateList> popup;
+    popup.Attach(new CandidateList(PopupKind::Candidates, actions, CandidateKeys::Numbers, default_ui_font, true));
+    popup->update(engine, nullptr);
+    RECT anchor{120, 120, 140, 140};
+    popup->locate(nullptr, &anchor);
+    popup->Show(TRUE);
+    drain_events();
+    const auto popup_window = [&] {
+        wchar_t name[96]{}; swprintf_s(name, L"nskkzime.Candidates.%p", static_cast<void*>(popup.Get()));
+        return FindWindowW(name, nullptr);
+    }();
+    check(popup_window != nullptr, "candidate popup window missing for wheel/footer test");
+
+    // Accumulate sub-notch WM_MOUSEWHEEL messages and pass multi-notch counts.
+    for (int i = 0; i < 3; ++i) SendMessageW(popup_window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<short>(-30)), 0);
+    check(step_calls == 0, "WM_MOUSEWHEEL stepped before reaching WHEEL_DELTA");
+    SendMessageW(popup_window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<short>(-30)), 0);
+    check(step_calls == 1 && last_step == 1 && step_rev == engine.revision(), "four -30 WM_MOUSEWHEEL messages did not step once");
+    SendMessageW(popup_window, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<short>(-240)), 0);
+    check(step_calls == 2 && last_step == 2, "-240 WM_MOUSEWHEEL message did not pass 2 steps");
+
+    // Shrink popup to 220px (simulating work-area clamping) and click 12px above the bottom (inside footer).
+    check(SetWindowPos(popup_window, nullptr, 0, 0, 320, 220, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE,
+        "failed to shrink popup for footer click test");
+    RECT client{}; check(GetClientRect(popup_window, &client) != FALSE && client.bottom == 220, "unexpected shrunk popup height");
+    const LPARAM footer_point = MAKELPARAM(40, client.bottom - 12);
+    SendMessageW(popup_window, WM_LBUTTONDOWN, MK_LBUTTON, footer_point);
+    SendMessageW(popup_window, WM_LBUTTONUP, 0, footer_point);
+    check(select_calls == 0, "clicking the footer of a clamped candidate list confirmed a candidate");
+    const LPARAM first_row_point = MAKELPARAM(40, 16);
+    SendMessageW(popup_window, WM_LBUTTONDOWN, MK_LBUTTON, first_row_point);
+    SendMessageW(popup_window, WM_LBUTTONUP, 0, first_row_point);
+    check(select_calls == 1 && last_selected == 0, "clicking the first candidate row failed");
+
+    popup->close();
+    popup->request_step(1);
+    check(stepped == 3, "closed popup dispatched wheel step");
+
+    // Exercise painting for registration (with mode badge & nested candidates), forget prompt, and notice.
+    Engine reg_engine(dictionary);
+    type(reg_engine, "Michi"); reg_engine.handle({KeyCode::Space});
+    type(reg_engine, "Kanji"); reg_engine.handle({KeyCode::Space});
+    ComPtr<CandidateList> editor;
+    editor.Attach(new CandidateList(PopupKind::Editor, {}, CandidateKeys::Asdfjkl, default_ui_font, true));
+    editor->update(reg_engine, nullptr);
+    editor->locate(nullptr, &anchor);
+    editor->Show(TRUE);
+    drain_events();
+    editor->close();
+
+    Engine forget_engine(dictionary);
+    type(forget_engine, "Kanji"); forget_engine.handle({KeyCode::Space}); type(forget_engine, "X");
+    ComPtr<CandidateList> forget_ui;
+    forget_ui.Attach(new CandidateList(PopupKind::Editor));
+    forget_ui->update(forget_engine, nullptr);
+    forget_ui->locate(nullptr, &anchor);
+    forget_ui->Show(TRUE);
+    drain_events();
+    forget_ui->close();
+
+    ComPtr<CandidateList> notice_ui;
+    notice_ui.Attach(new CandidateList(PopupKind::Notice));
+    notice_ui->notice(L"保護された入力欄のため、単語登録を行いません。", nullptr);
+    notice_ui->locate(nullptr, &anchor);
+    notice_ui->Show(TRUE);
+    drain_events();
+    notice_ui->close();
+}
 }
 int main() {
     try {
+        ui_theme_and_icon_tests();
+        paint_and_wheel_tests();
         popup_events();
         presenter_fonts();
         presenter_positions();

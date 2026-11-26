@@ -3,8 +3,10 @@
 #include "input_timing.h"
 #include "candidate_settings.h"
 #include "ui_settings.h"
+#include "ui_theme.h"
 #include "nskkzime/engine.h"
 #include <wrl/client.h>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -18,6 +20,7 @@ inline constexpr GUID candidate_ui_guid = {0x680bc7bf, 0xbe19, 0x42e9, {0xa4, 0x
 struct CandidateActions {
     std::function<void(std::size_t, std::uint64_t)> select;
     std::function<void(std::uint64_t)> interact; // Freeze asynchronous reordering on pointer down.
+    std::function<void(int, std::uint64_t)> step; // Move candidate selection on wheel scroll.
 };
 struct CandidatePointer {
     std::optional<std::size_t> pressed;
@@ -28,6 +31,19 @@ struct CandidatePointer {
     }
     void cancel() { pressed.reset(); }
 };
+struct CandidateWheel {
+    int remainder = 0;
+    int accumulate(int delta) noexcept {
+        if (!delta) return 0;
+        const long long total = static_cast<long long>(remainder) + delta;
+        const auto notches = static_cast<int>(total / WHEEL_DELTA);
+        remainder = static_cast<int>(total % WHEEL_DELTA);
+        return -notches;
+    }
+    void reset() noexcept { remainder = 0; }
+};
+std::optional<std::size_t> candidate_row_at_top(POINT, SIZE client, int top, int line_height,
+    std::size_t first, std::size_t end) noexcept;
 std::optional<std::size_t> candidate_row_at(POINT, SIZE client, int padding, int line_height,
     bool registration, std::size_t first, std::size_t end) noexcept;
 inline constexpr GUID registration_ui_guid = {0x5422d011, 0x5654, 0x440d, {0x97, 0xdd, 0x64, 0xa2, 0xfa, 0xef, 0x4a, 0x2a}};
@@ -80,6 +96,7 @@ public:
     void close() noexcept;
     std::size_t shortcut_index(std::size_t slot) const noexcept;
     void request_selection(std::size_t index) noexcept;
+    void request_step(int delta) noexcept;
     void begin_interaction() noexcept;
     PopupKind kind() const { return kind_; }
     CandidateKeys keys() const { return keys_; }
@@ -87,13 +104,41 @@ public:
     bool shows_input_mode() const { return show_input_mode_; }
     bool presentation_available() const { return !closed_ && (!requested_visible_ || (window_ && IsWindowVisible(window_))); }
 private:
-    struct Row { std::wstring text, annotation; bool operator==(const Row&) const = default; };
+    struct Row {
+        std::wstring text, annotation;
+        CandidateSource source = CandidateSource::Dictionary;
+        bool operator==(const Row&) const = default;
+    };
+    struct Layout {
+        int pad_x = 8;
+        int pad_y = 6;
+        int header_height = 0;
+        int editor_height = 0;
+        int rows_top = 6;
+        int row_height = 34;
+        int footer_height = 28;
+        int keycap_size = 22;
+        int badge_height = 18;
+        int footer_top(int client_height) const noexcept { return (std::max)(0, client_height - footer_height); }
+        int rows_bottom(int client_height) const noexcept { return (std::max)(rows_top, footer_top(client_height)); }
+    };
+    int scale(int px) const noexcept { return MulDiv(px, static_cast<int>(dpi_ ? dpi_ : 96), 96); }
+    Layout layout() const noexcept;
     UINT current_page() const;
     std::pair<UINT, UINT> visible_rows() const;
-    std::wstring footer() const;
+    std::wstring compact_footer_hint() const;
+    std::wstring footer_counter() const;
+    void refresh_theme() noexcept;
+    void ensure_fonts(UINT dpi) noexcept;
+    void release_fonts() noexcept;
     SIZE measure();
     void render() noexcept;
     void paint(HDC) const;
+    void paint_candidates(SurfaceCanvas&, const Layout&, int width, int top, int bottom) const;
+    void paint_registration_header(SurfaceCanvas&, const Layout&, int width) const;
+    void paint_forget_body(SurfaceCanvas&, const Layout&, int width) const;
+    void paint_notice(SurfaceCanvas&, const Layout&, int width, int height) const;
+    void paint_footer(SurfaceCanvas&, const Layout&, int width, int top) const;
     std::optional<std::size_t> hit_test(POINT) const noexcept;
     void cancel_pointer() noexcept;
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);
@@ -109,22 +154,34 @@ private:
     const std::wstring font_face_;
     const bool show_input_mode_;
     std::wstring heading_, draft_, hint_;
+    Mode editor_mode_ = Mode::Hiragana;
+    std::size_t registration_depth_ = 0;
+    std::wstring registration_reading_;
+    bool registration_limit_ = false;
+    bool editor_selecting_ = false;
+    bool forgetting_ = false;
+    bool has_forget_target_ = false;
+    std::wstring forget_word_, forget_scope_, forget_answer_;
     UINT selection_ = 0;
     DWORD updated_ = 0;
     bool redraw_ = true;
     std::optional<UINT> previous_selection_;
+    std::optional<std::size_t> hovered_;
+    bool tracking_mouse_ = false;
     int row_width_ = 0;
     SIZE measured_{};
     bool requested_visible_ = false, located_ = false, closed_ = false, ime_visible_ = false;
+    bool dwm_framed_ = false;
     HWND window_ = nullptr, owner_ = nullptr;
-    HFONT font_ = nullptr;
+    HFONT font_ = nullptr, title_font_ = nullptr, sub_font_ = nullptr, badge_font_ = nullptr;
+    UiTheme theme_{};
     RECT anchor_{};
     std::wstring class_name_;
-    int line_height_ = 28, padding_ = 10;
     UINT dpi_ = 0;
     std::weak_ptr<CandidateActions> actions_;
     std::uint64_t revision_ = 0;
     CandidatePointer pointer_;
+    CandidateWheel wheel_;
     InputTimingToken paint_timing_;
 };
 

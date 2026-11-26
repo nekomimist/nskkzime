@@ -1,5 +1,6 @@
 #include "input_mode.h"
 #include "mode_label.h"
+#include "ui_theme.h"
 #include <algorithm>
 #include <string>
 #include <string_view>
@@ -66,7 +67,7 @@ ULONG ModeButton::AddRef() { return ++refs_; }
 ULONG ModeButton::Release() { const auto refs = --refs_; if (!refs) delete this; return refs; }
 HRESULT ModeButton::GetInfo(TF_LANGBARITEMINFO* out) {
     if (!out) return E_POINTER;
-    *out = {service_clsid, GUID_LBI_INPUTMODE, TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY | TF_LBI_STYLE_TEXTCOLORICON, 0, {}};
+    *out = {service_clsid, GUID_LBI_INPUTMODE, TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY, 0, {}};
     wcscpy_s(out->szDescription, L"nskkzime 入力モード"); return S_OK;
 }
 HRESULT ModeButton::GetStatus(DWORD* out) { if (!out) return E_POINTER; *out = status_; return S_OK; }
@@ -98,9 +99,12 @@ HRESULT ModeButton::popup(POINT point, const RECT* area) noexcept {
     try {
         const UniqueMenu menu(CreatePopupMenu());
         if (!menu) return E_OUTOFMEMORY;
+        UINT checked_id = 1;
         for (UINT i = 0; i < modes.size(); ++i) {
-            if (!AppendMenuW(menu.get(), MF_STRING | (modes[i] == mode_ ? MF_CHECKED : 0), i + 1, mode_name(modes[i]))) return E_FAIL;
+            if (modes[i] == mode_) checked_id = i + 1;
+            if (!AppendMenuW(menu.get(), MF_STRING, i + 1, mode_name(modes[i]))) return E_FAIL;
         }
+        if (!CheckMenuRadioItem(menu.get(), 1, static_cast<UINT>(modes.size()), checked_id, MF_BYCOMMAND)) return E_FAIL;
         if (!AppendMenuW(menu.get(), MF_SEPARATOR, 0, nullptr)) return E_FAIL;
         {
             const auto actions = actions_.lock();
@@ -146,21 +150,13 @@ HRESULT ModeButton::OnMenuSelect(UINT id) {
 HRESULT ModeButton::GetIcon(HICON* out) {
     if (!out) return E_POINTER;
     *out = nullptr;
-    // Monochrome AND/XOR mask. TSF recolors TEXTCOLORICON for the shell theme.
-    const int width = std::max(16, GetSystemMetrics(SM_CXSMICON)), height = std::max(16, GetSystemMetrics(SM_CYSMICON));
-    const auto mask = CreateBitmap(width, height * 2, 1, 1, nullptr);
-    const auto dc = CreateCompatibleDC(nullptr);
-    if (!mask || !dc) { if (mask) DeleteObject(mask); if (dc) DeleteDC(dc); return E_OUTOFMEMORY; }
-    const auto old_bitmap = SelectObject(dc, mask);
-    PatBlt(dc, 0, 0, width, height, WHITENESS); PatBlt(dc, 0, height, width, height, BLACKNESS);
-    const auto font = CreateFontW(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH, font_face_.c_str());
-    const auto old_font = font ? SelectObject(dc, font) : nullptr;
-    SetTextColor(dc, RGB(0, 0, 0)); SetBkColor(dc, RGB(255, 255, 255));
-    RECT rect{0, 0, width, height}; DrawTextW(dc, mode_label(mode_), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    if (font) { SelectObject(dc, old_font); DeleteObject(font); }
-    SelectObject(dc, old_bitmap); DeleteDC(dc);
-    ICONINFO info{TRUE, 0, 0, mask, nullptr}; *out = CreateIconIndirect(&info); DeleteObject(mask);
+    const UINT dpi = GetDpiForSystem();
+    const int width = std::max(16, GetSystemMetricsForDpi(SM_CXSMICON, dpi ? dpi : 96));
+    const int height = std::max(16, GetSystemMetricsForDpi(SM_CYSMICON, dpi ? dpi : 96));
+    const COLORREF foreground = system_high_contrast()
+        ? GetSysColor(COLOR_WINDOWTEXT)
+        : (taskbar_uses_dark_theme() ? RGB(255, 255, 255) : RGB(27, 27, 27));
+    *out = create_mode_tray_icon(mode_label(mode_), font_face_, width, height, foreground);
     return *out ? S_OK : E_FAIL;
 }
 HRESULT ModeButton::AdviseSink(REFIID iid, IUnknown* value, DWORD* cookie) {

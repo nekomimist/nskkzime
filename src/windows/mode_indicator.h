@@ -2,6 +2,7 @@
 #include "module.h"
 #include "nskkzime/engine.h"
 #include "ui_settings.h"
+#include "ui_theme.h"
 #include <wrl/client.h>
 #include <string>
 
@@ -31,11 +32,14 @@ public:
     }
 private:
     bool current() noexcept;
+    void refresh_theme() noexcept;
+    void update_fade() noexcept;
     void request_position() noexcept;
     void retry_position() noexcept;
     void cancel_retry() noexcept;
     void locate(TfEditCookie) noexcept;
     void render() noexcept;
+    void paint(HDC) const noexcept;
     static LRESULT CALLBACK window_proc(HWND, UINT, WPARAM, LPARAM);
 
     std::atomic<ULONG> refs_{1};
@@ -53,8 +57,10 @@ private:
     HFONT font_ = nullptr;
     RECT anchor_{};
     std::wstring class_name_;
+    UiTheme theme_{};
     UINT dpi_ = 0;
     unsigned int retries_ = 0;
+    bool dwm_framed_ = false;
     bool started_ = false, closed_ = false, begun_ = false, requested_visible_ = false;
     bool located_ = false, locating_ = false, position_pending_ = false, ime_visible_ = false, retry_scheduled_ = false;
 };

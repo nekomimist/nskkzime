@@ -111,6 +111,54 @@ void candidate_settings_tests(const std::filesystem::path& root) {
         Session s; s.type("Kouho"); s.key(VK_SPACE); check(s.host->ui != nullptr, "default stopped showing first list");
         s.type("2"); check(s.context->doc->text == L"候補二", "default numeric shortcut changed");
     }
+    {
+        // Pending wheel steps accumulate while TSF edit execution is queued,
+        // and discard cleanly on cancel, field switch, or click confirmation.
+        Session s; s.type("Kouho");
+        for (int i = 0; i < 6; ++i) s.key(VK_SPACE); // Reach 6th candidate ("候補六", index 5).
+        check(s.context->doc->text == L"候補六" && s.host->ui, "setup did not reach 6th candidate");
+        auto list = s.snapshot();
+        list->request_step(1);
+        list->request_step(1);
+        check(s.context->queued.size() == 1, "back-to-back wheel scrolls queued multiple edits");
+        s.context->pump();
+        check(s.context->doc->text == L"候補八" && s.host->ui, "pending wheel scroll lost second step before edit");
+
+        s.snapshot()->request_step(-2); s.context->pump();
+        check(s.context->doc->text == L"候補六" && s.host->ui, "multi-notch wheel scroll did not move 2 rows");
+
+        // Opposite pending scrolls cancel out without changing selection.
+        list = s.snapshot();
+        list->request_step(1); list->request_step(-1); s.context->pump();
+        check(s.context->doc->text == L"候補六" && s.host->ui, "canceling pending wheel scrolls changed selection");
+
+        // Click confirmation overrides a pending wheel step.
+        list = s.snapshot();
+        list->request_step(1);
+        list->request_selection(0);
+        s.context->pump();
+        check(s.context->doc->text == L"候補一" && !s.host->ui && s.context->composition->ended,
+            "click confirmation did not override pending wheel step");
+    }
+    {
+        // Field switch discards pending wheel scroll without touching old or new field.
+        Session s; s.type("Kouho"); s.key(VK_SPACE);
+        auto old = s.context;
+        s.snapshot()->request_step(2);
+        s.context.Attach(new test_host::Context);
+        s.type("KaKu");
+        old->pump();
+        check(old->doc->text == L"候補一" && s.context->doc->text == L"書く",
+            "pending wheel scroll survived field switch");
+    }
+    {
+        // Canceling conversion discards pending wheel scroll.
+        Session s; s.type("Kouho"); s.key(VK_SPACE);
+        s.snapshot()->request_step(2);
+        s.key(VK_ESCAPE); s.key(VK_ESCAPE);
+        s.context->pump();
+        check(s.context->doc->text.empty() && !s.host->ui, "pending wheel scroll survived cancel");
+    }
 }
 }
 int wmain(int argc, wchar_t** argv) {
@@ -189,6 +237,20 @@ int wmain(int argc, wchar_t** argv) {
             check(s.context->doc->text == L"感じ" && !s.host->ui, "click did not confirm");
             until([&] { return read_user_dictionary(file).revision() == 1; });
             check(read_user_dictionary(file).lookup({U"かんじ"})[0].text == U"感じ", "wrong click learned");
+        }
+        {
+            // Wheel scrolling moves within bounds without triggering registration or canceling conversion.
+            // The previous test learned "感じ" as the top candidate for "かんじ".
+            Session s; s.convert();
+            auto list = s.snapshot();
+            list->request_step(-1); s.context->pump();
+            check(s.context->doc->text == L"感じ" && s.host->ui, "wheel up at first candidate left selection");
+            list->request_step(1); s.context->pump();
+            check(s.context->doc->text == L"漢字" && s.host->ui, "wheel down did not advance candidate");
+            s.snapshot()->request_step(1); s.context->pump();
+            check(s.context->doc->text == L"漢字" && s.host->ui, "wheel down at last candidate entered registration");
+            s.snapshot()->request_step(-1); s.context->pump();
+            check(s.context->doc->text == L"感じ" && s.host->ui, "wheel up did not return to previous candidate");
         }
         candidate_settings_tests(root);
         check(module_objects == 0, "click sessions or UI retained the service");

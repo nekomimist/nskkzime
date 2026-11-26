@@ -9,10 +9,11 @@ namespace nskkzime::windows {
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr UINT page_size = static_cast<UINT>(candidate_page_size);
-constexpr DWORD popup_style = WS_POPUP | WS_BORDER;
+constexpr DWORD popup_style = WS_POPUP;
 constexpr DWORD popup_ex_style = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
 constexpr DWORD all_updates = TF_CLUIE_DOCUMENTMGR | TF_CLUIE_COUNT | TF_CLUIE_SELECTION |
     TF_CLUIE_STRING | TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
+
 // Debugger-only host diagnostics. Never include text, candidate contents,
 // window titles, coordinates, or document identifiers.
 void trace(const wchar_t* event, long first = 0, long second = 0, long third = 0) noexcept {
@@ -51,14 +52,30 @@ std::wstring label(std::wstring_view text) {
     for (auto& ch : value) if (ch < L' ' || ch == 0x7f) ch = L' ';
     return value;
 }
+SIZE measure_text(HDC dc, HFONT font, std::wstring_view text) noexcept {
+    SelectedFont selected(dc, font);
+    SIZE size{};
+    if (!text.empty()) GetTextExtentPoint32W(dc, text.data(), static_cast<int>(text.size()), &size);
+    return size;
 }
-std::optional<std::size_t> candidate_row_at(POINT point, SIZE client, int padding, int line_height,
-    bool registration, std::size_t first, std::size_t end) noexcept {
-    const auto top = padding + (registration ? 2 * line_height : 0);
+bool is_generated_source(CandidateSource source) noexcept {
+    return source == CandidateSource::GeneratedLong || source == CandidateSource::GeneratedFallback;
+}
+} // namespace
+
+std::optional<std::size_t> candidate_row_at_top(POINT point, SIZE client, int top, int line_height,
+    std::size_t first, std::size_t end) noexcept {
     if (line_height <= 0 || point.x < 0 || point.x >= client.cx || point.y < top || point.y >= client.cy || first >= end) return {};
     const auto row = static_cast<std::size_t>((point.y - top) / line_height);
     return row < end - first ? std::optional{first + row} : std::nullopt;
 }
+
+std::optional<std::size_t> candidate_row_at(POINT point, SIZE client, int padding, int line_height,
+    bool registration, std::size_t first, std::size_t end) noexcept {
+    const auto top = padding + (registration ? 2 * line_height : 0);
+    return candidate_row_at_top(point, client, top, line_height, first, end);
+}
+
 CandidateList::CandidateList(PopupKind kind, std::weak_ptr<CandidateActions> actions, CandidateKeys keys, std::wstring font_face, bool show_input_mode)
     : kind_(kind), keys_(keys), font_face_(std::move(font_face)), show_input_mode_(show_input_mode), actions_(std::move(actions)) { ++module_objects; }
 CandidateList::~CandidateList() { close(); --module_objects; }
@@ -80,7 +97,12 @@ HRESULT CandidateList::GetDescription(BSTR* value) {
     } catch (...) { return E_OUTOFMEMORY; }
 }
 HRESULT CandidateList::GetGUID(GUID* value) { if (!value) return E_POINTER; *value = kind_ == PopupKind::Notice ? notice_ui_guid : kind_ == PopupKind::Editor ? registration_ui_guid : candidate_ui_guid; return S_OK; }
-HRESULT CandidateList::Show(BOOL show) { if (!show) { cancel_pointer(); discard_candidate_timing(paint_timing_); } requested_visible_ = show != FALSE; render(); return S_OK; }
+HRESULT CandidateList::Show(BOOL show) {
+    if (!show) { cancel_pointer(); hovered_.reset(); wheel_.reset(); discard_candidate_timing(paint_timing_); }
+    requested_visible_ = show != FALSE;
+    render();
+    return S_OK;
+}
 HRESULT CandidateList::IsShown(BOOL* value) { if (!value) return E_POINTER; *value = window_ && IsWindowVisible(window_); return S_OK; }
 HRESULT CandidateList::GetUpdatedFlags(DWORD* value) { if (!value) return E_POINTER; *value = updated_; return S_OK; }
 HRESULT CandidateList::GetDocumentMgr(ITfDocumentMgr** value) { if (!value) return E_POINTER; return document_.CopyTo(value); }
@@ -103,7 +125,7 @@ HRESULT CandidateList::SetPageIndex(UINT* indices, UINT count) {
     if (!indices) return E_POINTER;
     if (!count || count > rows_.size() || indices[0] != 0) return E_INVALIDARG;
     for (UINT i = 0; i < count; ++i) if (indices[i] >= rows_.size() || (i && indices[i] <= indices[i - 1])) return E_INVALIDARG;
-    try { cancel_pointer(); pages_.assign(indices, indices + count); redraw_ = true; previous_selection_.reset(); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
+    try { cancel_pointer(); hovered_.reset(); wheel_.reset(); pages_.assign(indices, indices + count); redraw_ = true; previous_selection_.reset(); updated_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE; render(); return S_OK; }
     catch (...) { return E_OUTOFMEMORY; }
 }
 UINT CandidateList::current_page() const {
@@ -128,52 +150,141 @@ void CandidateList::request_selection(std::size_t index) noexcept {
         try { actions->select(index, revision_); } catch (...) { /* Preserve the existing selection on failure. */ }
     }
 }
+void CandidateList::request_step(int delta) noexcept {
+    if (closed_ || !delta || rows_.empty()) return;
+    if (const auto actions = actions_.lock(); actions && actions->step) {
+        try { actions->step(delta, revision_); } catch (...) {}
+    }
+}
 void CandidateList::begin_interaction() noexcept {
     if (closed_) return;
     if (const auto actions = actions_.lock(); actions && actions->interact) {
         try { actions->interact(revision_); } catch (...) {}
     }
 }
+CandidateList::Layout CandidateList::layout() const noexcept {
+    Layout m{};
+    m.pad_x = scale(8);
+    m.pad_y = scale(6);
+    m.row_height = scale(34);
+    m.footer_height = scale(28);
+    m.keycap_size = scale(22);
+    m.badge_height = scale(18);
+    if (kind_ == PopupKind::Candidates) {
+        m.rows_top = m.pad_y;
+    } else if (kind_ == PopupKind::Editor) {
+        m.header_height = scale(34);
+        if (forgetting_) {
+            m.editor_height = has_forget_target_ ? scale(72) : scale(36);
+            m.rows_top = m.header_height + m.editor_height;
+        } else {
+            m.editor_height = scale(52);
+            m.rows_top = m.header_height + m.editor_height + (!pages_.empty() ? scale(5) : 0);
+        }
+    } else {
+        m.header_height = 0;
+        m.editor_height = 0;
+        m.rows_top = 0;
+    }
+    return m;
+}
 std::optional<std::size_t> CandidateList::hit_test(POINT point) const noexcept {
     RECT area{};
     if (closed_ || !located_ || !requested_visible_ || !window_ || !IsWindowVisible(window_) || !GetClientRect(window_, &area)) return {};
+    if (kind_ == PopupKind::Notice || forgetting_) return {};
     const auto [first, end] = visible_rows();
-    return candidate_row_at(point, {area.right, area.bottom}, padding_, line_height_, kind_ == PopupKind::Editor, first, end);
+    const auto m = layout();
+    return candidate_row_at_top(point, {area.right, m.rows_bottom(area.bottom)}, m.rows_top, m.row_height, first, end);
 }
 void CandidateList::cancel_pointer() noexcept {
     pointer_.cancel();
     if (window_ && GetCapture() == window_) ReleaseCapture();
 }
 HRESULT CandidateList::GetCurrentPage(UINT* value) { if (!value) return E_POINTER; *value = current_page(); return S_OK; }
+
+void CandidateList::refresh_theme() noexcept {
+    theme_ = current_ui_theme();
+    if (!window_) return;
+    dwm_framed_ = apply_popup_frame(window_, theme_, PopupCorner::Round);
+}
+
+void CandidateList::release_fonts() noexcept {
+    if (font_) { DeleteObject(font_); font_ = nullptr; }
+    if (title_font_) { DeleteObject(title_font_); title_font_ = nullptr; }
+    if (sub_font_) { DeleteObject(sub_font_); sub_font_ = nullptr; }
+    if (badge_font_) { DeleteObject(badge_font_); badge_font_ = nullptr; }
+}
+
+void CandidateList::ensure_fonts(UINT dpi) noexcept {
+    const UINT resolved = dpi ? dpi : 96;
+    if (dpi_ == resolved && font_ && title_font_ && sub_font_ && badge_font_) return;
+    previous_selection_.reset();
+    redraw_ = true;
+    dpi_ = resolved;
+    release_fonts();
+    const auto create = [&](int px, int weight) {
+        return CreateFontW(-MulDiv(px, static_cast<int>(dpi_), 96), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, font_face_.c_str());
+    };
+    font_ = create(16, FW_NORMAL);
+    title_font_ = create(13, FW_SEMIBOLD);
+    sub_font_ = create(12, FW_NORMAL);
+    badge_font_ = create(11, FW_SEMIBOLD);
+}
+
 void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
     const auto old_rows = visible_rows();
     redraw_ |= input_method_ != engine.input_method();
     input_method_ = engine.input_method();
     if (closed_) return;
-    if (revision_ != engine.revision()) cancel_pointer();
+    if (revision_ != engine.revision()) { cancel_pointer(); hovered_.reset(); }
     revision_ = engine.revision();
     if (engine.candidates().size() > std::numeric_limits<UINT>::max()) throw std::length_error("too many candidates");
     updated_ = 0;
     if (engine.forgetting()) {
         const auto& target = engine.forget_target();
-        const auto heading = target ? L"学習語の削除  「" + wide(target->candidate.text) + L"」" : L"削除できる学習語がありません";
+        const auto word = target ? wide(target->candidate.text) : std::wstring{};
         const auto scope = target ? L"読み: " + wide(target->key.reading) + (target->key.okuri ?
-            L" / 送り: " + (target->okuri.empty() ? std::wstring(L"共通") : wide(target->okuri)) : L" / 送りなし") :
+            L"  /  送り: " + (target->okuri.empty() ? std::wstring(L"共通") : wide(target->okuri)) : L"  /  送りなし") :
             std::wstring(L"学習が無効、未同期、または読み取り専用の候補です");
-        const auto draft = scope + (target ? L"    確認: " + wide(engine.forget_answer()) : L"");
+        const auto answer = target ? wide(engine.forget_answer()) : std::wstring{};
+        const auto heading = target ? L"学習語の削除  「" + word + L"」" : L"削除できる学習語がありません";
+        const auto draft = scope + (target ? L"    確認: " + answer : L"");
         const std::wstring hint = target ? L"yes + Enter: この登録を削除  Esc / no + Enter: 取消" : L"Enter / Esc: 候補へ戻る";
-        if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
+        if (!forgetting_ || has_forget_target_ != target.has_value() || heading != heading_ || draft != draft_ || hint != hint_)
+            updated_ |= all_updates;
+        forgetting_ = true;
+        has_forget_target_ = target.has_value();
+        forget_word_ = word;
+        forget_scope_ = scope;
+        forget_answer_ = answer;
         heading_ = heading; draft_ = draft; hint_ = hint;
     } else if (kind_ == PopupKind::Editor) {
         const auto mode = show_input_mode_ ? L" [" + std::wstring(mode_label(engine.mode())) +
             (engine.mode() == Mode::Latin ? L" 英数]" : L"]") : std::wstring{};
-        const auto heading = L"単語登録" + mode + L" " + std::to_wstring(engine.registration_depth()) + L"  「" + wide(engine.registration_reading()) + L"」";
+        const auto reading = wide(engine.registration_reading());
+        const auto depth = engine.registration_depth();
+        const auto heading = L"単語登録" + mode + L" " + std::to_wstring(depth) + L"  「" + reading + L"」";
         const auto draft = wide(engine.registration_text());
-        const std::wstring hint = engine.registration_limit() ? L"入力上限: 1024文字・再帰8段まで" :
-            engine.input_stage() == Stage::Selecting ? L"クリック/" + std::wstring(candidate_labels(keys_)) + L"/Enter: 欄へ追加  PgDn/PgUp: 7件  Esc: 戻る" :
+        const bool selecting = engine.input_stage() == Stage::Selecting;
+        const bool limit = engine.registration_limit();
+        const std::wstring hint = limit ? L"入力上限: 1024文字・再帰8段まで" :
+            selecting ? L"クリック/" + std::wstring(candidate_labels(keys_)) + L"/Enter: 欄へ追加  PgDn/PgUp: 7件  Esc: 戻る" :
             L"語幹を入力  Enter: 登録  C-j: かな  Esc: 取消";
-        if (heading != heading_ || draft != draft_ || hint != hint_) updated_ |= all_updates;
+        if (forgetting_ || editor_mode_ != engine.mode() || registration_depth_ != depth || registration_reading_ != reading ||
+            registration_limit_ != limit || editor_selecting_ != selecting || heading != heading_ || draft != draft_ || hint != hint_)
+            updated_ |= all_updates;
+        forgetting_ = false;
+        has_forget_target_ = false;
+        editor_mode_ = engine.mode();
+        registration_depth_ = depth;
+        registration_reading_ = reading;
+        registration_limit_ = limit;
+        editor_selecting_ = selecting;
         heading_ = heading; draft_ = draft; hint_ = hint;
+    } else {
+        forgetting_ = false;
+        has_forget_target_ = false;
     }
     if (document_.Get() != document) updated_ |= TF_CLUIE_DOCUMENTMGR;
     document_ = document;
@@ -187,13 +298,14 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
             for (const auto& candidate : *source) {
                 auto text = wide(candidate.text);
                 text += ending;
-                rows.push_back({std::move(text), wide(candidate.annotation)});
+                rows.push_back({std::move(text), wide(candidate.annotation), candidate.source});
             }
         }
         if (rows != rows_) {
             std::vector<UINT> pages;
             for (std::size_t index = 0; index < rows.size(); index += page_size) pages.push_back(static_cast<UINT>(index));
             rows_ = std::move(rows); pages_ = std::move(pages);
+            wheel_.reset();
             updated_ |= all_updates;
         }
         source_rows_ = source;
@@ -212,7 +324,8 @@ void CandidateList::update(const Engine& engine, ITfDocumentMgr* document) {
 }
 void CandidateList::notice(std::wstring_view reason, ITfDocumentMgr* document) {
     if (closed_ || kind_ != PopupKind::Notice) return;
-    redraw_ = true; previous_selection_.reset();
+    redraw_ = true; previous_selection_.reset(); hovered_.reset(); wheel_.reset();
+    forgetting_ = false; has_forget_target_ = false;
     heading_ = L"単語登録"; draft_ = reason;
     hint_ = L"別の入力欄で登録してください。入力を続けると閉じます。";
     rows_.clear(); pages_.clear(); selection_ = 0;
@@ -232,48 +345,99 @@ void CandidateList::locate(HWND owner, const RECT* anchor) noexcept {
 void CandidateList::close() noexcept {
     discard_candidate_timing(paint_timing_);
     closed_ = true; located_ = false; requested_visible_ = false;
+    hovered_.reset(); tracking_mouse_ = false; wheel_.reset();
     actions_.reset(); cancel_pointer();
     if (window_) { DestroyWindow(window_); window_ = nullptr; }
     if (!class_name_.empty()) { UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); }
-    if (font_) { DeleteObject(font_); font_ = nullptr; }
+    release_fonts();
     source_rows_.reset(); source_suffix_.clear();
     owner_ = nullptr; document_.Reset();
 }
+
+std::wstring CandidateList::footer_counter() const {
+    return std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size());
+}
+
+std::wstring CandidateList::compact_footer_hint() const {
+    if (kind_ == PopupKind::Notice) return hint_;
+    if (forgetting_) return has_forget_target_ ? L"yes + Enter 削除   Esc 取消" : L"Enter / Esc 戻る";
+    if (kind_ == PopupKind::Editor) {
+        if (registration_limit_) return L"入力上限: 1024文字・再帰8段まで";
+        if (editor_selecting_) return L"Enter 欄へ追加   PgDn/Up 頁   Esc 戻る";
+        return L"Enter 登録   C-j かな   Esc 取消";
+    }
+    return input_method_ == InputMethod::Skk ? L"Space 次   PgDn 頁   X/Del 削除" : L"Space 次   PgDn 頁   Del 削除";
+}
+
 SIZE CandidateList::measure() {
-    // Keep measurement bounded even if the host supplies a custom large page.
     const auto [first, visible_end] = visible_rows();
     WindowDC dc(window_);
     if (!dc.value) return {};
-    SelectedFont selected(dc.value, font_);
-    const auto footer_text = footer(); SIZE footer_size{};
-    GetTextExtentPoint32W(dc.value, footer_text.c_str(), static_cast<int>(footer_text.size()), &footer_size);
-    int width = std::max(MulDiv(360, dpi_, 96), static_cast<int>(footer_size.cx) + padding_ * 2);
-    if (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice) width = std::max(width, MulDiv(580, dpi_, 96));
+    const auto m = layout();
+
     if (kind_ == PopupKind::Notice) {
-        SIZE size{}; GetTextExtentPoint32W(dc.value, draft_.c_str(), static_cast<int>(draft_.size()), &size);
-        width = std::max(width, static_cast<int>(size.cx) + padding_ * 2);
+        const auto title_sz = measure_text(dc.value, title_font_, L"単語登録できません");
+        const auto body_sz = measure_text(dc.value, font_, label(draft_));
+        const auto hint_sz = measure_text(dc.value, sub_font_, hint_);
+        const int content_w = std::max({title_sz.cx, body_sz.cx, hint_sz.cx});
+        const int width = std::clamp(content_w + scale(32), scale(300), scale(540));
+        const int height = scale(92);
+        RECT outer{0, 0, width, height};
+        if (!AdjustWindowRectExForDpi(&outer, popup_style, FALSE, popup_ex_style, dpi_)) return {};
+        return {outer.right - outer.left, outer.bottom - outer.top};
     }
+
+    int width = scale(kind_ == PopupKind::Editor ? 420 : 280);
+    if (kind_ == PopupKind::Candidates) {
+        const auto counter_sz = measure_text(dc.value, sub_font_, footer_counter());
+        const auto hint_sz = measure_text(dc.value, sub_font_, compact_footer_hint());
+        width = std::max(width, static_cast<int>(counter_sz.cx + hint_sz.cx) + scale(40));
+    } else if (forgetting_) {
+        const auto scope_sz = measure_text(dc.value, sub_font_, forget_scope_);
+        const auto title_sz = measure_text(dc.value, title_font_, has_forget_target_ ? L"学習語の削除  " + label(forget_word_) : L"削除できる学習語がありません");
+        width = std::max({width, static_cast<int>(scope_sz.cx) + scale(32), static_cast<int>(title_sz.cx) + scale(56)});
+    } else {
+        const auto reading_sz = measure_text(dc.value, title_font_, L"単語登録  " + label(registration_reading_));
+        const auto hint_sz = measure_text(dc.value, sub_font_, compact_footer_hint());
+        width = std::max({width, static_cast<int>(reading_sz.cx) + scale(110), static_cast<int>(hint_sz.cx) + scale(32)});
+    }
+
     if (!previous_selection_) {
         row_width_ = 0;
+        const int row_chrome = m.pad_x * 2 + scale(16) + m.keycap_size + scale(12);
+        const int ai_width = scale(34);
         for (UINT i = first; i < visible_end; ++i) {
-            const auto row = std::wstring(1, candidate_labels(keys_)[i - first]) + L"  " + label(rows_[i].text) + L"  — " + label(rows_[i].annotation);
-            SIZE size{}; GetTextExtentPoint32W(dc.value, row.c_str(), static_cast<int>(row.size()), &size);
-            row_width_ = std::max(row_width_, static_cast<int>(size.cx) + padding_ * 2);
+            const auto main_sz = measure_text(dc.value, font_, label(rows_[i].text));
+            int needed = row_chrome + static_cast<int>(main_sz.cx);
+            if (!rows_[i].annotation.empty()) {
+                const auto ann_sz = measure_text(dc.value, sub_font_, label(rows_[i].annotation));
+                needed += scale(14) + static_cast<int>(ann_sz.cx);
+            }
+            if (is_generated_source(rows_[i].source)) needed += ai_width;
+            row_width_ = std::max(row_width_, needed);
         }
     }
     width = std::max(width, row_width_);
-    width = std::min(width, MulDiv(680, dpi_, 96));
-    int height = (static_cast<int>(visible_end - first + 1) + (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice ? 2 : 0)) * line_height_ + padding_ * 2;
-    // The measured text and padding describe the client area. The border
-    // must be added before passing the outer dimensions to SetWindowPos.
+    width = std::min(width, scale(580));
+
+    const int rows_height = static_cast<int>(visible_end - first) * m.row_height;
+    int height = 0;
+    if (kind_ == PopupKind::Candidates) {
+        height = m.rows_top + rows_height + scale(6) + m.footer_height;
+    } else {
+        height = m.rows_top + rows_height + (rows_height > 0 ? scale(6) : 0) + m.footer_height;
+    }
     RECT outer{0, 0, width, height};
     if (!AdjustWindowRectExForDpi(&outer, popup_style, FALSE, popup_ex_style, dpi_)) return {};
     return {outer.right - outer.left, outer.bottom - outer.top};
 }
+
 void CandidateList::render() noexcept {
     if (closed_ || !located_ || !requested_visible_ || (rows_.empty() && kind_ == PopupKind::Candidates)) {
         trace(L"hidden", closed_, located_, requested_visible_);
         cancel_pointer();
+        hovered_.reset();
+        wheel_.reset();
         if (window_) ShowWindow(window_, SW_HIDE);
         return;
     }
@@ -286,7 +450,6 @@ void CandidateList::render() noexcept {
             // A normal desktop popup can be hidden by the Store/XAML shell.
             WNDCLASSW cls{}; cls.style = CS_IME; cls.lpfnWndProc = window_proc; cls.hInstance = module_instance;
             cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = class_name_.c_str();
-            cls.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
             if (!RegisterClassW(&cls)) { trace(L"class-failed", GetLastError()); class_name_.clear(); return; }
             // Keep the TSF-provided owner. Walking to GA_ROOT can cross from
             // an AppContainer's CoreWindow into the desktop shell's frame.
@@ -301,16 +464,10 @@ void CandidateList::render() noexcept {
                 class_name_.c_str(), kind_ == PopupKind::Notice ? L"nskkzime 通知" : kind_ == PopupKind::Editor ? L"nskkzime 単語登録" : L"nskkzime 候補", popup_style, 0, 0, 0, 0,
                 owner_, nullptr, module_instance, this);
             if (!window_) { trace(L"window-failed", GetLastError()); UnregisterClassW(class_name_.c_str(), module_instance); class_name_.clear(); return; }
+            refresh_theme();
         }
         const auto dpi = owner_ ? GetDpiForWindow(owner_) : 96U;
-        if (dpi_ != dpi || !font_) {
-            previous_selection_.reset(); redraw_ = true;
-            dpi_ = dpi ? dpi : 96;
-            if (font_) DeleteObject(font_);
-            font_ = CreateFontW(-MulDiv(18, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, font_face_.c_str());
-            line_height_ = MulDiv(32, dpi_, 96); padding_ = MulDiv(10, dpi_, 96);
-        }
+        ensure_fonts(dpi);
         if (redraw_ || !measured_.cx) measured_ = measure();
         if (!measured_.cx) return;
         int width = measured_.cx, height = measured_.cy;
@@ -318,15 +475,16 @@ void CandidateList::render() noexcept {
         if (!GetMonitorInfoW(MonitorFromRect(&anchor_, MONITOR_DEFAULTTONEAREST), &monitor)) return;
         width = std::min(width, static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));
         height = std::min(height, static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top));
+        const int gap = scale(4);
         const auto x = std::clamp(anchor_.left, monitor.rcWork.left, monitor.rcWork.right - width);
-        auto y = anchor_.bottom;
-        if (y + height > monitor.rcWork.bottom) y = anchor_.top - height;
+        auto y = anchor_.bottom + gap;
+        if (y + height > monitor.rcWork.bottom) y = anchor_.top - height - gap;
         y = std::clamp(y, monitor.rcWork.top, monitor.rcWork.bottom - height);
         const RECT expected{x, y, x + width, y + height};
         RECT actual{};
         const bool place = !IsWindowVisible(window_) || !GetWindowRect(window_, &actual) || !EqualRect(&expected, &actual);
         const bool redraw = std::exchange(redraw_, false);
-        const auto old_selection = std::exchange(previous_selection_, {});
+        previous_selection_.reset();
         if (place) {
             const auto placed = SetWindowPos(window_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             const auto error = placed ? 0 : GetLastError();
@@ -334,71 +492,427 @@ void CandidateList::render() noexcept {
             if (!placed) { redraw_ = true; return; }
         }
         if (!window_ || closed_) return;
-        if (redraw && old_selection && !place) {
-            const auto [first, end] = visible_rows();
-            for (const UINT row : {*old_selection, selection_, end}) {
-                const int top = padding_ + static_cast<int>(row - first) * line_height_;
-                const RECT strip{0, top, width, top + line_height_};
-                InvalidateRect(window_, &strip, FALSE);
-            }
-        } else if (redraw || place) InvalidateRect(window_, nullptr, FALSE);
+        if (redraw || place) InvalidateRect(window_, nullptr, FALSE);
     } catch (...) { if (window_) ShowWindow(window_, SW_HIDE); }
 }
-std::wstring CandidateList::footer() const {
-    return kind_ != PopupKind::Candidates ? hint_ : std::to_wstring(selection_ + 1) + L" / " + std::to_wstring(rows_.size()) +
-        L"   " + (keys_ == CandidateKeys::Asdfjkl ? std::wstring(L"ASDFJKL") : std::wstring(L"1〜7")) + L": 選択  Space/x: 次/前  PgDn/PgUp: 7件  " +
-        (input_method_ == InputMethod::Skk ? L"X/Ctrl+D/Del: 削除" : L"Ctrl+D/Del: 削除");
-}
-void CandidateList::paint(HDC dc) const {
-    RECT area{}; GetClientRect(window_, &area);
-    FillRect(dc, &area, GetSysColorBrush(COLOR_WINDOW));
-    SelectedFont selected(dc, font_);
-    SetBkMode(dc, TRANSPARENT);
-    int top = padding_;
-    const auto line = [&](std::wstring_view value, UINT format = DT_END_ELLIPSIS) {
-        RECT rect{padding_, top, area.right - padding_, top + line_height_};
-        DrawTextW(dc, value.data(), static_cast<int>(value.size()), &rect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | format);
-        top += line_height_;
-    };
-    if (kind_ != PopupKind::Candidates) {
-        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-        if (kind_ == PopupKind::Editor || kind_ == PopupKind::Notice) line(label(heading_));
-        if (kind_ == PopupKind::Notice) {
-            line(label(draft_)); SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT)); line(footer()); return;
+
+void CandidateList::paint_candidates(SurfaceCanvas& canvas, const Layout& m, int width, int top, int bottom) const {
+    if (pages_.empty() || top >= bottom) return;
+    const auto [first, end] = visible_rows();
+    const HDC dc = canvas.dc();
+    const auto labels = candidate_labels(keys_);
+    const int inset_x = m.pad_x;
+    const int inset_y = scale(2);
+    const float row_radius = static_cast<float>(scale(5));
+    const float keycap_radius = static_cast<float>(scale(4));
+    const float pill_radius = static_cast<float>(scale(2));
+    const int pill_w = std::max(3, scale(3));
+    const int pill_h = scale(16);
+
+    const int saved_dc = SaveDC(dc);
+    IntersectClipRect(dc, 0, top, width, bottom);
+    for (UINT i = first; i < end && top < bottom; ++i, top += m.row_height) {
+        const bool selected = i == selection_;
+        const bool hovered = !selected && hovered_ && *hovered_ == i;
+        const RECT row_box{inset_x, top + inset_y, width - inset_x, top + m.row_height - inset_y};
+
+        if (selected) {
+            canvas.fill_rounded_rect(row_box, row_radius, theme_.selection_bg);
+            const int pill_top = top + (m.row_height - pill_h) / 2;
+            const RECT pill{row_box.left + scale(2), pill_top, row_box.left + scale(2) + pill_w, pill_top + pill_h};
+            canvas.fill_rounded_rect(pill, pill_radius, theme_.high_contrast ? theme_.selection_text : theme_.accent);
+        } else if (hovered) {
+            canvas.fill_rounded_rect(row_box, row_radius, theme_.hover_bg);
         }
+
+        // Shortcut keycap badge.
+        const int keycap_left = row_box.left + scale(9);
+        const int keycap_top = top + (m.row_height - m.keycap_size) / 2;
+        const RECT keycap{keycap_left, keycap_top, keycap_left + m.keycap_size, keycap_top + m.keycap_size};
+        const COLORREF kc_bg = selected && !theme_.high_contrast
+            ? blend_color(theme_.selection_bg, theme_.accent, 34)
+            : theme_.keycap_bg;
+        const COLORREF kc_border = selected && !theme_.high_contrast
+            ? blend_color(theme_.selection_bg, theme_.accent, 110)
+            : theme_.keycap_border;
+        const COLORREF kc_text = selected && !theme_.high_contrast ? theme_.text : theme_.keycap_text;
+        canvas.fill_rounded_rect(keycap, keycap_radius, kc_bg);
+        canvas.stroke_rounded_rect(keycap, keycap_radius, 1.0f, kc_border);
+        {
+            SelectedFont f(dc, badge_font_);
+            SetTextColor(dc, kc_text);
+            wchar_t ch[2]{labels[i - first], 0};
+            RECT kc_rect = keycap;
+            DrawTextW(dc, ch, 1, &kc_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        int right_limit = row_box.right - scale(10);
+        // Optional AI generation pill on the right edge.
+        if (is_generated_source(rows_[i].source)) {
+            const int badge_w = scale(26);
+            const int badge_top = top + (m.row_height - m.badge_height) / 2;
+            const RECT badge{right_limit - badge_w, badge_top, right_limit, badge_top + m.badge_height};
+            const float br = static_cast<float>(m.badge_height) * 0.5f;
+            canvas.fill_rounded_rect(badge, br, theme_.ai_badge_bg);
+            canvas.stroke_rounded_rect(badge, br, 1.0f, theme_.ai_badge_border);
+            {
+                SelectedFont f(dc, badge_font_);
+                SetTextColor(dc, theme_.ai_badge_text);
+                RECT text_rect = badge;
+                DrawTextW(dc, L"AI", 2, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            right_limit = badge.left - scale(8);
+        }
+
+        const int text_left = keycap.right + scale(10);
+        const auto main_text = label(rows_[i].text);
+        const auto ann_text = rows_[i].annotation.empty() ? std::wstring{} : label(rows_[i].annotation);
+        const auto main_sz = measure_text(dc, font_, main_text);
+        const int main_right = ann_text.empty()
+            ? right_limit
+            : std::min(right_limit, text_left + static_cast<int>(main_sz.cx) + scale(4));
+
+        {
+            SelectedFont f(dc, font_);
+            SetTextColor(dc, selected ? theme_.selection_text : theme_.text);
+            RECT main_rect{text_left, top, main_right, top + m.row_height};
+            DrawTextW(dc, main_text.c_str(), static_cast<int>(main_text.size()), &main_rect,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+
+        if (!ann_text.empty() && main_right + scale(10) < right_limit) {
+            SelectedFont f(dc, sub_font_);
+            SetTextColor(dc, selected && theme_.high_contrast ? theme_.selection_text : theme_.text_secondary);
+            RECT ann_rect{main_right + scale(10), top, right_limit, top + m.row_height};
+            DrawTextW(dc, ann_text.c_str(), static_cast<int>(ann_text.size()), &ann_rect,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+    }
+    if (saved_dc) RestoreDC(dc, saved_dc);
+}
+
+void CandidateList::paint_registration_header(SurfaceCanvas& canvas, const Layout& m, int width) const {
+    const HDC dc = canvas.dc();
+    // Header band.
+    const RECT header_rect{0, 0, width, m.header_height};
+    canvas.fill_rect(header_rect, theme_.surface_secondary);
+    canvas.fill_rect({0, m.header_height - 1, width, m.header_height}, theme_.separator);
+
+    int right_cursor = width - scale(10);
+    // Optional input mode pill on the right of the header.
+    if (show_input_mode_) {
+        const auto palette = mode_palette(theme_, editor_mode_);
+        const std::wstring text = editor_mode_ == Mode::Latin
+            ? std::wstring(mode_label(editor_mode_)) + L" 英数"
+            : std::wstring(mode_label(editor_mode_));
+        const auto sz = measure_text(dc, badge_font_, text);
+        const int pill_w = std::max(scale(22), static_cast<int>(sz.cx) + scale(12));
+        const int pill_h = scale(20);
+        const int pill_top = (m.header_height - pill_h) / 2;
+        const RECT pill{right_cursor - pill_w, pill_top, right_cursor, pill_top + pill_h};
+        canvas.fill_rounded_rect(pill, static_cast<float>(scale(4)), palette.background);
+        canvas.stroke_rounded_rect(pill, static_cast<float>(scale(4)), 1.0f, palette.border);
+        {
+            SelectedFont f(dc, badge_font_);
+            SetTextColor(dc, palette.text);
+            RECT r = pill;
+            DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        right_cursor = pill.left - scale(6);
+    }
+
+    // Recursion depth pill (only shown when nested >= 2).
+    if (registration_depth_ >= 2) {
+        const std::wstring depth_text = std::to_wstring(registration_depth_) + L"/8";
+        const auto sz = measure_text(dc, badge_font_, depth_text);
+        const int pill_w = static_cast<int>(sz.cx) + scale(10);
+        const int pill_h = scale(18);
+        const int pill_top = (m.header_height - pill_h) / 2;
+        const RECT pill{right_cursor - pill_w, pill_top, right_cursor, pill_top + pill_h};
+        canvas.fill_rounded_rect(pill, static_cast<float>(scale(4)), theme_.keycap_bg);
+        canvas.stroke_rounded_rect(pill, static_cast<float>(scale(4)), 1.0f, theme_.keycap_border);
+        {
+            SelectedFont f(dc, badge_font_);
+            SetTextColor(dc, theme_.text_secondary);
+            RECT r = pill;
+            DrawTextW(dc, depth_text.c_str(), static_cast<int>(depth_text.size()), &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        right_cursor = pill.left - scale(6);
+    }
+
+    // Title + reading chip.
+    const std::wstring title = L"単語登録";
+    const auto title_sz = measure_text(dc, title_font_, title);
+    const int title_left = scale(12);
+    {
+        SelectedFont f(dc, title_font_);
+        SetTextColor(dc, theme_.text);
+        RECT r{title_left, 0, title_left + title_sz.cx + scale(4), m.header_height};
+        DrawTextW(dc, title.c_str(), static_cast<int>(title.size()), &r, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    }
+    const auto reading = label(registration_reading_);
+    if (!reading.empty() && title_left + title_sz.cx + scale(20) < right_cursor) {
+        const int chip_left = title_left + title_sz.cx + scale(10);
+        const auto read_sz = measure_text(dc, sub_font_, reading);
+        const int chip_w = std::min(right_cursor - chip_left, static_cast<int>(read_sz.cx) + scale(14));
+        const int chip_h = scale(22);
+        const int chip_top = (m.header_height - chip_h) / 2;
+        const RECT chip{chip_left, chip_top, chip_left + chip_w, chip_top + chip_h};
+        canvas.fill_rounded_rect(chip, static_cast<float>(scale(4)), theme_.surface);
+        canvas.stroke_rounded_rect(chip, static_cast<float>(scale(4)), 1.0f, theme_.border);
+        SelectedFont f(dc, sub_font_);
+        SetTextColor(dc, theme_.text);
+        RECT text_rect{chip.left + scale(7), chip.top, chip.right - scale(7), chip.bottom};
+        DrawTextW(dc, reading.c_str(), static_cast<int>(reading.size()), &text_rect,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    // Input box area.
+    const int box_pad_x = scale(10);
+    const int box_pad_y = scale(8);
+    const RECT box{box_pad_x, m.header_height + box_pad_y, width - box_pad_x, m.header_height + m.editor_height - box_pad_y};
+    const float box_radius = static_cast<float>(scale(5));
+    const COLORREF line_color = registration_limit_ ? theme_.warning_accent : theme_.accent;
+    canvas.fill_rounded_rect(box, box_radius, theme_.input_surface);
+    canvas.stroke_rounded_rect(box, box_radius, 1.0f, theme_.border);
+    // Win11 bottom accent focus line inside the input field.
+    const int accent_h = std::max(2, scale(2));
+    canvas.fill_rect({box.left + scale(4), box.bottom - accent_h, box.right - scale(4), box.bottom}, line_color);
+
+    const int inner_left = box.left + scale(10);
+    const int inner_right = box.right - scale(10);
+    const int inner_width = std::max(0, inner_right - inner_left);
+    const int caret_w = std::max(2, scale(2));
+    const int caret_h = std::min<int>(box.bottom - box.top - scale(10), scale(18));
+    const int caret_top = (box.top + box.bottom - caret_h) / 2;
+
+    if (draft_.empty()) {
+        canvas.fill_rect({inner_left, caret_top, inner_left + caret_w, caret_top + caret_h}, line_color);
+        SelectedFont f(dc, sub_font_);
+        SetTextColor(dc, theme_.text_muted);
+        RECT placeholder{inner_left + caret_w + scale(6), box.top, inner_right, box.bottom - accent_h};
+        const std::wstring guide = L"登録する語幹を入力…";
+        DrawTextW(dc, guide.c_str(), static_cast<int>(guide.size()), &placeholder,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    } else {
         // Keep the currently edited tail visible for a long registration.
         const auto offset = draft_.size() > 160 ? draft_.size() - 160 : 0;
         auto tail = draft_.substr(offset);
         if (!tail.empty() && tail.front() >= 0xdc00 && tail.front() <= 0xdfff) tail.erase(0, 1);
-        const auto text = (offset ? L"…" : L"") + tail + L"▏";
-        SIZE size{}; GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
-        line(text, size.cx > area.right - padding_ * 2 ? DT_RIGHT : DT_END_ELLIPSIS);
+        const auto text = (offset ? L"…" : L"") + tail;
+        const auto sz = measure_text(dc, font_, text);
+        const bool overflow = sz.cx + caret_w + scale(2) > inner_width;
+        RECT text_rect{inner_left, box.top, inner_right - caret_w - scale(2), box.bottom - accent_h};
+        {
+            SelectedFont f(dc, font_);
+            SetTextColor(dc, theme_.text);
+            DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &text_rect,
+                DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | (overflow ? DT_RIGHT : DT_LEFT));
+        }
+        const int caret_x = overflow ? text_rect.right + scale(1) : inner_left + static_cast<int>(sz.cx) + scale(1);
+        canvas.fill_rect({caret_x, caret_top, caret_x + caret_w, caret_top + caret_h}, line_color);
     }
+
     if (!pages_.empty()) {
-        const auto [first, end] = visible_rows();
-        for (UINT i = first; i < end; ++i, top += line_height_) {
-            RECT row{0, top, area.right, top + line_height_};
-            if (i == selection_) FillRect(dc, &row, GetSysColorBrush(COLOR_HIGHLIGHT));
-            if (!RectVisible(dc, &row)) continue;
-            SetTextColor(dc, GetSysColor(i == selection_ ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
-            row.left += padding_; row.right -= padding_;
-            const auto text = std::wstring(1, candidate_labels(keys_)[i - first]) + L"  " + label(rows_[i].text) +
-                (rows_[i].annotation.empty() ? L"" : L"  — " + label(rows_[i].annotation));
-            DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &row, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        const int sep_y = m.header_height + m.editor_height;
+        canvas.fill_rect({scale(10), sep_y, width - scale(10), sep_y + 1}, theme_.separator);
+    }
+}
+
+void CandidateList::paint_forget_body(SurfaceCanvas& canvas, const Layout& m, int width) const {
+    const HDC dc = canvas.dc();
+    const RECT header_rect{0, 0, width, m.header_height};
+    canvas.fill_rect(header_rect, has_forget_target_ && !theme_.high_contrast ? theme_.warning_bg : theme_.surface_secondary);
+    canvas.fill_rect({0, m.header_height - 1, width, m.header_height}, theme_.separator);
+    if (has_forget_target_) {
+        const int bar_w = std::max(3, scale(3));
+        canvas.fill_rect({0, 0, bar_w, m.header_height}, theme_.warning_accent);
+    }
+
+    const int left = scale(12);
+    const std::wstring title = has_forget_target_ ? L"学習語の削除" : L"削除できる学習語がありません";
+    const auto title_sz = measure_text(dc, title_font_, title);
+    {
+        SelectedFont f(dc, title_font_);
+        SetTextColor(dc, has_forget_target_ ? theme_.warning_accent : theme_.text);
+        RECT r{left, 0, has_forget_target_ ? left + title_sz.cx + scale(4) : width - left, m.header_height};
+        DrawTextW(dc, title.c_str(), static_cast<int>(title.size()), &r,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    if (has_forget_target_) {
+        const auto word = label(forget_word_);
+        const int chip_left = left + title_sz.cx + scale(10);
+        const int max_w = width - chip_left - scale(10);
+        if (max_w > scale(24)) {
+            const auto word_sz = measure_text(dc, title_font_, word);
+            const int chip_w = std::min(max_w, static_cast<int>(word_sz.cx) + scale(14));
+            const int chip_h = scale(22);
+            const int chip_top = (m.header_height - chip_h) / 2;
+            const RECT chip{chip_left, chip_top, chip_left + chip_w, chip_top + chip_h};
+            canvas.fill_rounded_rect(chip, static_cast<float>(scale(4)), theme_.surface);
+            canvas.stroke_rounded_rect(chip, static_cast<float>(scale(4)), 1.0f, theme_.border);
+            SelectedFont f(dc, title_font_);
+            SetTextColor(dc, theme_.text);
+            RECT r{chip.left + scale(7), chip.top, chip.right - scale(7), chip.bottom};
+            DrawTextW(dc, word.c_str(), static_cast<int>(word.size()), &r,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
     }
-    SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
-    line(footer());
+
+    // Scope line.
+    const int body_top = m.header_height + scale(6);
+    {
+        SelectedFont f(dc, sub_font_);
+        SetTextColor(dc, theme_.text_secondary);
+        RECT scope_rect{left, body_top, width - left, body_top + scale(22)};
+        DrawTextW(dc, forget_scope_.c_str(), static_cast<int>(forget_scope_.size()), &scope_rect,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    if (!has_forget_target_) return;
+
+    // Confirmation input row ("yes").
+    const int row_top = body_top + scale(26);
+    const int box_h = scale(30);
+    const std::wstring prompt_label = L"確認 (yes):";
+    const auto prompt_sz = measure_text(dc, sub_font_, prompt_label);
+    {
+        SelectedFont f(dc, sub_font_);
+        SetTextColor(dc, theme_.text);
+        RECT r{left, row_top, left + prompt_sz.cx + scale(4), row_top + box_h};
+        DrawTextW(dc, prompt_label.c_str(), static_cast<int>(prompt_label.size()), &r, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    }
+    const bool confirmed = forget_answer_ == L"yes";
+    const RECT box{left + prompt_sz.cx + scale(10), row_top, std::min<int>(width - left, left + prompt_sz.cx + scale(160)), row_top + box_h};
+    const COLORREF accent = confirmed ? theme_.warning_accent : theme_.accent;
+    canvas.fill_rounded_rect(box, static_cast<float>(scale(4)), theme_.input_surface);
+    canvas.stroke_rounded_rect(box, static_cast<float>(scale(4)), 1.0f, confirmed ? theme_.warning_accent : theme_.border);
+    const int line_h = std::max(2, scale(2));
+    canvas.fill_rect({box.left + scale(3), box.bottom - line_h, box.right - scale(3), box.bottom}, accent);
+
+    const int inner_x = box.left + scale(8);
+    const int caret_w = std::max(2, scale(2));
+    const int caret_h = scale(14);
+    const int caret_y = (box.top + box.bottom - caret_h) / 2;
+    const auto answer_sz = measure_text(dc, font_, forget_answer_);
+    if (!forget_answer_.empty()) {
+        SelectedFont f(dc, font_);
+        SetTextColor(dc, confirmed ? theme_.warning_accent : theme_.text);
+        RECT r{inner_x, box.top, box.right - scale(8), box.bottom - line_h};
+        DrawTextW(dc, forget_answer_.c_str(), static_cast<int>(forget_answer_.size()), &r, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    }
+    const int caret_x = std::min<int>(box.right - scale(6), inner_x + static_cast<int>(answer_sz.cx) + scale(1));
+    canvas.fill_rect({caret_x, caret_y, caret_x + caret_w, caret_y + caret_h}, accent);
 }
+
+void CandidateList::paint_notice(SurfaceCanvas& canvas, const Layout&, int width, int height) const {
+    const HDC dc = canvas.dc();
+    const int bar_w = std::max(3, scale(3));
+    canvas.fill_rect({0, 0, bar_w, height}, theme_.notice_accent);
+    const int left = scale(14);
+    const int right = width - scale(14);
+    {
+        SelectedFont f(dc, title_font_);
+        SetTextColor(dc, theme_.text);
+        RECT r{left, scale(10), right, scale(32)};
+        const std::wstring title = L"単語登録できません";
+        DrawTextW(dc, title.c_str(), static_cast<int>(title.size()), &r, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    {
+        SelectedFont f(dc, font_);
+        SetTextColor(dc, theme_.text_secondary);
+        const auto text = label(draft_);
+        RECT r{left, scale(34), right, scale(60)};
+        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &r, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    {
+        SelectedFont f(dc, sub_font_);
+        SetTextColor(dc, theme_.text_muted);
+        RECT r{left, scale(62), right, height - scale(8)};
+        DrawTextW(dc, hint_.c_str(), static_cast<int>(hint_.size()), &r, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+}
+
+void CandidateList::paint_footer(SurfaceCanvas& canvas, const Layout& m, int width, int top) const {
+    const HDC dc = canvas.dc();
+    canvas.fill_rect({0, top, width, top + m.footer_height}, theme_.surface);
+    canvas.fill_rect({scale(8), top, width - scale(8), top + 1}, theme_.separator);
+    const RECT rect{scale(12), top + 1, width - scale(12), top + m.footer_height};
+    SelectedFont f(dc, sub_font_);
+    const auto hint_text = compact_footer_hint();
+    if (kind_ == PopupKind::Candidates) {
+        const auto counter = footer_counter();
+        const auto counter_sz = measure_text(dc, sub_font_, counter);
+        SetTextColor(dc, theme_.text_secondary);
+        RECT left_rect = rect;
+        left_rect.right = std::min(rect.right, rect.left + static_cast<int>(counter_sz.cx) + scale(6));
+        DrawTextW(dc, counter.c_str(), static_cast<int>(counter.size()), &left_rect, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+        if (left_rect.right + scale(8) < rect.right) {
+            SetTextColor(dc, theme_.text_muted);
+            RECT right_rect{left_rect.right + scale(8), rect.top, rect.right, rect.bottom};
+            DrawTextW(dc, hint_text.c_str(), static_cast<int>(hint_text.size()), &right_rect,
+                DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+    } else {
+        SetTextColor(dc, registration_limit_ ? theme_.warning_accent : theme_.text_muted);
+        RECT r = rect;
+        DrawTextW(dc, hint_text.c_str(), static_cast<int>(hint_text.size()), &r,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+}
+
+void CandidateList::paint(HDC target_dc) const {
+    RECT area{};
+    if (!GetClientRect(window_, &area)) return;
+    const int width = area.right - area.left;
+    const int height = area.bottom - area.top;
+    if (width <= 0 || height <= 0) return;
+
+    SurfaceCanvas canvas(target_dc, width, height);
+    if (!canvas.valid()) {
+        FillRect(target_dc, &area, GetSysColorBrush(COLOR_WINDOW));
+        return;
+    }
+
+    canvas.clear(theme_.surface);
+    SetBkMode(canvas.dc(), TRANSPARENT);
+    const auto m = layout();
+
+    if (kind_ == PopupKind::Notice) {
+        paint_notice(canvas, m, width, height);
+    } else if (kind_ == PopupKind::Editor) {
+        if (forgetting_) {
+            paint_forget_body(canvas, m, width);
+        } else {
+            paint_registration_header(canvas, m, width);
+            paint_candidates(canvas, m, width, m.rows_top, m.rows_bottom(height));
+        }
+        paint_footer(canvas, m, width, m.footer_top(height));
+    } else {
+        paint_candidates(canvas, m, width, m.rows_top, m.rows_bottom(height));
+        paint_footer(canvas, m, width, m.footer_top(height));
+    }
+
+    if (!dwm_framed_ || theme_.high_contrast) {
+        const float thickness = std::max(1.0f, static_cast<float>(scale(1)));
+        canvas.stroke_rounded_rect(area, 0.0f, thickness, theme_.border);
+    }
+    canvas.present();
+}
+
 LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* self = reinterpret_cast<CandidateList*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         self = static_cast<CandidateList*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
+    if (message == WM_ERASEBKGND) return 1;
     if (self && (message == WM_SETTINGCHANGE || message == WM_DISPLAYCHANGE || message == WM_DPICHANGED)) {
+        self->refresh_theme();
         self->redraw_ = true;
         self->previous_selection_.reset();
+        InvalidateRect(window, nullptr, FALSE);
     }
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     // Eat popup clicks, including its header/footer, without activating it or
@@ -408,6 +922,38 @@ LRESULT CALLBACK CandidateList::window_proc(HWND window, UINT message, WPARAM wp
         POINT point{};
         const bool row = GetCursorPos(&point) && ScreenToClient(window, &point) && self->hit_test(point).has_value();
         SetCursor(LoadCursorW(nullptr, row ? IDC_HAND : IDC_ARROW)); return TRUE;
+    }
+    if (message == WM_MOUSEMOVE && self) {
+        if (!self->tracking_mouse_) {
+            TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window, 0};
+            self->tracking_mouse_ = TrackMouseEvent(&track) != FALSE;
+        }
+        const auto row = self->hit_test({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+        if (row != self->hovered_) {
+            self->hovered_ = row;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        return 0;
+    }
+    if (message == WM_MOUSELEAVE && self) {
+        self->tracking_mouse_ = false;
+        if (self->hovered_) {
+            self->hovered_.reset();
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        return 0;
+    }
+    if (message == WM_MOUSEWHEEL && self) {
+        const ComPtr<CandidateList> keep(self);
+        const int wheel = GET_WHEEL_DELTA_WPARAM(wparam);
+        if (wheel != 0 && !self->rows_.empty()) {
+            const int steps = self->wheel_.accumulate(wheel);
+            if (steps != 0) {
+                self->begin_interaction();
+                self->request_step(steps);
+            }
+        }
+        return 0;
     }
     if (message == WM_LBUTTONDOWN && self) {
         const ComPtr<CandidateList> keep(self);
